@@ -12,6 +12,7 @@ from typing import Literal, Protocol
 from .errors import PlaudSessionExpiredError
 
 TOKEN_REFRESH_BUFFER_SECONDS = 30 * 24 * 60 * 60
+_SECONDS_PER_DAY = 86_400
 
 
 @dataclass(slots=True)
@@ -123,6 +124,18 @@ class SessionStore:
             return False
         return True
 
+    def clear(self) -> None:
+        keyring = self._load_keyring_module()
+        if keyring is not None:
+            try:
+                keyring.delete_password(self.service_name, self.account_name)
+            except Exception:
+                pass
+        try:
+            self.file_store.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
 
 class SessionManager:
     def __init__(self, store: SessionStoreProtocol) -> None:
@@ -148,6 +161,17 @@ class SessionManager:
         )
         self.store.save(updated)
         return updated
+
+    def days_until_expiry(self) -> int | None:
+        """Return whole days until the stored token expires, or None if no session."""
+        session = self.store.load()
+        if session is None:
+            return None
+        exp = self._decode_expiry(session.access_token)
+        if exp is None:
+            return None
+        remaining = exp - int(time())
+        return max(0, remaining // _SECONDS_PER_DAY)
 
     def _decode_expiry(self, jwt: str) -> int | None:
         parts = jwt.split(".")

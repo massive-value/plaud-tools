@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -46,6 +47,13 @@ def _find_ffmpeg() -> str:
     env_path = os.environ.get("FFMPEG_BIN")
     if env_path and Path(env_path).exists():
         return env_path
+    # When frozen by PyInstaller, look for ffmpeg.exe next to the executable
+    # before falling back to PATH. The Electron tray build places ffmpeg.exe
+    # alongside plaud-mcp.exe in the same resources subdirectory.
+    if getattr(sys, "frozen", False):
+        sibling = Path(sys.executable).parent / "ffmpeg.exe"
+        if sibling.exists():
+            return str(sibling)
     found = shutil.which("ffmpeg")
     if found:
         return found

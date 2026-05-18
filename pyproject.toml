@@ -24,5 +24,8 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["plaud_tools*"]
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

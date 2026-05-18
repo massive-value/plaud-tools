@@ -113,6 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
     session_set.add_argument("--token", required=True)
     session_set.add_argument("--region", choices=["us", "eu"], default="us")
     session_set.add_argument("--email")
+
+    session_sub.add_parser("clear")
+
+    ping_cmd = sub.add_parser("ping")
     return parser
 
 
@@ -185,6 +189,10 @@ def run_cli(
                 },
                 indent=2,
             )
+        if args.session_command == "clear":
+            store.clear()
+            return json.dumps({"ok": True}, indent=2)
+
         session, source = store.load_with_source()
         if session is None:
             return json.dumps({"session": None, "path": str(store.file_store.path), "source": source}, indent=2)
@@ -194,6 +202,7 @@ def run_cli(
             status = "valid"
         except PlaudSessionExpiredError as exc:
             status = exc.code
+        days = manager.days_until_expiry()
         return json.dumps(
             {
                 "path": str(store.file_store.path),
@@ -201,6 +210,7 @@ def run_cli(
                 "region": session.region,
                 "email": session.email,
                 "status": status,
+                "days_until_expiry": days,
                 "token": session.access_token if args.show_token else _mask_token(session.access_token),
             },
             indent=2,
@@ -407,6 +417,11 @@ def run_cli(
             ],
             indent=2,
         )
+    if args.command == "ping":
+        client = client or _build_runtime_client(store)
+        client.get_user_info()
+        return json.dumps({"ok": True}, indent=2)
+
     return client.fetch_transcript(args.recording_id)
 
 
