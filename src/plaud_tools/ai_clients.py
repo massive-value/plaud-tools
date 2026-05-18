@@ -88,15 +88,26 @@ _TOML_SECTION_RE = re.compile(
 )
 
 
+def _toml_string(value: str) -> str:
+    # Prefer a single-quoted TOML literal string so Windows backslashes don't
+    # get interpreted as escape sequences. Fall back to a basic string with
+    # escaped backslashes if the value itself contains a single quote.
+    if "'" not in value:
+        return f"'{value}'"
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _write_toml_mcp(config_path: Path, command: str | None) -> None:
     """Add/update or remove [mcp_servers.plaud] in a TOML file without touching other content."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
     if command is not None:
-        new_section = f'[mcp_servers.plaud]\ncommand = "{command}"\n'
+        new_section = f'[mcp_servers.plaud]\ncommand = {_toml_string(command)}\n'
         if _TOML_SECTION_RE.search(text):
-            text = _TOML_SECTION_RE.sub(new_section, text)
+            # Use a callable replacement so re.sub doesn't treat backslashes
+            # in `new_section` (e.g. Windows paths) as group escapes.
+            text = _TOML_SECTION_RE.sub(lambda _m: new_section, text)
         else:
             sep = "\n" if text.endswith("\n") else "\n\n"
             text = text.rstrip("\n") + sep + new_section

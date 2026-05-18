@@ -18,6 +18,7 @@ block_cipher = None
 src = Path(SPECPATH).parent / 'src'
 
 _assets = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets')
+_icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico')
 
 a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_tray_entry.py')],
@@ -66,6 +67,7 @@ exe = EXE(
     upx=True,
     console=False,
     uac_admin=False,
+    icon=_icon,
 )
 
 coll = COLLECT(

@@ -14,6 +14,7 @@ from pathlib import Path
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
+_icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico')
 
 a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_mcp_entry.py')],
@@ -59,6 +60,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=True,
+    icon=_icon,
 )
 
 coll = COLLECT(
