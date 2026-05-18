@@ -1,0 +1,594 @@
+from __future__ import annotations
+
+import base64
+import gzip
+import json
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from plaud_tools.client import PlaudClient, PlaudRecordingQuery
+from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
+from plaud_tools.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
+from plaud_tools.transport import HttpResponse
+
+
+class StubTransport:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def request(self, method, url, headers, body=None):
+        self.calls.append({"method": method, "url": url, "headers": headers, "body": body})
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def make_jwt(days=300):
+    payload = {"exp": 2_000_000_000 + days * 86400}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("ascii").rstrip("=")
+    return f"header.{encoded}.sig"
+
+
+def make_manager(tmp_path: Path, region="eu"):
+    path = tmp_path / "session.json"
+    store = FileSessionStore(path)
+    store.save(PlaudSession(access_token=make_jwt(), region=region, email="test@example.com"))
+    return SessionManager(store), store
+
+
+def test_list_recordings_filters_trash_by_default(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data_file_list": [
+                            {"id": "a", "filename": "keep", "is_trash": False},
+                            {"id": "b", "filename": "drop", "is_trash": True},
+                        ],
+                    }
+                ).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    items = client.list_recordings()
+    assert [item.id for item in items] == ["a"]
+    headers = transport.calls[0]["headers"]
+    assert headers["app-platform"] == "web"
+    assert headers["edit-from"] == "web"
+    assert headers["User-Agent"].startswith("Mozilla/5.0")
+
+
+def test_list_recordings_honors_explicit_query_and_region(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.list_recordings(PlaudRecordingQuery(limit=5, is_trash=0, sort_by="start_time", is_desc=True))
+    assert (
+        transport.calls[0]["url"]
+        == "https://api-euc1.plaud.ai/file/simple/web?limit=5&is_trash=0&sort_by=start_time&is_desc=true"
+    )
+
+
+def test_get_recording_fetches_transcript_from_data_link(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    segments = [
+        {"speaker": "Alex", "original_speaker": "Speaker 1", "content": "Hi"},
+        {"speaker": "", "original_speaker": "Speaker 2", "content": "Hello"},
+    ]
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "transaction",
+                                    "task_status": 1,
+                                    "data_link": "https://s3.fake/transcript.json",
+                                },
+                                {
+                                    "data_type": "auto_sum_note",
+                                    "task_status": 1,
+                                    "data_id": "sum1",
+                                },
+                            ],
+                            "pre_download_content_list": [
+                                {"data_id": "sum1", "data_content": json.dumps({"ai_content": "# Summary"})}
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps(segments).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    detail = client.get_recording("rec1", include_transcript=True)
+    assert detail.transcript == "Alex: Hi\n\nSpeaker 2: Hello"
+    assert detail.ai_content == "# Summary"
+    assert transport.calls[1]["url"] == "https://s3.fake/transcript.json"
+    assert detail.speakers == ["Alex", "Speaker 2"]
+
+
+def test_get_recording_speakers_empty_when_no_transcript(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(), {})]
+    )
+    client = PlaudClient(manager, transport=transport)
+    detail = client.get_recording("rec1", include_transcript=False)
+    assert detail.speakers == []
+
+
+def test_region_failover_updates_persisted_region(tmp_path):
+    manager, store = make_manager(tmp_path, region="us")
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.list_recordings()
+    assert store.load().region == "eu"
+    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
+
+
+def test_missing_session_raises(tmp_path):
+    manager = SessionManager(FileSessionStore(tmp_path / "missing.json"))
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(PlaudSessionExpiredError):
+        client.list_recordings()
+
+
+def test_nonzero_status_raises_api_error(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": -1, "msg": "recording not found"}).encode(), {})]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(PlaudApiError, match="recording not found"):
+        client.get_recording("bogus")
+
+
+def test_rename_recording_uses_patch_payload(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.rename_recording("rec1", "New Name")
+    call = transport.calls[0]
+    assert call["method"] == "PATCH"
+    assert call["url"] == "https://api-euc1.plaud.ai/file/rec1"
+    assert json.loads(call["body"].decode("utf-8")) == {"filename": "New Name"}
+
+
+def test_rename_recording_rejects_blank_name(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="filename cannot be empty"):
+        client.rename_recording("rec1", "   ")
+
+
+def test_list_file_tags_handles_live_shape(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data_filetag_list": [
+                            {"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}
+                        ],
+                    }
+                ).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    tags = client.list_file_tags()
+    assert len(tags) == 1
+    assert tags[0].id == "tag1"
+    assert tags[0].name == "Work"
+
+
+def test_set_recording_folder_uses_update_tags_shape(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.set_recording_folder("rec1", "tag1")
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api-euc1.plaud.ai/file/update-tags"
+    assert json.loads(call["body"].decode("utf-8")) == {"file_id_list": ["rec1"], "filetag_id": "tag1"}
+
+
+def test_list_trash_uses_is_trash_query(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": 0, "data_file_list": [{"id": "rec1", "filename": "Old", "is_trash": True}]}).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    items = client.list_trash()
+    assert [item.id for item in items] == ["rec1"]
+    assert transport.calls[0]["url"] == "https://api-euc1.plaud.ai/file/simple/web?is_trash=1"
+
+
+def test_move_to_trash_uses_array_body(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.move_to_trash(["rec1", "rec2"])
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api-euc1.plaud.ai/file/trash/"
+    assert json.loads(call["body"].decode("utf-8")) == ["rec1", "rec2"]
+
+
+def test_restore_from_trash_uses_array_body(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.restore_from_trash("rec1")
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api-euc1.plaud.ai/file/untrash/"
+    assert json.loads(call["body"].decode("utf-8")) == ["rec1"]
+
+
+def test_trash_methods_reject_empty_ids(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
+        client.move_to_trash([])
+    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
+        client.restore_from_trash([])
+
+
+def test_delete_recordings_uses_delete_method(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.delete_recordings(["rec1", "rec2"])
+    call = transport.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["url"] == "https://api-euc1.plaud.ai/file/"
+    assert json.loads(call["body"].decode("utf-8")) == ["rec1", "rec2"]
+
+
+def test_delete_recordings_accepts_single_id(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.delete_recordings("rec1")
+    assert json.loads(transport.calls[0]["body"].decode("utf-8")) == ["rec1"]
+
+
+def test_delete_recordings_rejects_empty_ids(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
+        client.delete_recordings([])
+
+
+def test_edit_transcript_uses_full_trans_result_payload(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    segments = [
+        {"start_time": 0, "end_time": 5000, "content": "hello", "speaker": "Alex", "original_speaker": "Speaker 1"},
+        {"start_time": 5000, "end_time": 10000, "content": "world", "speaker": "Bee", "original_speaker": "Speaker 2"},
+    ]
+    client.edit_transcript("rec1", segments)
+    call = transport.calls[0]
+    assert call["method"] == "PATCH"
+    assert call["url"] == "https://api-euc1.plaud.ai/file/rec1"
+    assert json.loads(call["body"].decode("utf-8")) == {
+        "trans_result": segments,
+        "support_mul_summ": True,
+    }
+
+
+def test_rename_speaker_reads_segments_and_patches_full_transcript(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "transaction",
+                                    "task_status": 1,
+                                    "data_link": "https://s3.fake/rec1-transcript.json",
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(
+                200,
+                json.dumps(
+                    [
+                        {"start_time": 0, "end_time": 5000, "content": "one", "speaker": "Speaker 1", "original_speaker": "Speaker 1"},
+                        {"start_time": 5000, "end_time": 10000, "content": "two", "speaker": "Speaker 2", "original_speaker": "Speaker 2"},
+                        {"start_time": 10000, "end_time": 15000, "content": "three", "speaker": "Speaker 1", "original_speaker": "Speaker 1"},
+                    ]
+                ).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.rename_speaker("rec1", "Speaker 1", "Alex Riley")
+    assert result == {"segments_updated": 2}
+    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
+    assert write_body["support_mul_summ"] is True
+    assert write_body["trans_result"][0]["speaker"] == "Alex Riley"
+    assert write_body["trans_result"][2]["speaker"] == "Alex Riley"
+    assert write_body["trans_result"][0]["original_speaker"] == "Speaker 1"
+    assert write_body["trans_result"][1]["speaker"] == "Speaker 2"
+
+
+def test_rename_speaker_rejects_missing_transcript(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(), {})]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(ValueError, match="has no transcript yet"):
+        client.rename_speaker("rec1", "Speaker 1", "Alex")
+
+
+def test_rename_speaker_rejects_missing_label_match(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "transaction",
+                                    "task_status": 1,
+                                    "data_link": "https://s3.fake/rec1-transcript.json",
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(
+                200,
+                json.dumps(
+                    [
+                        {"start_time": 0, "end_time": 5000, "content": "one", "speaker": "Speaker 2", "original_speaker": "Speaker 2"},
+                    ]
+                ).encode(),
+                {},
+            ),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(ValueError, match='no segments found with original_speaker "Speaker 1"'):
+        client.rename_speaker("rec1", "Speaker 1", "Alex")
+
+
+def test_rename_speaker_rejects_blank_labels(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="original_label cannot be empty"):
+        client.rename_speaker("rec1", "", "Alex")
+    with pytest.raises(ValueError, match="new_name cannot be empty"):
+        client.rename_speaker("rec1", "Speaker 1", "   ")
+
+
+def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0, "msg": "task processing"}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.transcribe_and_summarize("rec1")
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api-euc1.plaud.ai/ai/transsumm/rec1"
+    body = json.loads(call["body"].decode("utf-8"))
+    assert body["is_reload"] == 0
+    assert body["summ_type"] == "AUTO-SELECT"
+    assert body["summ_type_type"] == "system"
+    assert body["support_mul_summ"] is True
+    info = json.loads(body["info"])
+    assert info["language"] == "auto"
+    assert info["diarization"] == 1
+    assert info["llm"] == "auto"
+
+
+def test_transcribe_and_summarize_honors_overrides(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    client.transcribe_and_summarize("rec1", template_type="MEETING-CONSULT", language="en", diarization=False, llm="gpt-5")
+    body = json.loads(transport.calls[0]["body"].decode("utf-8"))
+    assert body["summ_type"] == "MEETING-CONSULT"
+    info = json.loads(body["info"])
+    assert info == {
+        "language": "en",
+        "timezone": info["timezone"],
+        "diarization": 0,
+        "llm": "gpt-5",
+    }
+
+
+def test_get_task_status_shapes_and_filters(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_status_list": [
+                                {
+                                    "file_id": "rec1",
+                                    "task_id": "t1",
+                                    "task_type": "transcript",
+                                    "task_status": 1,
+                                    "sum_type": "",
+                                    "sum_type_type": "",
+                                    "post_id": 0,
+                                    "ppc_status": 0,
+                                    "is_chatllm": False,
+                                    "auto_save": False,
+                                },
+                                {
+                                    "file_id": "rec2",
+                                    "task_id": "t2",
+                                    "task_type": "summary",
+                                    "task_status": 0,
+                                },
+                            ]
+                        },
+                    }
+                ).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    tasks = client.get_task_status("rec1")
+    assert len(tasks) == 1
+    assert tasks[0].file_id == "rec1"
+    assert tasks[0].is_complete is True
+
+
+def test_get_task_status_handles_missing_list(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    assert client.get_task_status() == []
+
+
+def test_get_recording_fetches_gzip_transcript_from_data_link(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "transaction",
+                                    "task_status": 1,
+                                    "data_link": "https://s3.fake/transcript.json.gz",
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(
+                200,
+                gzip.compress(
+                    json.dumps(
+                        [
+                            {"speaker": "Alex", "original_speaker": "Speaker 1", "content": "Hi"},
+                        ]
+                    ).encode("utf-8")
+                ),
+                {"content-encoding": "gzip"},
+            ),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    detail = client.get_recording("rec1", include_transcript=True)
+    assert detail.transcript == "Alex: Hi"
+
+
+def test_session_store_prefers_keyring_when_available(tmp_path, monkeypatch):
+    calls = {}
+
+    class FakeKeyring:
+        value = None
+
+        @staticmethod
+        def set_password(service, account, value):
+            calls["service"] = service
+            calls["account"] = account
+            FakeKeyring.value = value
+
+        @staticmethod
+        def get_password(service, account):
+            return FakeKeyring.value
+
+    monkeypatch.setattr("plaud_tools.session.importlib.import_module", lambda name: FakeKeyring)
+    store = SessionStore(tmp_path / "session.json")
+    store.save(PlaudSession(access_token="jwt", region="eu", email="user@example.com"))
+    session, source = store.load_with_source()
+    assert calls == {"service": "plaud-tools", "account": "session"}
+    assert source == "keyring"
+    assert session.email == "user@example.com"
+    assert not (tmp_path / "session.json").exists()
+
+
+def test_session_store_falls_back_to_file_when_keyring_unavailable(tmp_path, monkeypatch):
+    def raise_import_error(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr("plaud_tools.session.importlib.import_module", raise_import_error)
+    store = SessionStore(tmp_path / "session.json")
+    store.save(PlaudSession(access_token="jwt", region="eu", email="user@example.com"))
+    session, source = store.load_with_source()
+    assert source == "file"
+    assert session.region == "eu"
+    assert (tmp_path / "session.json").exists()

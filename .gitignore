@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+out/
+release/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# Type / lint caches
+.mypy_cache/
+.ruff_cache/
+
+# HAR captures — contain bearer tokens, real transcripts, and PII.
+# Keep locally as protocol reference; never commit.
+*.har
+har-captures/
+har-archive/
+
+# Local Plaud session — defense in depth (session is stored outside the repo,
+# but ignore any stray copies that land here)
+.plaud/
+**/.plaud/
+session.json
+
+# Claude Code project state (transient)
+.claude/
+
+# Isolated dev worktrees
+.worktrees/
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
