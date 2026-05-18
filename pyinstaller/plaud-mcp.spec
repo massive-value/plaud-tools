@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for plaud-mcp.exe (MCP server).
 #
+# Build prerequisite: refresh PE VERSIONINFO from plaud_tools.__version__
+#   python pyinstaller/version_info.py
+#
 # Build from the repo root:
 #   pyinstaller pyinstaller/plaud-mcp.spec --distpath out/plaud-mcp
 #
@@ -61,6 +64,7 @@ exe = EXE(
     upx=True,
     console=True,
     icon=_icon,
+    version=str(Path(SPECPATH) / 'version_info_plaud-mcp.txt'),
 )
 
 coll = COLLECT(

@@ -1,8 +1,10 @@
 """Python MCP server entry point for plaud-tools."""
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import sys
 from typing import Any
 
 import mcp.server.stdio
@@ -10,6 +12,7 @@ import mcp.types as types
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
+from . import __version__
 from .client import PlaudClient
 from .mcp import build_handlers
 from .session import SessionManager, SessionStore
@@ -131,6 +134,17 @@ _TOOLS: list[types.Tool] = [
         },
     ),
     types.Tool(
+        name="list_folders",
+        description=(
+            "List Plaud folders (file tags). Returns id, name, color, and icon for each folder. "
+            "Use the returned id when filtering browse_recordings by folder or moving a recording with mutate_recording."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    types.Tool(
         name="process_recording",
         description=(
             "Trigger transcription and summarization for a recording, "
@@ -198,7 +212,7 @@ async def _run() -> None:
             write_stream,
             InitializationOptions(
                 server_name="plaud-mcp",
-                server_version="0.2.0",
+                server_version=__version__,
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
@@ -208,4 +222,20 @@ async def _run() -> None:
 
 
 def main() -> None:
-    asyncio.run(_run())
+    parser = argparse.ArgumentParser(
+        prog="plaud-mcp",
+        description="Plaud Tools MCP server (stdio transport).",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.parse_args()
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"plaud-mcp: error: {exc}", file=sys.stderr)
+        sys.exit(1)

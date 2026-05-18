@@ -22,12 +22,12 @@ from PIL import Image, ImageDraw
 
 from .ai_clients import CLIENTS, connect, connect_all, disconnect, status_all
 from .auth import PlaudAuth
+from . import __version__ as APP_VERSION
 from .client import PlaudClient
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .session import PlaudSession, SessionManager, SessionStore
 
 APP_NAME = "Plaud Tools"
-APP_VERSION = "0.1.4"
 GITHUB_REPO = "massive-value/plaud-tools"
 
 

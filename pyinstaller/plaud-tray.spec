@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for PlaudTools.exe (system tray app).
 #
+# Build prerequisite: refresh PE VERSIONINFO from plaud_tools.__version__
+#   python pyinstaller/version_info.py
+#
 # Build from the repo root:
 #   pyinstaller pyinstaller/plaud-tray.spec --distpath out/plaud-tray --noconfirm
 #
@@ -76,6 +79,7 @@ exe = EXE(
     console=False,
     uac_admin=False,
     icon=_icon,
+    version=str(Path(SPECPATH) / 'version_info_plaud-tray.txt'),
 )
 
 coll = COLLECT(

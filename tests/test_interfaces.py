@@ -41,7 +41,7 @@ class StubClient:
             ),
         ]
 
-    def get_recording(self, recording_id, include_transcript=False):
+    def get_recording(self, recording_id, include_transcript=False, include_summary=False):
         return RecordingDetail(
             id=recording_id,
             filename="meeting",
@@ -483,6 +483,30 @@ def test_mcp_get_recording_include_summary():
     payload = json.loads(result["content"][0]["text"])
     assert payload["summary"] == "# Summary"
     assert "transcript" not in payload
+
+
+def test_mcp_list_folders_returns_tags():
+    handlers = build_handlers(lambda: StubClient())
+    result = handlers["list_folders"]()
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]
+
+
+def test_mcp_list_folders_returns_empty_when_no_tags():
+    class EmptyClient(StubClient):
+        def list_file_tags(self):
+            return []
+
+    handlers = build_handlers(lambda: EmptyClient())
+    result = handlers["list_folders"]()
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == []
+
+
+def test_mcp_list_folders_returns_session_error_when_client_missing():
+    handlers = build_handlers(lambda: None)
+    result = handlers["list_folders"]()
+    assert result["isError"] is True
 
 
 def test_mcp_mutate_recording_rename():

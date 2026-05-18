@@ -6,6 +6,7 @@ dist/
 build/
 out/
 release/
+pyinstaller/version_info_*.txt
 
 # Python
 __pycache__/

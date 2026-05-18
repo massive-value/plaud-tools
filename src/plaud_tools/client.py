@@ -54,7 +54,12 @@ class PlaudClient:
             return [record for record in records if not record.is_trash]
         return records
 
-    def get_recording(self, recording_id: str, include_transcript: bool = False) -> RecordingDetail:
+    def get_recording(
+        self,
+        recording_id: str,
+        include_transcript: bool = False,
+        include_summary: bool = False,
+    ) -> RecordingDetail:
         data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
         raw = data.get("data", data)
         detail = self._normalize_recording_detail(raw, recording_id)
@@ -66,6 +71,8 @@ class PlaudClient:
                 if s.get("speaker") or s.get("original_speaker")
             ))
             detail.transcript = self._format_transcript_from_segments(segments)
+        if include_summary and detail.is_summary and not detail.ai_content:
+            detail.ai_content = self._fetch_summary_from_data_link(raw)
         return detail
 
     def fetch_transcript(self, recording_id: str) -> str:
@@ -467,6 +474,37 @@ class PlaudClient:
                 return None
             ai_content = parsed.get("ai_content")
             return ai_content if isinstance(ai_content, str) else None
+        return None
+
+    def _fetch_summary_from_data_link(self, raw: dict[str, Any]) -> str | None:
+        summary_item = None
+        for item in raw.get("content_list") or []:
+            if item.get("data_type") == "auto_sum_note" and item.get("task_status") == 1:
+                summary_item = item
+                break
+        if not summary_item or not summary_item.get("data_link"):
+            return None
+        response = self._transport.request(
+            method="GET",
+            url=str(summary_item["data_link"]),
+            headers={"User-Agent": BROWSER_USER_AGENT},
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            return None
+        try:
+            body = response.json()
+        except (ValueError, json.JSONDecodeError):
+            try:
+                text = response.body_decoded.decode("utf-8")
+            except (AttributeError, UnicodeDecodeError):
+                return None
+            return text or None
+        if isinstance(body, str):
+            return body or None
+        if isinstance(body, dict):
+            ai_content = body.get("ai_content")
+            if isinstance(ai_content, str) and ai_content:
+                return ai_content
         return None
 
     def _fetch_transcript_segments(self, raw: dict[str, Any]) -> list[dict[str, Any]]:

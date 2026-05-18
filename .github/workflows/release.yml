@@ -19,11 +19,26 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Sync pyproject version to release tag
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          (Get-Content pyproject.toml) `
+            -replace '^version = ".*"', "version = `"$version`"" `
+            | Set-Content pyproject.toml
+          Write-Host "pyproject.toml version set to $version"
+
       - name: Install dependencies
         run: pip install ".[tray,dev]"
 
+      - name: Generate Windows PE version info
+        run: python pyinstaller/version_info.py
+
       - name: Build plaud-mcp
         run: pyinstaller pyinstaller/plaud-mcp.spec --distpath out/plaud-mcp --noconfirm
+
+      - name: Build plaud CLI
+        run: pyinstaller pyinstaller/plaud.spec --distpath out/plaud-cli --noconfirm
 
       - name: Build PlaudTools tray
         run: pyinstaller pyinstaller/plaud-tray.spec --distpath out/plaud-tray --noconfirm
@@ -39,6 +54,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force out\plaud-tray\PlaudTools\mcp
           Copy-Item -Recurse out\plaud-mcp\plaud-mcp\* out\plaud-tray\PlaudTools\mcp\
+          New-Item -ItemType Directory -Force out\plaud-tray\PlaudTools\cli
+          Copy-Item -Recurse out\plaud-cli\plaud\* out\plaud-tray\PlaudTools\cli\
 
       - name: Create zip
         run: Compress-Archive -Path out\plaud-tray\PlaudTools -DestinationPath PlaudTools.zip

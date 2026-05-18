@@ -128,6 +128,114 @@ def test_get_recording_fetches_transcript_from_data_link(tmp_path):
     assert detail.speakers == ["Alex", "Speaker 2"]
 
 
+def test_get_recording_inline_summary_does_not_fetch(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "auto_sum_note",
+                                    "task_status": 1,
+                                    "data_id": "sum1",
+                                    "data_link": "https://s3.fake/summary.json",
+                                },
+                            ],
+                            "pre_download_content_list": [
+                                {"data_id": "sum1", "data_content": json.dumps({"ai_content": "# Inline"})}
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    detail = client.get_recording("rec1", include_summary=True)
+    assert detail.is_summary is True
+    assert detail.ai_content == "# Inline"
+    assert len(transport.calls) == 1
+    assert "s3.fake" not in transport.calls[0]["url"]
+
+
+def test_get_recording_fetches_summary_from_data_link(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    summary_text = "# Meeting Summary\n\n- Point A\n- Point B"
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "auto_sum_note",
+                                    "task_status": 1,
+                                    "data_id": "sum1",
+                                    "data_link": "https://s3.fake/summary.json",
+                                },
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"ai_content": summary_text}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    detail = client.get_recording("rec1", include_summary=True)
+    assert detail.is_summary is True
+    assert detail.ai_content == summary_text
+    assert transport.calls[1]["url"] == "https://s3.fake/summary.json"
+
+
+def test_get_recording_skips_summary_fetch_when_not_requested(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "auto_sum_note",
+                                    "task_status": 1,
+                                    "data_id": "sum1",
+                                    "data_link": "https://s3.fake/summary.json",
+                                },
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    detail = client.get_recording("rec1")
+    assert detail.is_summary is True
+    assert detail.ai_content is None
+    assert len(transport.calls) == 1
+
+
 def test_get_recording_speakers_empty_when_no_transcript(tmp_path):
     manager, _ = make_manager(tmp_path)
     transport = StubTransport(

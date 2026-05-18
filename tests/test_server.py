@@ -9,11 +9,17 @@ _EXPECTED_TOOL_NAMES = {
     "mutate_recording",
     "upload_recording",
     "process_recording",
+    "list_folders",
 }
 
 
-def test_server_exposes_five_tools():
+def test_server_exposes_expected_tools():
     assert {t.name for t in _TOOLS} == _EXPECTED_TOOL_NAMES
+
+
+def test_server_list_folders_has_no_required_fields():
+    tool = next(t for t in _TOOLS if t.name == "list_folders")
+    assert "required" not in tool.inputSchema
 
 
 def test_server_browse_recordings_has_no_required_fields():

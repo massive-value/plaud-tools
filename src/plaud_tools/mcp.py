@@ -129,7 +129,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         def inner(client: PlaudClient) -> dict[str, Any]:
             include_set = set(include or [])
             need_transcript = bool(include_set & {"transcript", "speakers"})
-            detail = client.get_recording(recording_id, include_transcript=need_transcript)
+            need_summary = "summary" in include_set
+            detail = client.get_recording(
+                recording_id,
+                include_transcript=need_transcript,
+                include_summary=need_summary,
+            )
             output = _summarize_detail(detail)
             if "speakers" in include_set:
                 output["speakers"] = detail.speakers
@@ -246,12 +251,23 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def list_folders() -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            tags = client.list_file_tags()
+            return _json_result([
+                {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
+                for tag in tags
+            ])
+
+        return _call(get_client, inner)
+
     return {
         "browse_recordings": browse_recordings,
         "get_recording": get_recording,
         "mutate_recording": mutate_recording,
         "upload_recording": upload_recording,
         "process_recording": process_recording,
+        "list_folders": list_folders,
     }
 
 

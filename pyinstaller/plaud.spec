@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for plaud.exe (CLI).
 #
+# Build prerequisite: refresh PE VERSIONINFO from plaud_tools.__version__
+#   python pyinstaller/version_info.py
+#
 # Build from the repo root:
 #   pyinstaller pyinstaller/plaud.spec --distpath out/plaud-cli
 #
@@ -47,6 +50,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=True,
+    version=str(Path(SPECPATH) / 'version_info_plaud.txt'),
 )
 
 coll = COLLECT(
