@@ -27,7 +27,7 @@ from .errors import PlaudApiError, PlaudSessionExpiredError
 from .session import PlaudSession, SessionManager, SessionStore
 
 APP_NAME = "Plaud Tools"
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 GITHUB_REPO = "massive-value/plaud-tools"
 
 
@@ -65,8 +65,20 @@ def _mcp_exe() -> str:
 # ---------------------------------------------------------------------------
 
 def _assets_path() -> Path:
+    # PyInstaller (onefile + onedir 6+) exposes data files via sys._MEIPASS,
+    # which points at _internal/ for onedir. The exe-parent fallback covers
+    # older PyInstaller layouts where data files sat next to the exe.
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "assets"
+        meipass = getattr(sys, "_MEIPASS", None)
+        candidates = []
+        if meipass:
+            candidates.append(Path(meipass) / "assets")
+        candidates.append(Path(sys.executable).parent / "assets")
+        candidates.append(Path(sys.executable).parent / "_internal" / "assets")
+        for c in candidates:
+            if c.exists():
+                return c
+        return candidates[0]
     return Path(__file__).parent / "assets"
 
 
@@ -247,31 +259,52 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
 
 
 class WizardWindow:
-    def __init__(self, root: tk.Tk, on_done: Callable) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        on_done: Callable,
+        on_test_connection: Callable[[Callable[[bool, str], None]], None],
+        on_sign_out: Callable[[], None],
+        get_session_label: Callable[[], str],
+    ) -> None:
         self._root = root
         self._on_done = on_done
+        self._on_test_connection = on_test_connection
+        self._on_sign_out = on_sign_out
+        self._get_session_label = get_session_label
         self._win: tk.Toplevel | None = None
         self._row_widgets: dict[str, dict[str, object]] = {}
         self._help_var: tk.StringVar | None = None
+        self._session_var: tk.StringVar | None = None
+        self._test_btn: ttk.Button | None = None
 
     def show(self) -> None:
         if self._win and self._win.winfo_exists():
             self._win.lift()
             self._win.focus_force()
+            self._refresh_session_label()
             self._render()
             return
 
         win = tk.Toplevel(self._root)
-        win.title(f"{APP_NAME} — AI client setup")
+        win.title(f"{APP_NAME} — Status & AI clients")
         win.resizable(False, False)
-        win.geometry("440x320")
+        win.geometry("460x400")
         self._win = win
 
         frame = ttk.Frame(win, padding=16)
         frame.pack(fill="both", expand=True)
 
+        # Signed-in header
+        self._session_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self._session_var,
+                  font=("", 10, "bold")).pack(anchor="w")
+        self._refresh_session_label()
+
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=8)
+
         ttk.Label(frame, text="Connect Plaud to your AI clients:",
-                  font=("", 10, "bold")).pack(anchor="w", pady=(0, 8))
+                  font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
         rows_frame = ttk.Frame(frame)
         rows_frame.pack(fill="x")
@@ -290,16 +323,70 @@ class WizardWindow:
 
         self._help_var = tk.StringVar()
         help_label = ttk.Label(frame, textvariable=self._help_var,
-                               foreground="#15803d", wraplength=400, justify="left")
-        help_label.pack(anchor="w", pady=(12, 0))
+                               foreground="#15803d", wraplength=420, justify="left")
+        help_label.pack(anchor="w", pady=(8, 0))
 
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(anchor="e", pady=(8, 0))
-        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side="right")
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
+
+        # Action row: Test connection + Sign out on the left, Close on the right.
+        action_row = ttk.Frame(frame)
+        action_row.pack(fill="x")
+
+        self._test_btn = ttk.Button(action_row, text="Test connection",
+                                    command=self._handle_test)
+        self._test_btn.pack(side="left")
+
+        ttk.Button(action_row, text="Sign out",
+                   command=self._handle_sign_out).pack(side="left", padx=8)
+
+        ttk.Button(action_row, text="Close",
+                   command=win.destroy).pack(side="right")
 
         win.lift()
         win.focus_force()
         self._render()
+
+    # --- session header ---
+
+    def _refresh_session_label(self) -> None:
+        if self._session_var is not None:
+            self._session_var.set(self._get_session_label())
+
+    # --- action handlers ---
+
+    def _handle_test(self) -> None:
+        if self._test_btn is None:
+            return
+        self._test_btn.configure(state="disabled", text="Testing…")
+
+        def _done(ok: bool, msg: str) -> None:
+            if self._test_btn is None:
+                return
+            self._test_btn.configure(
+                state="normal",
+                text="✓ OK" if ok else "Failed",
+            )
+            if self._help_var is not None:
+                self._help_var.set(
+                    "Successfully connected to Plaud." if ok
+                    else f"Connection failed: {msg}"
+                )
+            # Reset label after a few seconds so the button is reusable.
+            def _reset() -> None:
+                if self._win and self._win.winfo_exists() and self._test_btn is not None:
+                    try:
+                        self._test_btn.configure(text="Test connection")
+                    except tk.TclError:
+                        pass
+            if self._win and self._win.winfo_exists():
+                self._win.after(3500, _reset)
+
+        self._on_test_connection(_done)
+
+    def _handle_sign_out(self) -> None:
+        self._on_sign_out()
+        if self._win and self._win.winfo_exists():
+            self._win.destroy()
 
     # --- helpers ---
 
@@ -418,6 +505,7 @@ class TrayApp:
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("Test connection", self._open_test_connection))
             items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard, default=True))
+            items.append(pystray.MenuItem("Open log folder", self._open_log_folder))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem(
                 "Start with Windows",
@@ -455,24 +543,35 @@ class TrayApp:
         self._tk(lambda: self._wizard_win.show() if self._wizard_win else None)
 
     def _open_test_connection(self) -> None:
-        self._tk(self._test_connection)
+        from tkinter import messagebox
 
-    def _test_connection(self) -> None:
+        def _show(ok: bool, msg: str) -> None:
+            if ok:
+                messagebox.showinfo(APP_NAME, msg, parent=self._root)
+            else:
+                messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)
+
+        self._tk(lambda: self._test_connection(_show))
+
+    def _test_connection(self, on_done: Callable[[bool, str], None]) -> None:
+        """Run get_user_info on a worker thread and deliver result on the tkinter thread."""
         def _worker() -> None:
             try:
                 PlaudClient(self._manager).get_user_info()
                 ok, msg = True, "Successfully connected to Plaud."
             except Exception as exc:
                 ok, msg = False, str(exc)
-            def _show() -> None:
-                from tkinter import messagebox
-                if ok:
-                    messagebox.showinfo(APP_NAME, msg, parent=self._root)
-                else:
-                    messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)
             if self._root:
-                self._root.after(0, _show)
+                self._root.after(0, lambda: on_done(ok, msg))
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _session_label(self) -> str:
+        if self._session is None:
+            return "Not signed in."
+        days = self._manager.days_until_expiry()
+        if days is None:
+            return f"Signed in as {self._session.email}."
+        return f"Signed in as {self._session.email}. Token valid for {days} days."
 
     def _sign_out(self) -> None:
         self._store.clear()
@@ -491,6 +590,15 @@ class TrayApp:
     def _open_url(self, url: str) -> None:
         import webbrowser
         webbrowser.open(url)
+
+    def _open_log_folder(self) -> None:
+        log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Plaud"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(str(log_dir))  # type: ignore[attr-defined]
+        else:
+            import webbrowser
+            webbrowser.open(log_dir.as_uri())
 
     # ------------------------------------------------------------------
     # Post-login flow
@@ -547,7 +655,13 @@ class TrayApp:
         self._root = root
 
         self._login_win = LoginWindow(root, self._store, self._on_login_success)
-        self._wizard_win = WizardWindow(root, lambda: None)
+        self._wizard_win = WizardWindow(
+            root,
+            on_done=lambda: None,
+            on_test_connection=self._test_connection,
+            on_sign_out=self._sign_out,
+            get_session_label=self._session_label,
+        )
 
         # Build tray icon
         state = self._tray_state()
