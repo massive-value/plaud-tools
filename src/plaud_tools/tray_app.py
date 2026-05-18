@@ -8,6 +8,8 @@ Entry point: plaud-tray (see pyproject.toml)
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 import threading
 import tkinter as tk
@@ -18,15 +20,33 @@ from typing import Callable
 import pystray
 from PIL import Image, ImageDraw
 
-from .ai_clients import CLIENTS, connect, connect_all, disconnect, disconnect_all, status_all
+from .ai_clients import CLIENTS, connect, connect_all, disconnect, status_all
 from .auth import PlaudAuth
-from .client import PlaudClient
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .session import PlaudSession, SessionManager, SessionStore
 
 APP_NAME = "Plaud Tools"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 GITHUB_REPO = "massive-value/plaud-tools"
+
+
+# ---------------------------------------------------------------------------
+# Logging (writes to %LOCALAPPDATA%\Plaud\tray.log in frozen builds)
+# ---------------------------------------------------------------------------
+
+def _setup_logging() -> None:
+    log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Plaud"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(log_dir / "tray.log"),
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(message)s",
+        encoding="utf-8",
+    )
+    # Also capture unhandled tkinter callback exceptions
+    def _tk_error(exc, val, tb):  # type: ignore[override]
+        logging.exception("tkinter callback error", exc_info=(exc, val, tb))
+    tk.Tk.report_callback_exception = _tk_error  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -153,8 +173,7 @@ class LoginWindow:
         win.title(f"{APP_NAME} — Sign in")
         win.resizable(False, False)
         win.geometry("340x220")
-        win.grab_set()
-        self._win = win
+        self._win = win  # set before widget build so partial state is always visible
 
         frame = ttk.Frame(win, padding=16)
         frame.pack(fill="both", expand=True)
@@ -195,6 +214,13 @@ class LoginWindow:
 
         btn.config(command=do_login)
         win.bind("<Return>", lambda _: do_login())
+
+        # Bring to front after the event loop has drawn the window, then grab.
+        # grab_set() requires the window to be "viewable"; deferring 50 ms
+        # ensures it is mapped before we attempt to grab.
+        win.lift()
+        win.focus_force()
+        win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +291,9 @@ class WizardWindow:
         ttk.Button(btn_frame, text="Apply", command=apply).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Close", command=close).pack(side="left")
 
+        win.lift()
+        win.focus_force()
+
 
 def _status_text(s: str) -> str:
     return {"not-detected": "not installed", "not-connected": "not connected",
@@ -334,7 +363,7 @@ class TrayApp:
         if self._session:
             items.append(pystray.MenuItem(f"Signed in as {self._session.email}", None, enabled=False))
             items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard))
+            items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard, default=True))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem(
                 "Start with Windows",
@@ -343,7 +372,7 @@ class TrayApp:
             ))
             items.append(pystray.MenuItem("Sign out", self._sign_out))
         else:
-            items.append(pystray.MenuItem("Sign in…", self._open_login))
+            items.append(pystray.MenuItem("Sign in…", self._open_login, default=True))
 
         items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem("Quit", self._quit))
@@ -422,6 +451,15 @@ class TrayApp:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
+        _setup_logging()
+        logging.info("Plaud Tools %s starting", APP_VERSION)
+        try:
+            self._run()
+        except Exception:
+            logging.exception("fatal error in TrayApp.run")
+            raise
+
+    def _run(self) -> None:
         self._load_session()
 
         # tkinter root (hidden — only Toplevels are shown)
