@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install ".[tray,dev]"
+
+      - name: Build plaud-mcp
+        run: pyinstaller pyinstaller/plaud-mcp.spec --distpath out/plaud-mcp --noconfirm
+
+      - name: Build PlaudTools tray
+        run: pyinstaller pyinstaller/plaud-tray.spec --distpath out/plaud-tray --noconfirm
+
+      - name: Download ffmpeg
+        run: |
+          Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp
+          $exe = Get-ChildItem ffmpeg-tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName out\plaud-mcp\plaud-mcp\ffmpeg.exe
+
+      - name: Assemble release directory
+        run: |
+          New-Item -ItemType Directory -Force out\plaud-tray\PlaudTools\mcp
+          Copy-Item -Recurse out\plaud-mcp\plaud-mcp\* out\plaud-tray\PlaudTools\mcp\
+
+      - name: Create zip
+        run: Compress-Archive -Path out\plaud-tray\PlaudTools -DestinationPath PlaudTools.zip
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PlaudTools.zip
+          generate_release_notes: true

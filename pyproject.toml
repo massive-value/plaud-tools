@@ -16,6 +16,7 @@ dependencies = [
 plaud = "plaud_tools.cli:main"
 pld = "plaud_tools.cli:main"
 plaud-mcp = "plaud_tools.server:main"
+plaud-tray = "plaud_tools.tray_app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -26,6 +27,7 @@ include = ["plaud_tools*"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6"]
+tray = ["pystray>=0.19", "Pillow>=10"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
