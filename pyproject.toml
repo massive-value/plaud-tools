@@ -27,7 +27,7 @@ include = ["plaud_tools*"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6"]
-tray = ["pystray>=0.19", "Pillow>=10"]
+tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

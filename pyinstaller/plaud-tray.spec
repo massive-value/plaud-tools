@@ -13,6 +13,7 @@
 #   Path(sys.executable).parent / "mcp" / "plaud-mcp.exe"
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
@@ -20,11 +21,16 @@ src = Path(SPECPATH).parent / 'src'
 _assets = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets')
 _icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico')
 
+# sv_ttk ships a Tcl theme file (sun-valley.tcl + sibling .tcl files) as
+# package data — collect it explicitly so the frozen build can apply the
+# theme at runtime.
+_sv_ttk_data = collect_data_files('sv_ttk')
+
 a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_tray_entry.py')],
     pathex=[str(src)],
     binaries=[],
-    datas=[(_assets, 'assets')],
+    datas=[(_assets, 'assets'), *_sv_ttk_data],
     hiddenimports=[
         # pystray selects its platform backend at runtime
         'pystray._win32',
@@ -40,6 +46,8 @@ a = Analysis(
         'keyring.core',
         # ai_clients imported inside tray_app at module level
         'plaud_tools.ai_clients',
+        # sv_ttk applies a Tcl theme at runtime
+        'sv_ttk',
         # pywin32 / win32 used by keyring and pystray on Windows
         'win32api',
         'win32con',

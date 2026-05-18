@@ -101,6 +101,25 @@ def _load_icons() -> dict[str, Image.Image]:
 
 
 # ---------------------------------------------------------------------------
+# Theme (Sun Valley via sv_ttk) — falls back silently to default ttk if the
+# dependency is missing so dev installs without the [tray] extras still run.
+# ---------------------------------------------------------------------------
+
+def _apply_theme(root: tk.Tk) -> None:
+    try:
+        import sv_ttk
+        sv_ttk.set_theme("light")
+    except Exception:
+        logging.warning("sv_ttk theme unavailable; falling back to default ttk", exc_info=True)
+        return
+    style = ttk.Style(root)
+    # Slightly larger default font and roomier button padding to match the
+    # Sun Valley look-and-feel.
+    style.configure(".", font=("Segoe UI", 10))
+    style.configure("TButton", padding=(12, 4))
+
+
+# ---------------------------------------------------------------------------
 # Single-instance lock (Windows only)
 # ---------------------------------------------------------------------------
 
@@ -289,7 +308,7 @@ class WizardWindow:
         win = tk.Toplevel(self._root)
         win.title(f"{APP_NAME} — Status & AI clients")
         win.resizable(False, False)
-        win.geometry("460x400")
+        win.geometry("460x430")
         self._win = win
 
         frame = ttk.Frame(win, padding=16)
@@ -315,7 +334,7 @@ class WizardWindow:
             name = ttk.Label(row, text=label, width=18)
             name.pack(side="left")
             badge_var = tk.StringVar()
-            badge = tk.Label(row, textvariable=badge_var)
+            badge = ttk.Label(row, textvariable=badge_var)
             badge.pack(side="left", padx=(0, 8))
             btn = ttk.Button(row, text="…", width=12)
             btn.pack(side="right")
@@ -341,6 +360,13 @@ class WizardWindow:
 
         ttk.Button(action_row, text="Close",
                    command=win.destroy).pack(side="right")
+
+        # Version footer — muted, bottom-right.
+        footer = ttk.Frame(frame)
+        footer.pack(fill="x", pady=(8, 0))
+        ttk.Label(footer, text=f"v{APP_VERSION}",
+                  foreground="#6b7280",
+                  font=("Segoe UI", 8)).pack(side="right")
 
         win.lift()
         win.focus_force()
@@ -652,6 +678,7 @@ class TrayApp:
         # tkinter root (hidden — only Toplevels are shown)
         root = tk.Tk()
         root.withdraw()
+        _apply_theme(root)
         self._root = root
 
         self._login_win = LoginWindow(root, self._store, self._on_login_success)
