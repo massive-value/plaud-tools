@@ -17,11 +17,13 @@ from pathlib import Path
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
 
+_assets = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets')
+
 a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_tray_entry.py')],
     pathex=[str(src)],
     binaries=[],
-    datas=[],
+    datas=[(_assets, 'assets')],
     hiddenimports=[
         # pystray selects its platform backend at runtime
         'pystray._win32',

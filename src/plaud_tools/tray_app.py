@@ -22,11 +22,12 @@ from PIL import Image, ImageDraw
 
 from .ai_clients import CLIENTS, connect, connect_all, disconnect, status_all
 from .auth import PlaudAuth
+from .client import PlaudClient
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .session import PlaudSession, SessionManager, SessionStore
 
 APP_NAME = "Plaud Tools"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 GITHUB_REPO = "massive-value/plaud-tools"
 
 
@@ -60,21 +61,31 @@ def _mcp_exe() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Icons (generated with Pillow — no asset files required)
+# Icons — loaded from bundled assets, Pillow circle as fallback
 # ---------------------------------------------------------------------------
 
-def _circle(color: str) -> Image.Image:
+def _assets_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "assets"
+    return Path(__file__).parent / "assets"
+
+
+def _load_icon(filename: str, fallback_color: str) -> Image.Image:
+    path = _assets_path() / filename
+    if path.exists():
+        return Image.open(path).convert("RGBA")
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([4, 4, 60, 60], fill=color)
+    ImageDraw.Draw(img).ellipse([4, 4, 60, 60], fill=fallback_color)
     return img
 
-_ICONS = {
-    "signed-out": _circle("#888888"),
-    "signed-in":  _circle("#27ae60"),
-    "expiring":   _circle("#f39c12"),
-    "expired":    _circle("#e74c3c"),
-}
+
+def _load_icons() -> dict[str, Image.Image]:
+    return {
+        "signed-out": _load_icon("tray-signed-out.png", "#888888"),
+        "signed-in":  _load_icon("tray-signed-in.png",  "#27ae60"),
+        "expiring":   _load_icon("tray-expiring.png",   "#f39c12"),
+        "expired":    _load_icon("tray-expired.png",    "#e74c3c"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +329,7 @@ class TrayApp:
         self._update_info: tuple[str, str] | None = None
         self._login_win: LoginWindow | None = None
         self._wizard_win: WizardWindow | None = None
+        self._icons: dict[str, Image.Image] = {}
 
     # ------------------------------------------------------------------
     # Session helpers
@@ -363,6 +375,7 @@ class TrayApp:
         if self._session:
             items.append(pystray.MenuItem(f"Signed in as {self._session.email}", None, enabled=False))
             items.append(pystray.Menu.SEPARATOR)
+            items.append(pystray.MenuItem("Test connection", self._open_test_connection))
             items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard, default=True))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem(
@@ -382,7 +395,7 @@ class TrayApp:
         if self._icon is None:
             return
         state = self._tray_state()
-        self._icon.icon = _ICONS[state]
+        self._icon.icon = self._icons[state]
         self._icon.title = f"{APP_NAME} — {state.replace('-', ' ')}"
         self._icon.menu = self._make_menu()
 
@@ -399,6 +412,26 @@ class TrayApp:
 
     def _open_wizard(self) -> None:
         self._tk(lambda: self._wizard_win.show() if self._wizard_win else None)
+
+    def _open_test_connection(self) -> None:
+        self._tk(self._test_connection)
+
+    def _test_connection(self) -> None:
+        def _worker() -> None:
+            try:
+                PlaudClient(self._manager).get_user_info()
+                ok, msg = True, "Successfully connected to Plaud."
+            except Exception as exc:
+                ok, msg = False, str(exc)
+            def _show() -> None:
+                from tkinter import messagebox
+                if ok:
+                    messagebox.showinfo(APP_NAME, msg, parent=self._root)
+                else:
+                    messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)
+            if self._root:
+                self._root.after(0, _show)
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _sign_out(self) -> None:
         self._store.clear()
@@ -461,6 +494,8 @@ class TrayApp:
 
     def _run(self) -> None:
         self._load_session()
+        self._icons = _load_icons()
+        logging.debug("icons loaded from %s", _assets_path())
 
         # tkinter root (hidden — only Toplevels are shown)
         root = tk.Tk()
@@ -474,7 +509,7 @@ class TrayApp:
         state = self._tray_state()
         self._icon = pystray.Icon(
             APP_NAME,
-            _ICONS[state],
+            self._icons[state],
             f"{APP_NAME}",
             menu=self._make_menu(),
         )
