@@ -25,7 +25,7 @@ The TypeScript prior art has been removed. The `har-captures/` directory contain
 
 ### Issue tracker
 
-Issues and PRDs for this repo live as local markdown files under `docs/issues/`. See `docs/agents/issue-tracker.md`.
+Issues and PRDs for this repo live on GitHub Issues at https://github.com/massive-value/plaud-tools/issues. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

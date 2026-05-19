@@ -1,19 +1,18 @@
-# Issue Tracker: Local Markdown
+# Issue Tracker: GitHub Issues
 
-Issues and PRDs for this repo live as markdown files in `docs/issues/`.
+Issues and PRDs for this repo live on GitHub Issues at https://github.com/massive-value/plaud-tools/issues.
 
 ## Conventions
 
-- One feature per directory: `docs/issues/<feature-slug>/`
-- The PRD is `docs/issues/<feature-slug>/PRD.md`
-- Implementation issues are `docs/issues/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
-- Triage state is recorded as a `Status:` line near the top of each issue file
-- Notes and follow-up conversation append under a `## Comments` heading when needed
+- One issue per vertical slice of work
+- Triage state is recorded via labels (see `triage-labels.md`)
+- Related work is grouped using milestones
+- "Blocked by" relationships are recorded in the issue body as `Blocked by #N`, not as a label
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `docs/issues/<feature-slug>/`, creating the directory if needed.
+Create a new GitHub issue with `gh issue create -R massive-value/plaud-tools` (or the web UI), applying the appropriate triage label and milestone.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the referenced markdown file directly.
+Use `gh issue view <number> -R massive-value/plaud-tools` (or the web URL).
