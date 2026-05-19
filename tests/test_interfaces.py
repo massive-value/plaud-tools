@@ -41,6 +41,28 @@ class StubClient:
             ),
         ]
 
+    def merge_recordings(self, ids: list[str], filename: str):
+        from plaud_tools.models import RecordingDetail
+        return RecordingDetail(
+            id="merged1",
+            filename=filename,
+            start_time=1_745_000_000_000,
+            duration=900_000,
+            folder_id=None,
+            is_trash=False,
+            is_trans=False,
+            is_summary=False,
+            scene=None,
+            transcript="",
+            ai_content=None,
+            extra_data={},
+            raw={},
+        )
+
+    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+        from plaud_tools.models import Recording
+        return Recording(id="uploaded1", filename=filename, start_time=start_time or 0, duration=0, is_trash=False, is_trans=False, is_summary=False, filetag_id_list=[], raw={})
+
     def get_recording(self, recording_id, include_transcript=False, include_summary=False):
         return RecordingDetail(
             id=recording_id,
@@ -92,6 +114,15 @@ class StubClient:
         self.rename_speaker_call = (recording_id, original_label, new_name)
         return {"segments_updated": 7}
 
+    def wait_for_transcription(self, recording_id, **kwargs):
+        pass
+
+    def wait_for_summary(self, recording_id, **kwargs):
+        pass
+
+    def dump_raw_detail(self, recording_id):
+        return {"file_id": recording_id, "file_name": "meeting", "content_list": [], "extra_data": {}}
+
     def transcribe_and_summarize(self, recording_id, template_type=None, language=None, diarization=None, llm=None):
         self.transcribe_call = (recording_id, template_type, language, diarization, llm)
 
@@ -117,13 +148,15 @@ class StubClient:
 # --- CLI tests ---
 
 def test_cli_list_shapes_output():
+    from datetime import datetime
+    expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
     output = run_cli(["list", "--limit", "2"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
             "id": "r1",
             "title": "meeting",
-            "date": "2025-04-30T08:00",
+            "date": expected_date,
             "duration_minutes": 10,
             "has_transcript": True,
             "folder_id": "tag1",
@@ -167,13 +200,15 @@ def test_cli_list_filters_query_and_unfiled():
 
 
 def test_cli_trash_no_arg_lists_trash():
+    from datetime import datetime
+    expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
     output = run_cli(["trash"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
             "id": "t1",
             "title": "old meeting",
-            "date": "2025-04-30T08:00",
+            "date": expected_date,
             "duration_minutes": 10,
             "has_transcript": False,
             "folder_id": None,
@@ -250,13 +285,15 @@ def test_cli_move_to_folder_supports_clear():
 
 
 def test_cli_trash_list_returns_curated_items():
+    from datetime import datetime
+    expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
     output = run_cli(["trash"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
             "id": "t1",
             "title": "old meeting",
-            "date": "2025-04-30T08:00",
+            "date": expected_date,
             "duration_minutes": 10,
             "has_transcript": False,
             "folder_id": None,
@@ -415,16 +452,16 @@ def test_mcp_browse_recordings_returns_curated_list():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["browse_recordings"](limit=2)
     payload = json.loads(result["content"][0]["text"])
-    assert payload == [
-        {
-            "id": "r1",
-            "title": "meeting",
-            "date": "2025-04-30T08:00",
-            "duration_minutes": 10,
-            "has_transcript": True,
-            "folder_id": "tag1",
-        }
-    ]
+    assert len(payload) == 1
+    item = payload[0]
+    assert item["id"] == "r1"
+    assert item["title"] == "meeting"
+    assert item["duration_minutes"] == 10
+    assert item["has_transcript"] is True
+    assert item["folder_id"] == "tag1"
+    # date is local time — just check shape, not exact value
+    assert len(item["date"]) == 16
+    assert item["date"][4] == "-" and item["date"][7] == "-" and item["date"][10] == "T"
 
 
 def test_mcp_browse_recordings_filters_by_since_and_folder():
@@ -432,6 +469,16 @@ def test_mcp_browse_recordings_filters_by_since_and_folder():
     result = handlers["browse_recordings"](since="2025-04-01T00:00:00Z", folder="tag1")
     payload = json.loads(result["content"][0]["text"])
     assert [item["id"] for item in payload] == ["r1"]
+
+
+def test_mcp_browse_recordings_date_only_until_includes_full_day():
+    # until="2025-04-30" must include recordings that fall anywhere on that day,
+    # not just at midnight (regression: was parsed as start-of-day, excluding all non-midnight times)
+    handlers = build_handlers(lambda: StubClient())
+    result = handlers["browse_recordings"](until="2025-04-30")
+    payload = json.loads(result["content"][0]["text"])
+    ids = [item["id"] for item in payload]
+    assert "r1" in ids
 
 
 def test_mcp_browse_recordings_reports_invalid_dates():
@@ -594,6 +641,7 @@ class UploadStubClient(StubClient):
         self.upload_call = None
         self.transcribe_call = None
         self.wait_call = None
+        self.summary_wait_call = None
         self.merge_call = None
 
     def upload_recording(self, data, filename, file_type, **kwargs):
@@ -605,6 +653,9 @@ class UploadStubClient(StubClient):
 
     def wait_for_transcription(self, recording_id, **kwargs):
         self.wait_call = recording_id
+
+    def wait_for_summary(self, recording_id, **kwargs):
+        self.summary_wait_call = recording_id
 
     def merge_recordings(self, ids, filename, **kwargs):
         self.merge_call = (ids, filename)
@@ -625,6 +676,7 @@ def test_cli_upload_mp3_triggers_transcription(tmp_path):
     assert client.upload_call[2] == "MP3"
     assert client.transcribe_call == "new-rec"
     assert client.wait_call == "new-rec"
+    assert client.summary_wait_call == "new-rec"
 
 
 def test_cli_upload_with_title_and_detach(tmp_path):
@@ -665,6 +717,7 @@ class MutateStub(StubClient):
         self.upload_call = None
         self.transcribe_call = None
         self.wait_call = None
+        self.summary_wait_call = None
 
     def upload_recording(self, data, filename, file_type, **kwargs):
         self.upload_call = (filename, file_type)
@@ -675,6 +728,9 @@ class MutateStub(StubClient):
 
     def wait_for_transcription(self, recording_id, **kwargs):
         self.wait_call = recording_id
+
+    def wait_for_summary(self, recording_id, **kwargs):
+        self.summary_wait_call = recording_id
 
 
 def test_mcp_upload_recording_returns_ok(tmp_path):
@@ -717,3 +773,143 @@ def test_mcp_process_recording_triggers_and_polls():
     assert payload["recording_id"] == "rec1"
     assert client.transcribe_call == "rec1"
     assert client.wait_call == "rec1"
+    assert client.summary_wait_call == "rec1"
+
+
+def test_mcp_merge_recordings_returns_summary():
+    handlers = build_handlers(lambda: StubClient())
+    result = handlers["merge_recordings"](recording_ids=["r1", "r2"], title="Combined")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["id"] == "merged1"
+    assert payload["title"] == "Combined"
+    assert payload["is_trans"] is False
+
+
+def test_mcp_upload_recording_passes_timestamp(tmp_path):
+    captured = {}
+
+    class TimestampCapturingClient(StubClient):
+        def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+            captured["start_time"] = start_time
+            captured["timezone_offset"] = timezone_offset
+            return super().upload_recording(data, filename, file_type)
+
+    fake_mp3 = tmp_path / "test.mp3"
+    fake_mp3.write_bytes(b"\xff\xfb" + b"\x00" * 100)
+    handlers = build_handlers(lambda: TimestampCapturingClient())
+    handlers["upload_recording"](file_path=str(fake_mp3), start_time=1735732800000, timezone_offset=-7.0)
+    assert captured["start_time"] == 1735732800000
+    assert captured["timezone_offset"] == -7.0
+
+
+# --- new tests for items added this session ---
+
+def test_cli_upload_skip_summary_does_not_call_wait_for_summary(tmp_path):
+    mp3_file = tmp_path / "test.mp3"
+    mp3_file.write_bytes(b"fake mp3 data")
+    client = UploadStubClient()
+    output = run_cli(["upload", str(mp3_file), "--skip-summary"], client)
+    payload = json.loads(output)
+    assert payload["transcribed"] is True
+    assert client.wait_call == "new-rec"
+    assert client.summary_wait_call is None
+
+
+def test_cli_upload_start_time_as_iso_string(tmp_path):
+    captured = {}
+
+    class IsoCapturingClient(UploadStubClient):
+        def upload_recording(self, data, filename, file_type, *, start_time=None, **kwargs):
+            captured["start_time"] = start_time
+            return super().upload_recording(data, filename, file_type)
+
+    mp3_file = tmp_path / "test.mp3"
+    mp3_file.write_bytes(b"fake mp3 data")
+    run_cli(["upload", str(mp3_file), "--start-time", "2026-01-01T10:00:00"], IsoCapturingClient())
+    assert isinstance(captured["start_time"], int)
+    assert captured["start_time"] > 0
+
+
+def test_cli_upload_start_time_as_epoch_int(tmp_path):
+    captured = {}
+
+    class EpochCapturingClient(UploadStubClient):
+        def upload_recording(self, data, filename, file_type, *, start_time=None, **kwargs):
+            captured["start_time"] = start_time
+            return super().upload_recording(data, filename, file_type)
+
+    mp3_file = tmp_path / "test.mp3"
+    mp3_file.write_bytes(b"fake mp3 data")
+    run_cli(["upload", str(mp3_file), "--start-time", "1735732800000"], EpochCapturingClient())
+    assert captured["start_time"] == 1735732800000
+
+
+def test_mcp_upload_recording_start_time_as_iso_string(tmp_path):
+    captured = {}
+
+    class IsoCapturingClient(StubClient):
+        def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+            captured["start_time"] = start_time
+            return super().upload_recording(data, filename, file_type)
+
+    fake_mp3 = tmp_path / "test.mp3"
+    fake_mp3.write_bytes(b"\xff\xfb" + b"\x00" * 100)
+    handlers = build_handlers(lambda: IsoCapturingClient())
+    handlers["upload_recording"](file_path=str(fake_mp3), start_time="2026-01-01T10:00:00")
+    assert isinstance(captured["start_time"], int)
+    assert captured["start_time"] > 0
+
+
+def test_cli_dump_returns_raw_json():
+    client = StubClient()
+    output = run_cli(["dump", "rec1"], client)
+    payload = json.loads(output)
+    assert payload["file_id"] == "rec1"
+
+
+def test_extract_inline_summary_handles_dict_data_content():
+    from plaud_tools.client import PlaudClient
+    from plaud_tools.session import SessionStore, SessionManager
+
+    client = PlaudClient(SessionManager(SessionStore()))
+    raw = {
+        "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
+        "pre_download_content_list": [
+            {"data_id": "d1", "data_type": "auto_sum_note", "data_content": {"ai_content": "summary text"}}
+        ],
+    }
+    result = client._extract_inline_summary(raw, "d1")
+    assert result == "summary text"
+
+
+def test_extract_inline_summary_fallback_by_data_type():
+    from plaud_tools.client import PlaudClient
+    from plaud_tools.session import SessionStore, SessionManager
+
+    client = PlaudClient(SessionManager(SessionStore()))
+    raw = {
+        "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
+        "pre_download_content_list": [
+            # data_id doesn't match "d1" — should fall back to data_type match
+            {"data_id": "d99", "data_type": "auto_sum_note", "data_content": '{"ai_content": "fallback summary"}'}
+        ],
+    }
+    result = client._extract_inline_summary(raw, "d1")
+    assert result == "fallback summary"
+
+
+def test_fetch_summary_from_data_link_handles_plain_text():
+    from plaud_tools.client import PlaudClient
+    from plaud_tools.session import SessionStore, SessionManager
+    from plaud_tools.transport import HttpResponse
+
+    class PlainTextTransport:
+        def request(self, method, url, headers, body=None):
+            return HttpResponse(status_code=200, body=b"# My Summary\n\nContent here.", headers={})
+
+    client = PlaudClient(SessionManager(SessionStore()), transport=PlainTextTransport())
+    raw = {
+        "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_link": "https://cdn.example.com/summary.txt"}]
+    }
+    result = client._fetch_summary_from_data_link(raw)
+    assert result == "# My Summary\n\nContent here."

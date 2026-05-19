@@ -129,6 +129,14 @@ _TOOLS: list[types.Tool] = [
                     "type": "string",
                     "description": "Folder to assign the recording to after upload",
                 },
+                "start_time": {
+                    "type": ["integer", "string"],
+                    "description": "Recording timestamp: millisecond epoch integer (e.g. 1735732800000) or ISO 8601 string (e.g. '2026-01-01T10:00:00'). Defaults to now.",
+                },
+                "timezone_offset": {
+                    "type": "number",
+                    "description": "UTC offset in hours (e.g. -7.0 for MDT). Defaults to local system offset.",
+                },
             },
             "required": ["file_path"],
         },
@@ -148,7 +156,7 @@ _TOOLS: list[types.Tool] = [
         name="process_recording",
         description=(
             "Trigger transcription and summarization for a recording, "
-            "then block until the job completes."
+            "then block until both the transcript and summary jobs complete."
         ),
         inputSchema={
             "type": "object",
@@ -156,11 +164,11 @@ _TOOLS: list[types.Tool] = [
                 "recording_id": {"type": "string"},
                 "template_type": {
                     "type": "string",
-                    "description": "Summary template name",
+                    "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING'). Defaults to AUTO-SELECT.",
                 },
                 "language": {
                     "type": "string",
-                    "description": "Transcript language code (e.g. en-US)",
+                    "description": "Transcript language as BCP-47 primary subtag (e.g. 'en', 'zh'). Use 'auto' for auto-detect.",
                 },
                 "diarization": {
                     "type": "boolean",
@@ -172,6 +180,29 @@ _TOOLS: list[types.Tool] = [
                 },
             },
             "required": ["recording_id"],
+        },
+    ),
+    types.Tool(
+        name="merge_recordings",
+        description=(
+            "Merge two or more recordings into a single new recording. "
+            "Blocks until the merge job completes and returns the merged recording summary. "
+            "Note: Plaud assigns the earliest source recording's timestamp to the merged artifact."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recording_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "IDs of recordings to merge, in the desired order (minimum 2)",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Title for the merged recording",
+                },
+            },
+            "required": ["recording_ids", "title"],
         },
     ),
 ]

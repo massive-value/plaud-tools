@@ -4,7 +4,7 @@ import argparse
 import getpass
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -95,10 +95,16 @@ def build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("--title")
     upload_cmd.add_argument("--folder-id")
     upload_cmd.add_argument("--detach", action="store_true", help="Return immediately without waiting for transcription")
+    upload_cmd.add_argument("--skip-summary", action="store_true", help="Wait for transcript only, not summary")
+    upload_cmd.add_argument("--start-time", help="Recording timestamp as millisecond epoch integer or ISO 8601 string")
+    upload_cmd.add_argument("--timezone-offset", type=float, help="UTC offset in hours (e.g. -7.0)")
 
     merge_cmd = sub.add_parser("merge")
     merge_cmd.add_argument("recording_ids", nargs="+")
     merge_cmd.add_argument("--title", required=True)
+
+    dump_cmd = sub.add_parser("dump", help="Dump raw /file/detail API response for debugging")
+    dump_cmd.add_argument("recording_id")
 
     login_cmd = sub.add_parser("login")
     login_cmd.add_argument("--email", required=True)
@@ -122,10 +128,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _parse_isoish(value: str, flag: str) -> int:
+def _parse_isoish(value: str, flag: str, *, end_of_day: bool = False) -> int:
     try:
         normalized = value.replace("Z", "+00:00")
-        return int(datetime.fromisoformat(normalized).timestamp() * 1000)
+        dt = datetime.fromisoformat(normalized)
+        if end_of_day and "T" not in value:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return int(dt.timestamp() * 1000)
     except ValueError as exc:
         raise ValueError(f"Invalid {flag} value: {value}") from exc
 
@@ -223,7 +232,7 @@ def run_cli(
     if args.command == "list":
         has_filters = bool(args.since or args.until or args.query or args.folder_id or args.unfiled)
         since_ms = _parse_isoish(args.since, "--since") if args.since else None
-        until_ms = _parse_isoish(args.until, "--until") if args.until else None
+        until_ms = _parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
         if has_filters:
             recordings = client.list_recordings()
             recordings = _filter_recordings(
@@ -242,7 +251,7 @@ def run_cli(
         return json.dumps([summarize_recording_for_cli(r) for r in recordings], indent=2)
     if args.command == "search":
         since_ms = _parse_isoish(args.since, "--since") if args.since else None
-        until_ms = _parse_isoish(args.until, "--until") if args.until else None
+        until_ms = _parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
         recordings = client.list_recordings()
         recordings = _filter_recordings(
             recordings,
@@ -275,7 +284,7 @@ def run_cli(
             {
                 "id": detail.id,
                 "title": detail.filename,
-                "date": datetime.fromtimestamp(detail.start_time / 1000, tz=timezone.utc).isoformat()[:16],
+                "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
                 "duration_minutes": round(detail.duration / 60000),
                 "folder_id": detail.folder_id,
                 "is_trans": detail.is_trans,
@@ -286,7 +295,7 @@ def run_cli(
             indent=2,
         )
     if args.command == "summary":
-        detail = client.get_recording(args.recording_id)
+        detail = client.get_recording(args.recording_id, include_summary=True)
         if not detail.ai_content:
             return json.dumps({"recording_id": args.recording_id, "summary": None, "note": "No summary available."}, indent=2)
         return json.dumps({"recording_id": args.recording_id, "summary": detail.ai_content}, indent=2)
@@ -363,7 +372,17 @@ def run_cli(
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
         title = args.title or path.stem
-        recording = client.upload_recording(audio_data, title, file_type)
+        start_ms: int | None = None
+        if args.start_time is not None:
+            raw_st = str(args.start_time)
+            if "-" in raw_st or "T" in raw_st:
+                start_ms = _parse_isoish(raw_st, "--start-time")
+            else:
+                try:
+                    start_ms = int(raw_st)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
+        recording = client.upload_recording(audio_data, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset)
         if args.folder_id:
             client.set_recording_folder(recording.id, args.folder_id)
         result: dict = {
@@ -375,6 +394,8 @@ def run_cli(
         if not args.detach:
             client.transcribe_and_summarize(recording.id)
             client.wait_for_transcription(recording.id)
+            if not args.skip_summary:
+                client.wait_for_summary(recording.id)
             result["transcribed"] = True
         else:
             result["detached"] = True
@@ -419,6 +440,10 @@ def run_cli(
             ],
             indent=2,
         )
+    if args.command == "dump":
+        raw = client.dump_raw_detail(args.recording_id)
+        return json.dumps(raw, indent=2)
+
     if args.command == "ping":
         client = client or _build_runtime_client(store)
         client.get_user_info()

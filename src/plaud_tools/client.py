@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -231,6 +231,28 @@ class PlaudClient:
                 return
             time.sleep(poll_interval_s)
 
+    def wait_for_summary(
+        self,
+        recording_id: str,
+        *,
+        timeout_s: float = 600.0,
+        poll_interval_s: float = 5.0,
+    ) -> None:
+        """Poll get_recording() until is_summary is True or timeout elapses."""
+        deadline = time.time() + timeout_s
+        while True:
+            if time.time() >= deadline:
+                raise PlaudApiError(f"summary timed out after {int(timeout_s)}s")
+            detail = self.get_recording(recording_id)
+            if detail.is_summary:
+                return
+            time.sleep(poll_interval_s)
+
+    def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
+        """Return the raw /file/detail payload for debugging."""
+        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
+        return data.get("data", data)
+
     def edit_transcript(self, recording_id: str, segments: list[dict[str, Any]]) -> None:
         self._request_json(
             "PATCH",
@@ -307,6 +329,10 @@ class PlaudClient:
         diarization: bool | None = None,
         llm: str | None = None,
     ) -> None:
+        if template_type and template_type.lower() == "default":
+            template_type = "AUTO-SELECT"
+        if language and "-" in language:
+            language = language.split("-")[0]
         info = json.dumps(
             {
                 "language": language or "auto",
@@ -460,20 +486,40 @@ class PlaudClient:
         )
 
     def _extract_inline_summary(self, raw: dict[str, Any], auto_sum_data_id: str | None) -> str | None:
-        if not auto_sum_data_id:
+        def _parse_summary_obj(obj: dict[str, Any]) -> str | None:
+            for key in ("ai_content", "content", "text", "markdown"):
+                val = obj.get(key)
+                if isinstance(val, str) and val:
+                    return val
             return None
-        for item in raw.get("pre_download_content_list") or []:
-            if item.get("data_id") != auto_sum_data_id:
-                continue
+
+        def _try_item(item: dict[str, Any]) -> str | None:
             data_content = item.get("data_content")
-            if not isinstance(data_content, str) or not data_content:
-                return None
-            try:
-                parsed = json.loads(data_content)
-            except json.JSONDecodeError:
-                return None
-            ai_content = parsed.get("ai_content")
-            return ai_content if isinstance(ai_content, str) else None
+            if isinstance(data_content, dict):
+                return _parse_summary_obj(data_content)
+            if isinstance(data_content, str) and data_content:
+                try:
+                    parsed = json.loads(data_content)
+                    if isinstance(parsed, dict):
+                        return _parse_summary_obj(parsed)
+                    if isinstance(parsed, str):
+                        return parsed or None
+                except json.JSONDecodeError:
+                    return data_content or None
+            return None
+
+        pre_list = raw.get("pre_download_content_list") or []
+        # Primary: match by data_id
+        if auto_sum_data_id:
+            for item in pre_list:
+                if item.get("data_id") == auto_sum_data_id:
+                    return _try_item(item)
+        # Fallback: match by data_type when data_id didn't match (or wasn't available)
+        for item in pre_list:
+            if item.get("data_type") == "auto_sum_note":
+                result = _try_item(item)
+                if result is not None:
+                    return result
         return None
 
     def _fetch_summary_from_data_link(self, raw: dict[str, Any]) -> str | None:
@@ -494,17 +540,15 @@ class PlaudClient:
         try:
             body = response.json()
         except (ValueError, json.JSONDecodeError):
-            try:
-                text = response.body_decoded.decode("utf-8")
-            except (AttributeError, UnicodeDecodeError):
-                return None
+            text = response.text()
             return text or None
         if isinstance(body, str):
             return body or None
         if isinstance(body, dict):
-            ai_content = body.get("ai_content")
-            if isinstance(ai_content, str) and ai_content:
-                return ai_content
+            for key in ("ai_content", "content", "text", "markdown"):
+                val = body.get(key)
+                if isinstance(val, str) and val:
+                    return val
         return None
 
     def _fetch_transcript_segments(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -546,7 +590,7 @@ def summarize_recording_for_cli(recording: Recording) -> dict[str, Any]:
     return {
         "id": recording.id,
         "title": recording.filename,
-        "date": datetime.fromtimestamp(recording.start_time / 1000, tz=timezone.utc).isoformat()[:16],
+        "date": datetime.fromtimestamp(recording.start_time / 1000).isoformat()[:16],
         "duration_minutes": round(recording.duration / 60000),
         "has_transcript": recording.is_trans,
         "folder_id": recording.filetag_id_list[0] if recording.filetag_id_list else None,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,10 +32,13 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
         return _json_result({"error": str(exc)}, is_error=True)
 
 
-def _parse_isoish(value: str, field_name: str) -> int:
+def _parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> int:
     try:
         normalized = value.replace("Z", "+00:00")
-        return int(datetime.fromisoformat(normalized).timestamp() * 1000)
+        dt = datetime.fromisoformat(normalized)
+        if end_of_day and "T" not in value:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return int(dt.timestamp() * 1000)
     except ValueError as exc:
         raise ValueError(f"Invalid {field_name} value: {value}") from exc
 
@@ -60,7 +63,7 @@ def _summarize_recording(item: Any) -> dict[str, Any]:
     return {
         "id": item.id,
         "title": item.filename,
-        "date": datetime.fromtimestamp(item.start_time / 1000, tz=timezone.utc).isoformat()[:16],
+        "date": datetime.fromtimestamp(item.start_time / 1000).isoformat()[:16],
         "duration_minutes": round(item.duration / 60000),
         "has_transcript": item.is_trans,
         "folder_id": item.filetag_id_list[0] if item.filetag_id_list else None,
@@ -72,7 +75,7 @@ def _summarize_detail(detail: Any) -> dict[str, Any]:
     return {
         "id": detail.id,
         "title": detail.filename,
-        "date": datetime.fromtimestamp(detail.start_time / 1000, tz=timezone.utc).isoformat()[:16],
+        "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
         "duration_minutes": round(detail.duration / 60000),
         "folder_id": detail.folder_id,
         "is_trash": detail.is_trash,
@@ -95,7 +98,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             since_ms = _parse_isoish(since, "since") if since else None
-            until_ms = _parse_isoish(until, "until") if until else None
+            until_ms = _parse_isoish(until, "until", end_of_day=True) if until else None
             has_filters = any(value is not None for value in (since, until, query, folder))
             if has_filters:
                 items = client.list_recordings()
@@ -141,7 +144,10 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             if "transcript" in include_set:
                 output["transcript"] = detail.transcript
             if "summary" in include_set:
-                output["summary"] = detail.ai_content
+                if detail.ai_content is None and detail.is_summary:
+                    output["summary"] = "(summary exists on Plaud but could not be fetched)"
+                else:
+                    output["summary"] = detail.ai_content
             return _json_result(output)
 
         return _call(get_client, inner)
@@ -199,6 +205,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         file_path: str,
         title: str | None = None,
         folder_id: str | None = None,
+        start_time: int | str | None = None,
+        timezone_offset: float | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             from .transcode import get_file_type, transcode_to_mp3
@@ -213,7 +221,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             raw_bytes = path.read_bytes()
             audio_data = transcode_to_mp3(raw_bytes, path.suffix) if needs_transcode else raw_bytes
             rec_title = title or path.stem
-            recording = client.upload_recording(audio_data, rec_title, file_type)
+            start_ms: int | None = None
+            if isinstance(start_time, str):
+                start_ms = _parse_isoish(start_time, "start_time")
+            elif isinstance(start_time, int):
+                start_ms = start_time
+            recording = client.upload_recording(audio_data, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset)
             if folder_id:
                 client.set_recording_folder(recording.id, folder_id)
             return _json_result({
@@ -241,6 +254,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 llm=llm,
             )
             client.wait_for_transcription(recording_id)
+            client.wait_for_summary(recording_id)
             detail = client.get_recording(recording_id)
             return _json_result({
                 "ok": True,
@@ -261,6 +275,16 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def merge_recordings(
+        recording_ids: list[str],
+        title: str,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            detail = client.merge_recordings(recording_ids, title)
+            return _json_result(_summarize_detail(detail))
+
+        return _call(get_client, inner)
+
     return {
         "browse_recordings": browse_recordings,
         "get_recording": get_recording,
@@ -268,6 +292,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "upload_recording": upload_recording,
         "process_recording": process_recording,
         "list_folders": list_folders,
+        "merge_recordings": merge_recordings,
     }
 
 
