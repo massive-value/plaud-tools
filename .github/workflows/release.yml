@@ -55,7 +55,8 @@ jobs:
           New-Item -ItemType Directory -Force out\plaud-tray\PlaudTools\mcp
           Copy-Item -Recurse out\plaud-mcp\plaud-mcp\* out\plaud-tray\PlaudTools\mcp\
           New-Item -ItemType Directory -Force out\plaud-tray\PlaudTools\cli
-          Copy-Item -Recurse out\plaud-cli\plaud\* out\plaud-tray\PlaudTools\cli\
+          Copy-Item -Recurse out\plaud-cli\plaud-tools\* out\plaud-tray\PlaudTools\cli\
+          Copy-Item scripts\pt.cmd out\plaud-tray\PlaudTools\cli\pt.cmd
 
       - name: Create zip
         run: Compress-Archive -Path out\plaud-tray\PlaudTools -DestinationPath PlaudTools.zip

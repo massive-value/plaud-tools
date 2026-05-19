@@ -1,7 +1,7 @@
 # 01 — Add bundled CLI directory to PATH at install time
 
-Status: needs-triage
-Labels: needs-triage
+Status: implemented
+Labels: done
 
 ## Problem
 

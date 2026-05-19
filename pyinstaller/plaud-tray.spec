@@ -22,6 +22,7 @@ block_cipher = None
 src = Path(SPECPATH).parent / 'src'
 
 _assets = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets')
+_completions = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'completions')
 _icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico')
 
 # sv_ttk ships a Tcl theme file (sun-valley.tcl + sibling .tcl files) as
@@ -37,7 +38,7 @@ a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_tray_entry.py')],
     pathex=[str(src)],
     binaries=[],
-    datas=[(_assets, 'assets'), *_sv_ttk_data, *_plaud_metadata],
+    datas=[(_assets, 'assets'), (_completions, 'completions'), *_sv_ttk_data, *_plaud_metadata],
     hiddenimports=[
         # pystray selects its platform backend at runtime
         'pystray._win32',

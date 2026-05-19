@@ -1,0 +1,124 @@
+#compdef plaud-tools pt
+# plaud-tools zsh completions
+# Install: copy to a directory in your $fpath, e.g.:
+#   cp _plaud_tools ~/.zsh/completions/
+#   fpath=(~/.zsh/completions $fpath)
+#   autoload -U compinit && compinit
+
+_plaud_tools() {
+    local state line
+    typeset -A opt_args
+
+    _arguments \
+        '--version[Show version and exit]' \
+        '--help[Show help and exit]' \
+        '1: :->subcommand' \
+        '*:: :->args'
+
+    case $state in
+        subcommand)
+            local -a subcommands
+            subcommands=(
+                'list:List recordings'
+                'search:Search recordings by title'
+                'detail:Show full recording detail'
+                'show:Show recording summary'
+                'transcript:Fetch full transcript'
+                'summary:Fetch AI summary'
+                'rename:Rename a recording'
+                'folders:List folders'
+                'move-to-folder:Move recording to a folder'
+                'move:Move recording to a folder'
+                'rename-speaker:Rename a speaker in the transcript'
+                'transcribe:Trigger transcription and summarization'
+                'status:Show processing task status'
+                'trash:Trash a recording or list trash'
+                'restore:Restore a recording from trash'
+                'delete:Permanently delete a recording'
+                'trash-move:Move multiple recordings to trash'
+                'trash-restore:Restore multiple recordings from trash'
+                'upload:Upload a local audio file'
+                'merge:Merge recordings'
+                'login:Sign in to Plaud'
+                'session:Manage the stored session'
+                'ping:Test connectivity to Plaud'
+            )
+            _describe 'subcommand' subcommands
+            ;;
+        args)
+            case $line[1] in
+                list)
+                    _arguments \
+                        '--limit[Max results to return]:limit' \
+                        '--since[ISO 8601 start-date filter]:date' \
+                        '--until[ISO 8601 end-date filter]:date' \
+                        '--query[Title substring filter]:query' \
+                        '--folder-id[Folder ID filter]:folder_id' \
+                        '--unfiled[Only unfiled recordings]'
+                    ;;
+                search)
+                    _arguments \
+                        '--limit[Max results to return]:limit' \
+                        '--since[ISO 8601 start-date filter]:date' \
+                        '--until[ISO 8601 end-date filter]:date' \
+                        '--folder-id[Folder ID filter]:folder_id'
+                    ;;
+                detail)
+                    _arguments '--include-transcript[Include full transcript text]'
+                    ;;
+                transcribe)
+                    _arguments '--template[Summary template name]:template'
+                    ;;
+                delete)
+                    _arguments '--yes[Confirm permanent deletion without prompt]'
+                    ;;
+                upload)
+                    _arguments \
+                        '--title[Recording title (defaults to file stem)]:title' \
+                        '--folder-id[Folder to assign after upload]:folder_id' \
+                        '--detach[Return immediately without waiting for transcription]'
+                    ;;
+                merge)
+                    _arguments '--title[Title for the merged recording]:title'
+                    ;;
+                login)
+                    _arguments \
+                        '--email[Plaud account email]:email' \
+                        '--password[Plaud account password]:password' \
+                        '--region[API region]:region:(us eu)'
+                    ;;
+                session)
+                    local -a session_cmds
+                    session_cmds=(
+                        'show:Show current session details'
+                        'set:Set session from a token'
+                        'clear:Clear the stored session'
+                    )
+                    _arguments \
+                        '1: :->session_subcmd' \
+                        '*:: :->session_args'
+                    case $state in
+                        session_subcmd)
+                            _describe 'session subcommand' session_cmds
+                            ;;
+                        session_args)
+                            case $line[1] in
+                                show)
+                                    _arguments '--show-token[Print the full token instead of masking it]'
+                                    ;;
+                                set)
+                                    _arguments \
+                                        '--token[Access token]:token' \
+                                        '--region[API region]:region:(us eu)' \
+                                        '--email[Email to associate with the session]:email'
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_plaud_tools

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+from . import __version__
 from .auth import PlaudAuth
 from .client import PlaudClient, PlaudRecordingQuery, summarize_recording_for_cli
 from .errors import PlaudApiError, PlaudSessionExpiredError
@@ -16,6 +17,7 @@ from .session import PlaudSession, SessionManager, SessionStore
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="plaud-tools")
+    parser.add_argument("--version", action="version", version=f"plaud-tools {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_cmd = sub.add_parser("list")
