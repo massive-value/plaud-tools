@@ -13,6 +13,18 @@ plaud-tools is an unofficial Squire tool that bridges your existing Plaud accoun
 
 ## Install
 
+### Tray bundle (Windows)
+
+Unzip `PlaudTools.zip` anywhere (e.g. `%LOCALAPPDATA%\Programs\PlaudTools\`) and run `PlaudTools.exe`.
+
+On first launch the tray app:
+- Adds `PlaudTools\cli\` to your user `PATH` via `HKCU\Environment`, so `plaud-tools` and `pt` work from any new shell without manual PATH editing. No admin elevation required.
+- Sources `PlaudTools\completions\plaud-tools.ps1` from your PowerShell profile, enabling tab-completion for both `plaud-tools` and `pt`.
+
+Open a **new** PowerShell or cmd window after the first launch — the PATH change takes effect in new shells only.
+
+To remove the PATH entry manually: open **System Properties → Advanced → Environment Variables**, find the `Path` entry under "User variables", and remove the `PlaudTools\cli\` segment.
+
 ### From PyPI
 
 ```
@@ -27,12 +39,48 @@ cd plaud-tools
 pip install -e .
 ```
 
-Both install methods register two entry points:
+Both pip install methods register two entry points:
 
 | Command | Purpose |
 |---|---|
-| `plaud` / `pld` | CLI |
+| `plaud-tools` / `pt` | CLI |
 | `plaud-mcp` | MCP server process (stdio) |
+
+---
+
+## Shell completions
+
+### PowerShell (tray bundle)
+
+The tray app sources `completions\plaud-tools.ps1` from your `$PROFILE` automatically on first run. No manual step needed.
+
+### PowerShell (pip install)
+
+Locate `plaud-tools.ps1` inside the package and add a sourcing line to your profile:
+
+```powershell
+$ps1 = Join-Path (python -c "import plaud_tools, pathlib; print(pathlib.Path(plaud_tools.__file__).parent / 'completions' / 'plaud-tools.ps1')") ""
+Add-Content $PROFILE ". `"$ps1`""
+```
+
+Reload your profile or open a new shell: `plaud-tools <Tab>` will cycle through subcommands.
+
+### bash
+
+```bash
+source "$(python -c "import plaud_tools, pathlib; print(pathlib.Path(plaud_tools.__file__).parent / 'completions' / 'plaud-tools.bash')")"
+```
+
+Add the line above to your `~/.bashrc` to make it permanent.
+
+### zsh
+
+Copy `_plaud_tools` from the package to a directory on your `$fpath`:
+
+```zsh
+cp "$(python -c "import plaud_tools, pathlib; print(pathlib.Path(plaud_tools.__file__).parent / 'completions' / '_plaud_tools')")" ~/.zsh/completions/
+# ensure fpath includes ~/.zsh/completions before calling compinit
+```
 
 ---
 
@@ -41,7 +89,7 @@ Both install methods register two entry points:
 Log in once with the CLI before using anything else:
 
 ```
-plaud login --email you@example.com --region us
+plaud-tools login --email you@example.com --region us
 ```
 
 Region choices: `us` or `eu`. If you pick the wrong one, the client auto-detects and switches on the first API call.
@@ -53,13 +101,13 @@ If you only ever signed up via Google OAuth and don't have a Plaud password, use
 The session (JWT) is stored in the OS keyring when available, with a fallback to `~/.config/plaud-tools/session.json` (mode 600). You can also inject a token via environment variables without touching the stored session:
 
 ```
-PLAUD_ACCESS_TOKEN=<token> PLAUD_REGION=us plaud list
+PLAUD_ACCESS_TOKEN=<token> PLAUD_REGION=us plaud-tools list
 ```
 
 ### Verify the session
 
 ```
-plaud session show
+plaud-tools session show
 ```
 
 This prints the stored email, region, and token expiry status. A `"status": "valid"` response means you're ready.
@@ -70,42 +118,42 @@ This prints the stored email, region, and token expiry status. A `"status": "val
 
 ```
 # List recent recordings (default: 20)
-plaud list
+plaud-tools list
 
 # List with filters
-plaud list --since 2025-01-01 --limit 10
-plaud list --query "meeting"
+plaud-tools list --since 2025-01-01 --limit 10
+plaud-tools list --query "meeting"
 
 # Show a recording (title, date, duration, speakers, headline)
-plaud show <recording-id>
+plaud-tools show <recording-id>
 
 # Fetch the full transcript
-plaud transcript <recording-id>
+plaud-tools transcript <recording-id>
 
 # Fetch the AI summary
-plaud summary <recording-id>
+plaud-tools summary <recording-id>
 
 # Rename a recording
-plaud rename <recording-id> "New title"
+plaud-tools rename <recording-id> "New title"
 
 # List folders
-plaud folders
+plaud-tools folders
 
 # Move a recording to a folder (use '-' to clear)
-plaud move <recording-id> <folder-id>
+plaud-tools move <recording-id> <folder-id>
 
 # Trash / restore
-plaud trash <recording-id>
-plaud restore <recording-id>
+plaud-tools trash <recording-id>
+plaud-tools restore <recording-id>
 
 # Upload a local audio file (transcodes non-native formats via ffmpeg)
-plaud upload /path/to/file.m4a --title "Interview"
+plaud-tools upload /path/to/file.m4a --title "Interview"
 
 # Trigger transcription on an existing recording
-plaud transcribe <recording-id>
+plaud-tools transcribe <recording-id>
 
 # Check processing status
-plaud status <recording-id>
+plaud-tools status <recording-id>
 ```
 
 Native audio formats (no transcode needed): `.mp3`, `.opus`, `.ogg`, `.oga`
@@ -168,7 +216,7 @@ Add a `plaud` entry to `~/.claude.json` (user-level) or `.claude.json` in your p
 ### Session expired
 
 ```
-plaud login --email you@example.com --region us
+plaud-tools login --email you@example.com --region us
 ```
 
 Re-run the login command. The new token overwrites the stored one.
@@ -188,7 +236,7 @@ ffmpeg -version
 Or point directly at the binary:
 
 ```
-FFMPEG_BIN=/usr/local/bin/ffmpeg plaud upload file.wav
+FFMPEG_BIN=/usr/local/bin/ffmpeg plaud-tools upload file.wav
 ```
 
 ### Wrong region
@@ -196,7 +244,7 @@ FFMPEG_BIN=/usr/local/bin/ffmpeg plaud upload file.wav
 If your recordings are not appearing, try the other region:
 
 ```
-plaud login --email you@example.com --region eu
+plaud-tools login --email you@example.com --region eu
 ```
 
 The client also auto-detects region by following Plaud's `-302` redirect, so an initial mismatch corrects itself on the first API call.

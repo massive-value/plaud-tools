@@ -169,6 +169,110 @@ def _set_autostart(enable: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# First-run environment setup (PATH + PowerShell completions)
+# ---------------------------------------------------------------------------
+
+def _cli_dir() -> Path | None:
+    """Return the CLI directory inside the frozen bundle, or None in dev mode."""
+    if not getattr(sys, "frozen", False) or sys.platform != "win32":
+        return None
+    return Path(sys.executable).parent / "cli"
+
+
+def _completions_dir() -> Path | None:
+    """Return the bundled completions directory, or None in dev mode."""
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    candidates: list[Path] = []
+    if meipass:
+        candidates.append(Path(meipass) / "completions")
+    candidates.append(Path(sys.executable).parent / "completions")
+    candidates.append(Path(sys.executable).parent / "_internal" / "completions")
+    for c in candidates:
+        if (c / "plaud-tools.ps1").exists():
+            return c
+    return None
+
+
+def _setup_cli_path() -> None:
+    """Add PlaudTools/cli/ to the user PATH via HKCU\\Environment (idempotent)."""
+    if sys.platform != "win32":
+        return
+    cli = _cli_dir()
+    if cli is None or not cli.exists():
+        return
+    import ctypes
+    import winreg
+    cli_str = str(cli)
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+        ) as key:
+            try:
+                current, reg_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current, reg_type = "", winreg.REG_EXPAND_SZ
+            parts = [p.strip() for p in current.split(";") if p.strip()]
+            if any(Path(p) == cli for p in parts):
+                return
+            parts.append(cli_str)
+            winreg.SetValueEx(key, "Path", 0, reg_type, ";".join(parts))
+        # Notify open shells that the user environment changed.
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
+            0x0002, 5000, None,
+        )
+        logging.info("Added %s to user PATH", cli_str)
+    except OSError:
+        logging.warning("Could not update user PATH", exc_info=True)
+
+
+def _setup_ps_completions() -> None:
+    """Source plaud-tools.ps1 from the user's PowerShell profiles (idempotent).
+
+    Also removes any stale sourcing lines left by older builds that used plaud.ps1.
+    """
+    import re
+    completions = _completions_dir()
+    if completions is None:
+        return
+    ps1 = completions / "plaud-tools.ps1"
+    if not ps1.exists():
+        return
+    source_line = f'. "{ps1}"'
+    # Pattern matches any previous ". <...completions\plaud*.ps1>" sourcing lines
+    stale_re = re.compile(r'^\. ".*[/\\]completions[/\\]plaud[^"]*\.ps1"', re.IGNORECASE)
+    user_docs = Path.home() / "Documents"
+    profiles = [
+        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+    ]
+    for profile in profiles:
+        try:
+            if profile.exists():
+                content = profile.read_text(encoding="utf-8-sig")
+                lines = [l for l in content.splitlines(keepends=True) if not stale_re.match(l.strip())]
+                content = "".join(lines)
+                if source_line in content:
+                    profile.write_text(content, encoding="utf-8")
+                    continue
+            else:
+                profile.parent.mkdir(parents=True, exist_ok=True)
+                content = ""
+            profile.write_text(
+                (content.rstrip("\n") + "\n" + source_line + "\n") if content else (source_line + "\n"),
+                encoding="utf-8",
+            )
+            logging.info("Added plaud-tools completions to %s", profile)
+        except OSError:
+            logging.warning("Could not update PowerShell profile %s", profile, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Update check
 # ---------------------------------------------------------------------------
 
@@ -657,6 +761,10 @@ class TrayApp:
         if any(s == "stale" for s in statuses.values()):
             connect_all(mcp)
 
+    def _setup_env(self) -> None:
+        _setup_cli_path()
+        _setup_ps_completions()
+
     # ------------------------------------------------------------------
     # Entry
     # ------------------------------------------------------------------
@@ -703,6 +811,7 @@ class TrayApp:
         # Background threads
         threading.Thread(target=self._poll_update, daemon=True).start()
         threading.Thread(target=self._auto_heal, daemon=True).start()
+        threading.Thread(target=self._setup_env, daemon=True).start()
 
         # Ensure autostart on first run when a session already exists
         if self._session and not _autostart_enabled():

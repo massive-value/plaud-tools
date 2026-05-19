@@ -108,10 +108,10 @@ def main() -> None:
     )
     write_for(
         "plaud",
-        product_name="Plaud CLI",
-        internal_name="plaud",
+        product_name="Plaud Tools CLI",
+        internal_name="plaud-tools",
         file_description="Plaud Tools CLI",
-        original_filename="plaud.exe",
+        original_filename="plaud-tools.exe",
     )
     print(f"Wrote version_info files for version {__version__}")
 

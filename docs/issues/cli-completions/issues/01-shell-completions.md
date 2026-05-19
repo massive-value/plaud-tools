@@ -1,7 +1,7 @@
 # 01 — Shell tab-completions for the CLI
 
-Status: needs-triage
-Labels: needs-triage
+Status: implemented
+Labels: done
 
 ## Problem
 

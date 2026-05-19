@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-plaud = "plaud_tools.cli:main"
-pld = "plaud_tools.cli:main"
+plaud-tools = "plaud_tools.cli:main"
+pt = "plaud_tools.cli:main"
 plaud-mcp = "plaud_tools.server:main"
 plaud-tray = "plaud_tools.tray_app:main"
 

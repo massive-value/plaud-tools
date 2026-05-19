@@ -1,7 +1,7 @@
 # 01 — Add top-level `--version` flag to the CLI
 
-Status: needs-triage
-Labels: needs-triage
+Status: implemented
+Labels: done
 
 ## Problem
 
