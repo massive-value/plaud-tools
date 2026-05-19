@@ -439,7 +439,8 @@ class PlaudClient:
             return self._request_json(method, path, strict=strict)
 
         if strict and payload.get("status") != 0:
-            raise PlaudApiError(f"Plaud API error: {payload.get('msg') or f'status {payload.get('status')}'}")
+            msg = payload.get("msg") or f"status {payload.get('status')}"
+            raise PlaudApiError(f"Plaud API error: {msg}")
         return payload
 
     def _normalize_recording(self, raw: dict[str, Any]) -> Recording:
