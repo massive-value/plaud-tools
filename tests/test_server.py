@@ -10,6 +10,7 @@ _EXPECTED_TOOL_NAMES = {
     "upload_recording",
     "process_recording",
     "list_folders",
+    "merge_recordings",
 }
 
 
