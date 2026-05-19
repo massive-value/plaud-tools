@@ -6,11 +6,39 @@ build-backend = "setuptools.build_meta"
 name = "plaud-tools"
 version = "0.1.8"
 description = "Python rewrite for Plaud CLI and MCP workflows."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "massive-value", email = "dev.bluehorizon@gmail.com" }]
+keywords = ["plaud", "mcp", "cli", "transcription", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
 dependencies = [
     "keyring>=25,<26",
     "mcp>=1.0,<2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/massive-value/plaud-tools"
+Repository = "https://github.com/massive-value/plaud-tools"
+Issues = "https://github.com/massive-value/plaud-tools/issues"
+Changelog = "https://github.com/massive-value/plaud-tools/blob/master/CHANGELOG.md"
 
 [project.scripts]
 plaud-tools = "plaud_tools.cli:main"
@@ -26,7 +54,7 @@ where = ["src"]
 include = ["plaud_tools*"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pyinstaller>=6"]
+dev = ["pytest>=8", "pyinstaller>=6", "build>=1.0"]
 tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6"]
 
 [tool.pytest.ini_options]
