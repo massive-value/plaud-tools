@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-05-19
+
+### Fixed
+
+- Python 3.11 / 3.10 syntax error in `client.py`: a nested f-string reusing
+  the same quote type is only valid in Python 3.12+. Extracted the inner
+  expression to a local variable so all supported Python versions parse
+  correctly.
+- `release.yml` publish job now explicitly declares `contents: read` alongside
+  `id-token: write`. When a job overrides `permissions`, all unlisted
+  permissions default to `none`; the omission caused `actions/checkout` to
+  fail with "repository not found" on the first tag push.
+
+## [0.1.9] - 2026-05-19
+
 ### Added
 
 - `CONTRIBUTING.md` covering dev setup, the `PLAUD_LIVE_READS=1` live-test
@@ -106,7 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/massive-value/plaud-tools/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/massive-value/plaud-tools/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/massive-value/plaud-tools/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/massive-value/plaud-tools/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/massive-value/plaud-tools/compare/v0.1.5...v0.1.6
