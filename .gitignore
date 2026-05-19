@@ -39,8 +39,9 @@ har-archive/
 **/.plaud/
 session.json
 
-# Claude Code project state (transient)
-.claude/
+# Claude Code project state (transient, machine-local)
+.claude/settings.local.json
+.claude/worktrees/
 
 # Isolated dev worktrees
 .worktrees/

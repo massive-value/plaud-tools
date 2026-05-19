@@ -8,7 +8,7 @@ The Python rewrite is complete. The active code lives under `src/plaud_tools/`:
 
 - `client.py` — Plaud domain/client layer (auth, session, all API flows)
 - `cli.py` — Python CLI (`plaud` / `pld` entry points)
-- `mcp.py` — MCP handler functions (5 tools: browse, get, mutate, upload, process)
+- `mcp.py` — MCP handler functions (7 tools: browse, get, mutate, upload, process, list_folders, merge_recordings)
 - `server.py` — Python MCP server process (`plaud-mcp` entry point, stdio transport)
 
 The TypeScript prior art has been removed. The `har-captures/` directory contains live Plaud API traffic captures (gitignored — local reference only).

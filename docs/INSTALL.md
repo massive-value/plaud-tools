@@ -1,6 +1,6 @@
 # Installing plaud-tools
 
-plaud-tools is an unofficial Squire tool that bridges your existing Plaud account into AI assistants via a Python CLI and MCP server. You still need a real Plaud account; this package does not replace the Plaud mobile or web apps.
+plaud-tools is an unofficial third-party tool that bridges your existing Plaud account into AI assistants via a Python CLI and MCP server. You still need a real Plaud account; this package does not replace the Plaud mobile or web apps.
 
 ---
 
@@ -208,6 +208,8 @@ Add a `plaud` entry to `~/.claude.json` (user-level) or `.claude.json` in your p
 | `mutate_recording` | Rename, trash, restore, delete, move to folder, rename speaker |
 | `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
 | `process_recording` | Trigger transcription + summarization, block until complete |
+| `list_folders` | List Plaud folders (id, name, color, icon) |
+| `merge_recordings` | Merge two or more recordings into a single new recording |
 
 ---
 

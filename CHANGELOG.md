@@ -7,12 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CONTRIBUTING.md` covering dev setup, the `PLAUD_LIVE_READS=1` live-test
+  gate, branching, and the GitHub Issues tracker.
+- `.github/` issue and pull request templates: `bug_report.md`,
+  `feature_request.md`, `config.yml` (blank issues disabled, security
+  contact link), and `PULL_REQUEST_TEMPLATE.md`.
+
 ### Changed
 
 - Migrated the issue tracker from local markdown files under `docs/issues/` to
   GitHub Issues at https://github.com/massive-value/plaud-tools/issues. Agent
   conventions in `CLAUDE.md` and `docs/agents/issue-tracker.md` updated to
   match.
+- Rewrote `README.md` to describe the current Python package — alpha and
+  trademark disclaimers, `pip install plaud-tools` quickstart, the 7-tool MCP
+  surface, and `plaud-tools` / `pt` / `plaud-mcp` / `plaud-tray` entry
+  points. Dropped the stale TypeScript / `npm` / `tsx` / 18-tool sections.
+- `docs/INSTALL.md`: removed an internal employer reference from the
+  intro and expanded the MCP tools table to all 7 tools.
+- `CLAUDE.md`: corrected the stale "5 tools" claim for `mcp.py` to reflect
+  the actual 7-tool surface (`browse`, `get`, `mutate`, `upload`, `process`,
+  `list_folders`, `merge_recordings`).
+- `.gitignore`: narrowed the blanket `.claude/` ignore to
+  `.claude/settings.local.json` and `.claude/worktrees/` so shareable
+  project settings can be tracked.
+
+### Removed
+
+- `docs/python-rewrite-status.md` — superseded by the new README and
+  CONTRIBUTING.md.
+
+### Fixed
+
+- `tests/test_ai_clients.py` no longer hard-codes a personal Windows
+  username in the sample MCP exe path.
 
 ## [0.1.8] - 2026-05-19
 

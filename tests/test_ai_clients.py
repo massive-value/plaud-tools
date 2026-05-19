@@ -19,7 +19,7 @@ def test_codex_connect_writes_parsable_toml_with_windows_path(tmp_path: Path, mo
     paths = {"codex": config, "claude-desktop": tmp_path / "x.json", "claude-code": tmp_path / "y.json"}
     monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
 
-    new_path = r"C:\Users\kadinb\AppData\Local\Programs\PlaudTools\mcp\plaud-mcp.exe"
+    new_path = r"C:\Users\example\AppData\Local\Programs\PlaudTools\mcp\plaud-mcp.exe"
     ai_clients.connect("codex", new_path)
 
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
@@ -32,7 +32,7 @@ def test_codex_status_round_trips_through_connect(tmp_path: Path, monkeypatch):
     paths = {"codex": config, "claude-desktop": tmp_path / "x.json", "claude-code": tmp_path / "y.json"}
     monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
 
-    new_path = r"C:\Users\kadinb\AppData\Local\Programs\PlaudTools\mcp\plaud-mcp.exe"
+    new_path = r"C:\Users\example\AppData\Local\Programs\PlaudTools\mcp\plaud-mcp.exe"
     ai_clients.connect("codex", new_path)
     assert ai_clients.get_status("codex", new_path) == "connected"
 
