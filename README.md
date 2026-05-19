@@ -2,6 +2,7 @@
 
 Bridge your [Plaud](https://www.plaud.ai/) recordings into AI assistants via a Python CLI and an MCP server.
 
+[![CI](https://github.com/massive-value/plaud-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/massive-value/plaud-tools/actions/workflows/ci.yml)
 ![status: alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: LGPL-3.0-or-later](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue)](LICENSE)

@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.github/` issue and pull request templates: `bug_report.md`,
   `feature_request.md`, `config.yml` (blank issues disabled, security
   contact link), and `PULL_REQUEST_TEMPLATE.md`.
+- `.github/workflows/ci.yml` running `pytest -q` on every PR and push to
+  `master` across a 3×2 matrix (Python 3.11/3.12/3.13 × windows-latest /
+  ubuntu-latest, `fail-fast: false`).
+- `publish` job in `.github/workflows/release.yml` that builds the sdist and
+  wheel and uploads them to PyPI via Trusted Publishing (OIDC) on every `v*`
+  tag push. Depends on the existing `build` job and uses the `pypi`
+  environment.
+- CI status badge in `README.md`.
 
 ### Changed
 
