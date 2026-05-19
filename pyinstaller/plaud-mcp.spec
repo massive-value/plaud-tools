@@ -14,16 +14,21 @@
 #   path.join(process.resourcesPath, 'plaud-mcp', 'plaud-mcp', 'plaud-mcp.exe')
 
 from pathlib import Path
+from PyInstaller.utils.hooks import copy_metadata
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
 _icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico')
 
+# Bundle the plaud-tools dist-info so importlib.metadata.version() resolves
+# at runtime (used by --version and the MCP server handshake).
+_plaud_metadata = copy_metadata('plaud-tools')
+
 a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_mcp_entry.py')],
     pathex=[str(src)],
     binaries=[],
-    datas=[],
+    datas=[*_plaud_metadata],
     hiddenimports=[
         # keyring runtime backend selection
         'keyring.backends.Windows',

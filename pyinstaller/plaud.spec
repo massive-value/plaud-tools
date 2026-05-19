@@ -12,15 +12,20 @@
 #   path.join(process.resourcesPath, 'plaud-cli', 'plaud', 'plaud.exe')
 
 from pathlib import Path
+from PyInstaller.utils.hooks import copy_metadata
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
 
+# Bundle the plaud-tools dist-info so importlib.metadata.version() resolves
+# at runtime (used by `plaud --version`).
+_plaud_metadata = copy_metadata('plaud-tools')
+
 a = Analysis(
-    [str(src / 'plaud_tools' / '__main__.py')],
+    [str(Path(SPECPATH).parent / 'scripts' / 'plaud_entry.py')],
     pathex=[str(src)],
     binaries=[],
-    datas=[],
+    datas=[*_plaud_metadata],
     hiddenimports=[
         # transcode is imported inside an if-branch; static analysis misses it
         'plaud_tools.transcode',

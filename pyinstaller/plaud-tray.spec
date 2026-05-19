@@ -16,7 +16,7 @@
 #   Path(sys.executable).parent / "mcp" / "plaud-mcp.exe"
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
@@ -29,11 +29,15 @@ _icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico
 # theme at runtime.
 _sv_ttk_data = collect_data_files('sv_ttk')
 
+# Bundle the plaud-tools dist-info so importlib.metadata.version() resolves
+# at runtime — without this the tray footer shows "v0.0.0+dev".
+_plaud_metadata = copy_metadata('plaud-tools')
+
 a = Analysis(
     [str(Path(SPECPATH).parent / 'scripts' / 'plaud_tray_entry.py')],
     pathex=[str(src)],
     binaries=[],
-    datas=[(_assets, 'assets'), *_sv_ttk_data],
+    datas=[(_assets, 'assets'), *_sv_ttk_data, *_plaud_metadata],
     hiddenimports=[
         # pystray selects its platform backend at runtime
         'pystray._win32',
