@@ -124,6 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_sub.add_parser("clear")
 
+    sub.add_parser("update", help="Upgrade plaud-tools via pip (pip users only).")
+
     ping_cmd = sub.add_parser("ping")
     return parser
 
@@ -226,6 +228,22 @@ def run_cli(
             },
             indent=2,
         )
+
+    if args.command == "update":
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "plaud-tools"],
+            stdout=None,
+            stderr=None,
+        )
+        if result.returncode == 0:
+            print(
+                "\nNote: pipx, uv, and conda users should use their own package manager's"
+                " upgrade command, not this one."
+            )
+        sys.exit(result.returncode)
+        return ""  # unreachable; satisfies return-type checker
 
     client = client or _build_runtime_client(store)
 
