@@ -2,9 +2,6 @@
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
-#
-# This script does NOT handle upgrades. If PlaudTools is already installed,
-# use the tray menu's built-in update flow to upgrade.
 
 $ErrorActionPreference = 'Stop'
 
@@ -46,22 +43,39 @@ try {
     $exePath    = Join-Path $installDir 'PlaudTools.exe'
     $zipTemp    = Join-Path $env:TEMP 'PlaudTools.zip'
 
-    # --- Guard: refuse to overwrite an existing install ---
-    if (Test-Path $exePath) {
-        Write-Host 'PlaudTools is already installed. Use the tray menu''s update flow to upgrade instead.' -ForegroundColor Yellow
-        exit 1
-    }
-
-    # --- Step 1: resolve the latest release via GitHub API ---
+    # --- Step 1: resolve the latest release (needed for version checks too) ---
     Write-Host '[1/4] Fetching latest release info...'
-    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/massive-value/plaud-tools/releases/latest' -UseBasicParsing
-    $asset   = $release.assets | Where-Object { $_.name -eq 'PlaudTools.zip' } | Select-Object -First 1
+    $release       = Invoke-RestMethod -Uri 'https://api.github.com/repos/massive-value/plaud-tools/releases/latest' -UseBasicParsing
+    $asset         = $release.assets | Where-Object { $_.name -eq 'PlaudTools.zip' } | Select-Object -First 1
+    $latestVersion = $release.tag_name.TrimStart('v')
 
     if (-not $asset) {
         throw "Could not find PlaudTools.zip in the latest release assets. Check https://github.com/massive-value/plaud-tools/releases/latest"
     }
 
-    Write-Host "    $($release.tag_name) — PlaudTools.zip ($([math]::Round($asset.size / 1MB, 1)) MB)"
+    Write-Host "    Latest: v$latestVersion — PlaudTools.zip ($([math]::Round($asset.size / 1MB, 1)) MB)"
+
+    # --- Guard: handle existing installs ---
+    if (Test-Path $exePath) {
+        $installedVersion = (Get-Item $exePath).VersionInfo.FileVersion.Trim()
+        if ($installedVersion -eq $latestVersion) {
+            Write-Host ''
+            Write-Host "PlaudTools v$installedVersion is already installed and up to date." -ForegroundColor Green
+            exit 0
+        } else {
+            Write-Host ''
+            Write-Host "PlaudTools v$installedVersion is installed; v$latestVersion is available." -ForegroundColor Yellow
+            Write-Host 'Open PlaudTools from the system tray and click Check for Updates to upgrade.' -ForegroundColor Yellow
+            exit 1
+        }
+    }
+
+    # Broken/partial install: directory exists but exe is missing (e.g. Defender quarantine).
+    if (Test-Path $installDir) {
+        Write-Host ''
+        Write-Host 'Found an incomplete installation (directory present, exe missing) — cleaning up...' -ForegroundColor Yellow
+        Remove-Item $installDir -Recurse -Force
+    }
 
     # --- Step 2: download the zip to temp ---
     Write-Host '[2/4] Downloading...'
@@ -70,7 +84,7 @@ try {
 
     # --- Step 3: extract to install directory ---
     # The zip contains a top-level PlaudTools\ folder, so extract to the
-    # parent directory so the result lands at Programs\PlaudTools\.
+    # parent so the result lands at Programs\PlaudTools\ not Programs\PlaudTools\PlaudTools\.
     $extractDir = Split-Path $installDir -Parent
     Write-Host "[3/4] Extracting to $installDir ..."
     if (-not (Test-Path $extractDir)) {
