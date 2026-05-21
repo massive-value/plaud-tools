@@ -1,22 +1,56 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for PlaudTools.exe (system tray app).
 #
-# Build prerequisite: refresh PE VERSIONINFO from plaud_tools.__version__
-#   python pyinstaller/version_info.py
+# Build from the repo root (version is read automatically from pyproject.toml):
+#   pip install -e . --no-deps
+#   pyinstaller pyinstaller/plaud-tray.spec --noconfirm
 #
-# Build from the repo root:
-#   pyinstaller pyinstaller/plaud-tray.spec --distpath out/plaud-tray --noconfirm
-#
-# Produces out/plaud-tray/PlaudTools/ (onedir). The release workflow then:
-#   1. Copies out/plaud-mcp/plaud-mcp/ into out/plaud-tray/PlaudTools/mcp/
-#   2. Places ffmpeg.exe into out/plaud-tray/PlaudTools/mcp/
-#   3. Zips out/plaud-tray/PlaudTools/ -> PlaudTools.zip
+# Produces dist/PlaudTools/ (onedir). The release workflow then:
+#   1. Copies out/plaud-mcp/plaud-mcp/ into dist/PlaudTools/mcp/
+#   2. Places ffmpeg.exe into dist/PlaudTools/mcp/
+#   3. Zips dist/PlaudTools/ -> PlaudTools.zip
 #
 # The tray app locates plaud-mcp.exe via:
 #   Path(sys.executable).parent / "mcp" / "plaud-mcp.exe"
 
+import tomllib
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+
+# --- Version from pyproject.toml (single source of truth) ---
+_repo = Path(SPECPATH).parent
+with open(str(_repo / 'pyproject.toml'), 'rb') as _f:
+    _ver_str = tomllib.load(_f)['project']['version']
+
+def _ver_tuple(v: str) -> tuple:
+    parts = v.split('+')[0].split('.')
+    nums = [int(p) if p.isdigit() else 0 for p in parts[:4]]
+    while len(nums) < 4:
+        nums.append(0)
+    return tuple(nums)
+
+_vt = _ver_tuple(_ver_str)
+_vi_content = f"""# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={_vt}, prodvers={_vt},
+    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [
+      StringStruct('CompanyName', 'Plaud Tools'),
+      StringStruct('FileDescription', 'Plaud Tools Tray App'),
+      StringStruct('FileVersion', '{_ver_str}'),
+      StringStruct('InternalName', 'PlaudTools'),
+      StringStruct('OriginalFilename', 'PlaudTools.exe'),
+      StringStruct('ProductName', 'Plaud Tools'),
+      StringStruct('ProductVersion', '{_ver_str}')])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+_vi_path = _repo / 'pyinstaller' / 'version_info_plaud-tray.txt'
+_vi_path.write_text(_vi_content, encoding='utf-8')
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'

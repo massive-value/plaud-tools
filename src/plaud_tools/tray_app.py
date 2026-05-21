@@ -786,26 +786,28 @@ class UpdateDialog:
             # the parent so files land at Programs\PlaudTools\ not Programs\PlaudTools\PlaudTools\.
             extract_dir = install_dir.parent
             tray_pid = os.getpid()
-            bat_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.bat"
+            sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
+            ps_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.ps1"
 
-            bat_content = (
-                "@echo off\n"
-                ":wait\n"
-                f'tasklist /FI "PID eq {tray_pid}" 2>NUL | find /I "{tray_pid}" >NUL\n'
-                "if %ERRORLEVEL%==0 (\n"
-                "    timeout /t 1 /nobreak >NUL\n"
-                "    goto wait\n"
-                ")\n"
-                # timeout /t is unreliable in detached/minimised consoles — use PowerShell
-                'powershell -NoProfile -Command "Start-Sleep -Seconds 2"\n'
-                f'powershell -NoProfile -Command "$ProgressPreference=\'SilentlyContinue\'; Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{extract_dir}\' -Force"\n'
-                f'powershell -NoProfile -Command "Start-Process \'{install_dir}\\PlaudTools.exe\'"\n'
-                '(goto) 2>nul & del "%~f0"\n'
+            update_info = self._app._update_info
+            new_version = update_info[0] if update_info else "unknown"
+
+            ps_content = (
+                f"$trayPid = {tray_pid}\n"
+                "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
+                "    Start-Sleep -Seconds 1\n"
+                "}\n"
+                "Start-Sleep -Seconds 2\n"
+                "$ProgressPreference = 'SilentlyContinue'\n"
+                f"Expand-Archive -Path '{zip_path}' -DestinationPath '{extract_dir}' -Force\n"
+                f"Start-Process '{install_dir}\\PlaudTools.exe'\n"
+                "Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n"
             )
-            bat_path.write_text(bat_content, encoding="utf-8")
+            ps_path.write_text(ps_content, encoding="utf-8")
+            sentinel.write_text(new_version, encoding="utf-8")
 
             subprocess.Popen(
-                ["cmd", "/c", "start", "/min", "", str(bat_path)],
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 cwd=tempfile.gettempdir(),
             )
@@ -1421,6 +1423,20 @@ class TrayApp:
         # Show login window on first launch if not signed in
         if not self._session:
             root.after(200, self._login_win.show)
+
+        # If relaunched after an in-app update, open HomeWindow with a success message.
+        sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
+        if sentinel.exists():
+            try:
+                updated_to = sentinel.read_text(encoding="utf-8").strip()
+                sentinel.unlink(missing_ok=True)
+                if self._session and self._home_win:
+                    def _show_update_success(v: str = updated_to) -> None:
+                        self._home_win.show()
+                        self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
+                    root.after(500, _show_update_success)
+            except Exception:
+                logging.warning("Could not read update sentinel", exc_info=True)
 
         root.mainloop()
 
