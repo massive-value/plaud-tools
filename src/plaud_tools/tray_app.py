@@ -796,18 +796,17 @@ class UpdateDialog:
                 "    timeout /t 1 /nobreak >NUL\n"
                 "    goto wait\n"
                 ")\n"
-                'timeout /t 2 /nobreak >NUL\n'
+                # timeout /t is unreliable in detached/minimised consoles — use PowerShell
+                'powershell -NoProfile -Command "Start-Sleep -Seconds 2"\n'
                 f'powershell -NoProfile -Command "$ProgressPreference=\'SilentlyContinue\'; Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{extract_dir}\' -Force"\n'
-                f'start "" "{install_dir}\\PlaudTools.exe"\n'
+                f'powershell -NoProfile -Command "Start-Process \'{install_dir}\\PlaudTools.exe\'"\n'
                 '(goto) 2>nul & del "%~f0"\n'
             )
             bat_path.write_text(bat_content, encoding="utf-8")
 
             subprocess.Popen(
-                [str(bat_path)],
+                ["cmd", "/c", "start", "/min", "", str(bat_path)],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-                shell=True,
                 cwd=tempfile.gettempdir(),
             )
 
