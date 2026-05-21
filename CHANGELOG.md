@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-05-21
+
 ### Added
 
 - `plaud-tools update` CLI subcommand for pip users. Wraps
@@ -167,7 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/massive-value/plaud-tools/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/massive-value/plaud-tools/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/massive-value/plaud-tools/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/massive-value/plaud-tools/compare/v0.1.7...v0.1.8
