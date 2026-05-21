@@ -924,17 +924,19 @@ class UninstallDialog:
         ).pack(anchor="w", pady=(0, 8))
 
         # --- checkboxes ---
-        var_path = tk.BooleanVar(value=True)
+        var_clients   = tk.BooleanVar(value=True)
+        var_path      = tk.BooleanVar(value=True)
         var_autostart = tk.BooleanVar(value=True)
-        var_ps = tk.BooleanVar(value=True)
+        var_ps        = tk.BooleanVar(value=True)
         var_installdir = tk.BooleanVar(value=True)
-        var_session = tk.BooleanVar(value=False)
-        var_logs = tk.BooleanVar(value=False)
+        var_session   = tk.BooleanVar(value=False)
+        var_logs      = tk.BooleanVar(value=False)
 
         checks_frame = ttk.Frame(frame)
         checks_frame.pack(fill="x")
 
         items = [
+            (var_clients,    "Disconnect AI clients (Claude Desktop, Claude Code, Codex)"),
             (var_path,       "Remove from user PATH"),
             (var_autostart,  "Remove autostart registry key"),
             (var_ps,         "Remove PowerShell profile sourcing lines"),
@@ -956,6 +958,13 @@ class UninstallDialog:
             from tkinter import messagebox
 
             # Execute simple removals first.
+            if var_clients.get():
+                try:
+                    from .ai_clients import disconnect_all
+                    disconnect_all()
+                    logging.info("Disconnected AI clients")
+                except Exception:
+                    logging.warning("Could not disconnect AI clients", exc_info=True)
             if var_path.get():
                 _remove_cli_path()
             if var_autostart.get():
