@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-05-21
+
+### Fixed
+
+- In-app update now launches a hidden PowerShell script instead of a
+  minimised cmd window, so no console window appears during extraction
+  and relaunch.
+- After a successful in-app update, the relaunched tray auto-opens
+  HomeWindow with an "Updated to vX.X.X successfully." status message
+  so users get clear confirmation the update completed.
+- `HomeWindow` "Check for Updates" button now shows
+  "Update available: vX.X.X — Install" and opens the UpdateDialog
+  directly when the background poller has already detected a newer
+  version, instead of being silently grayed out.
+
+### Changed
+
+- `pyproject.toml` is now the sole source of truth for the version.
+  `plaud-tray.spec` reads it directly at build time and generates the
+  PE VERSIONINFO resource itself; running `version_info.py` separately
+  is no longer required. Build steps: `pip install -e . --no-deps` →
+  `pyinstaller pyinstaller/plaud-tray.spec --noconfirm`.
+
 ## [0.1.14] - 2026-05-21
 
 ### Fixed
@@ -223,7 +246,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/massive-value/plaud-tools/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/massive-value/plaud-tools/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/massive-value/plaud-tools/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/massive-value/plaud-tools/compare/v0.1.11...v0.1.12
