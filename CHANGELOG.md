@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-05-21
+
+### Fixed
+
+- In-app update bat helper now waits 2 seconds after the old tray
+  process exits before launching the new exe. Without the delay the
+  new process could start while the OS had not yet released the old
+  process's single-instance mutex handle, causing the new exe to
+  exit silently without ever appearing in the tray.
+
 ## [0.1.13] - 2026-05-21
 
 ### Changed
@@ -213,7 +223,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/massive-value/plaud-tools/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/massive-value/plaud-tools/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/massive-value/plaud-tools/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/massive-value/plaud-tools/compare/v0.1.10...v0.1.11
