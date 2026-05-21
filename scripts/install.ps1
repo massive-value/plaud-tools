@@ -6,7 +6,7 @@
 $ErrorActionPreference = 'Stop'
 
 function Get-FileWithProgress {
-    param([string]$Uri, [string]$OutFile, [string]$Label = 'Downloading')
+    param([string]$Uri, [string]$OutFile)
 
     $req = [System.Net.HttpWebRequest]::Create($Uri)
     $req.UserAgent = 'PlaudTools-Installer/1.0'
@@ -25,9 +25,11 @@ function Get-FileWithProgress {
             if ($total -gt 0) {
                 $pct     = [int]($done * 100 / $total)
                 $totalMb = [math]::Round($total / 1MB, 1)
-                Write-Progress -Activity $Label -Status "${dlMb} MB / ${totalMb} MB" -PercentComplete $pct
+                $filled  = [int]($pct * 30 / 100)
+                $bar     = ('=' * $filled).PadRight(30, '-')
+                [Console]::Write("`r    [$bar] $pct%  $dlMb / $totalMb MB  ")
             } else {
-                Write-Progress -Activity $Label -Status "${dlMb} MB downloaded"
+                [Console]::Write("`r    $dlMb MB downloaded  ")
             }
         }
     } finally {
@@ -35,7 +37,7 @@ function Get-FileWithProgress {
         $stream.Close()
         $resp.Close()
     }
-    Write-Progress -Activity $Label -Completed
+    [Console]::WriteLine()
 }
 
 try {
@@ -79,7 +81,7 @@ try {
 
     # --- Step 2: download the zip to temp ---
     Write-Host '[2/4] Downloading...'
-    Get-FileWithProgress -Uri $asset.browser_download_url -OutFile $zipTemp -Label 'Downloading PlaudTools.zip'
+    Get-FileWithProgress -Uri $asset.browser_download_url -OutFile $zipTemp
     Write-Host '    Download complete.'
 
     # --- Step 3: extract to install directory ---
