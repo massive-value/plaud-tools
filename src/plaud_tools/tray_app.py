@@ -278,6 +278,121 @@ def _setup_ps_completions() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Uninstall helpers (inverses of the setup helpers above)
+# ---------------------------------------------------------------------------
+
+def _remove_cli_path() -> None:
+    """Remove PlaudTools/cli/ from the user PATH in HKCU\\Environment."""
+    if sys.platform != "win32":
+        return
+    cli = _cli_dir()
+    if cli is None:
+        return
+    import ctypes
+    import winreg
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+        ) as key:
+            try:
+                current, reg_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                return
+            parts = [p.strip() for p in current.split(";") if p.strip()]
+            new_parts = [p for p in parts if Path(p) != cli]
+            if len(new_parts) == len(parts):
+                return  # nothing to remove
+            winreg.SetValueEx(key, "Path", 0, reg_type, ";".join(new_parts))
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
+            0x0002, 5000, None,
+        )
+        logging.info("Removed %s from user PATH", cli)
+    except OSError:
+        logging.warning("Could not update user PATH during uninstall", exc_info=True)
+
+
+def _remove_ps_completions() -> None:
+    """Remove plaud-tools sourcing lines from the user's PowerShell profiles."""
+    import re
+    stale_re = re.compile(r'^\. ".*[/\\]completions[/\\]plaud[^"]*\.ps1"', re.IGNORECASE)
+    user_docs = Path.home() / "Documents"
+    profiles = [
+        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+    ]
+    for profile in profiles:
+        if not profile.exists():
+            continue
+        try:
+            content = profile.read_text(encoding="utf-8-sig")
+            lines = [l for l in content.splitlines(keepends=True) if not stale_re.match(l.strip())]
+            new_content = "".join(lines)
+            if new_content != content:
+                profile.write_text(new_content, encoding="utf-8")
+                logging.info("Removed plaud-tools completions from %s", profile)
+        except OSError:
+            logging.warning("Could not update PowerShell profile %s during uninstall", profile, exc_info=True)
+
+
+def _delete_session_files() -> None:
+    """Delete stored session/credentials via SessionStore and the fallback file."""
+    SessionStore().clear()
+    fallback = Path.home() / ".config" / "plaud-tools" / "session.json"
+    try:
+        fallback.unlink(missing_ok=True)
+    except OSError:
+        logging.warning("Could not delete session file %s", fallback, exc_info=True)
+    logging.info("Deleted session/credentials")
+
+
+def _delete_log_files() -> None:
+    """Delete tray log files from both the legacy and current log directories."""
+    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    # Check both legacy path (Plaud) and potential future path (PlaudTools)
+    for log_dir_name in ("Plaud", "PlaudTools"):
+        log_dir = localappdata / log_dir_name
+        if not log_dir.exists():
+            continue
+        for log_file in log_dir.glob("tray.log*"):
+            try:
+                log_file.unlink(missing_ok=True)
+                logging.info("Deleted log file %s", log_file)
+            except OSError:
+                logging.warning("Could not delete log file %s", log_file, exc_info=True)
+
+
+def _launch_uninstall_helper(install_dir: Path) -> None:
+    """Write a .bat helper to %TEMP% that deletes the install dir after the tray exits."""
+    import subprocess
+    import tempfile
+    tray_pid = os.getpid()
+    bat_content = (
+        "@echo off\n"
+        ":wait\n"
+        f'tasklist /FI "PID eq {tray_pid}" 2>NUL | find /I "{tray_pid}" >NUL\n'
+        "if %ERRORLEVEL%==0 (\n"
+        "    timeout /t 1 /nobreak >NUL\n"
+        "    goto wait\n"
+        ")\n"
+        f'rmdir /S /Q "{install_dir}"\n'
+        'del "%~f0"\n'
+    )
+    tmp = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.bat"
+    tmp.write_text(bat_content, encoding="utf-8")
+    logging.info("Launching uninstall helper bat: %s (will delete %s)", tmp, install_dir)
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    subprocess.Popen(
+        ["cmd", "/c", "start", "", str(tmp)],
+        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Update check
 # ---------------------------------------------------------------------------
 
@@ -764,6 +879,118 @@ class UpdateDialog:
 
 
 # ---------------------------------------------------------------------------
+# Uninstall dialog
+# ---------------------------------------------------------------------------
+
+class UninstallDialog:
+    """Checklist dialog that removes selected Plaud Tools components."""
+
+    def __init__(self, root: tk.Tk) -> None:
+        self._root = root
+        self._win: tk.Toplevel | None = None
+
+    def show(self) -> None:
+        if self._win and self._win.winfo_exists():
+            self._win.lift()
+            self._win.focus_force()
+            return
+
+        win = tk.Toplevel(self._root)
+        win.title(f"Uninstall {APP_NAME}")
+        win.resizable(False, False)
+        self._win = win
+
+        frame = ttk.Frame(win, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text="Select items to remove:",
+            font=("", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        # --- checkboxes ---
+        var_path = tk.BooleanVar(value=True)
+        var_autostart = tk.BooleanVar(value=True)
+        var_ps = tk.BooleanVar(value=True)
+        var_installdir = tk.BooleanVar(value=True)
+        var_session = tk.BooleanVar(value=False)
+        var_logs = tk.BooleanVar(value=False)
+
+        checks_frame = ttk.Frame(frame)
+        checks_frame.pack(fill="x")
+
+        items = [
+            (var_path,       "Remove from user PATH"),
+            (var_autostart,  "Remove autostart registry key"),
+            (var_ps,         "Remove PowerShell profile sourcing lines"),
+            (var_installdir, "Delete install directory"),
+            (var_session,    "Delete session / credentials"),
+            (var_logs,       "Delete log files"),
+        ]
+        for var, label in items:
+            ttk.Checkbutton(checks_frame, text=label, variable=var).pack(anchor="w", pady=2)
+
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=12)
+
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill="x")
+
+        ttk.Button(btn_row, text="Cancel", command=win.destroy).pack(side="left")
+
+        def do_uninstall() -> None:
+            from tkinter import messagebox
+
+            # Execute simple removals first.
+            if var_path.get():
+                _remove_cli_path()
+            if var_autostart.get():
+                try:
+                    _set_autostart(False)
+                    logging.info("Removed autostart registry key")
+                except Exception:
+                    logging.warning("Could not remove autostart key", exc_info=True)
+            if var_ps.get():
+                _remove_ps_completions()
+            if var_session.get():
+                _delete_session_files()
+            if var_logs.get():
+                _delete_log_files()
+
+            # Install directory deletion: requires .bat helper in frozen mode.
+            if var_installdir.get():
+                if not getattr(sys, "frozen", False):
+                    logging.warning("dev mode: skipping install dir deletion")
+                    win.destroy()
+                    messagebox.showinfo(
+                        APP_NAME,
+                        "Uninstall complete. The selected items were removed.\n\n"
+                        "(Install directory deletion skipped in dev mode.)",
+                        parent=self._root,
+                    )
+                else:
+                    install_dir = Path(sys.executable).parent
+                    win.destroy()
+                    _launch_uninstall_helper(install_dir)
+                    # Quit the tray so the helper can delete the directory.
+                    if self._root:
+                        self._root.after(0, lambda: self._root.destroy() if self._root else None)  # type: ignore[union-attr]
+                    # (icon.stop() will be called by TrayApp._quit path via mainloop exit)
+            else:
+                win.destroy()
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Uninstall complete. The selected items were removed.",
+                    parent=self._root,
+                )
+
+        ttk.Button(btn_row, text="Uninstall", command=do_uninstall).pack(side="right")
+
+        win.lift()
+        win.focus_force()
+        win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
+
+# ---------------------------------------------------------------------------
 # Main tray application
 # ---------------------------------------------------------------------------
 
@@ -778,6 +1005,7 @@ class TrayApp:
         self._login_win: LoginWindow | None = None
         self._wizard_win: WizardWindow | None = None
         self._update_win: UpdateDialog | None = None
+        self._uninstall_win: UninstallDialog | None = None
         self._icons: dict[str, Image.Image] = {}
 
     # ------------------------------------------------------------------
@@ -844,6 +1072,7 @@ class TrayApp:
             items.append(pystray.MenuItem("Sign in…", self._open_login, default=True))
 
         items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("Uninstall…", self._open_uninstall))
         items.append(pystray.MenuItem("Quit", self._quit))
         return pystray.Menu(*items)
 
@@ -871,6 +1100,9 @@ class TrayApp:
 
     def _open_wizard(self) -> None:
         self._tk(lambda: self._wizard_win.show() if self._wizard_win else None)
+
+    def _open_uninstall(self) -> None:
+        self._tk(lambda: self._uninstall_win.show() if self._uninstall_win else None)
 
     def _open_test_connection(self) -> None:
         from tkinter import messagebox
@@ -1016,6 +1248,7 @@ class TrayApp:
             get_session_label=self._session_label,
         )
         self._update_win = UpdateDialog(root, self)
+        self._uninstall_win = UninstallDialog(root)
 
         # Build tray icon
         state = self._tray_state()
