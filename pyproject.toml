@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaud-tools"
-version = "0.1.11"
+version = "0.1.12"
 description = "Python rewrite for Plaud CLI and MCP workflows."
 readme = "README.md"
 requires-python = ">=3.11"

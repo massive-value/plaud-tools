@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-05-21
+
+### Added
+
+- Tray `HomeWindow` — left-clicking the tray icon now opens a dashboard
+  window instead of doing nothing. Contains: session header ("Signed in as
+  {email}. Token valid for {N} days."), **Configure AI Agents…** (opens the
+  existing `WizardWindow`), **Test Connection**, **Check for Updates**
+  (runs the update check inline; auto-opens `UpdateDialog` if a newer
+  version is found; disabled when the background poller has already
+  detected an update), **Sign out**, and **Uninstall…**. Version footer
+  matches the `WizardWindow` style.
+
+### Fixed
+
+- Tray `HomeWindow` button order corrected: Configure AI Agents → Test
+  Connection → Check for Updates.
+- `HomeWindow` window height increased to 400×420 so all buttons are
+  fully visible without scrolling.
+- `HomeWindow` "Uninstall…" no longer destroys `HomeWindow` before the
+  `UninstallDialog` is shown, preventing accidental uninstalls when the
+  window was too small to read button labels.
+- Disabled UPX compression in `pyinstaller/plaud-tray.spec`. The
+  UPX-compressed bootloader was triggering Windows Defender's
+  `Trojan:Win32/Bearfoos.A!ml` ML heuristic, causing Defender to
+  quarantine and delete `PlaudTools.exe` silently during normal use.
+
 ## [0.1.11] - 2026-05-21
 
 ### Added
@@ -169,7 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/massive-value/plaud-tools/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/massive-value/plaud-tools/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/massive-value/plaud-tools/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/massive-value/plaud-tools/compare/v0.1.8...v0.1.9

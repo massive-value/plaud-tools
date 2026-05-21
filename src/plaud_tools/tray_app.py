@@ -365,11 +365,17 @@ def _delete_log_files() -> None:
                 logging.warning("Could not delete log file %s", log_file, exc_info=True)
 
 
-def _launch_uninstall_helper(install_dir: Path) -> None:
+def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> None:
     """Write a .bat helper to %TEMP% that deletes the install dir after the tray exits."""
     import subprocess
     import tempfile
     tray_pid = os.getpid()
+    localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    log_lines = ""
+    if delete_logs:
+        for name in ("PlaudTools", "Plaud"):
+            log_dir = Path(localappdata) / name
+            log_lines += f'rmdir /S /Q "{log_dir}" >NUL 2>&1\n'
     bat_content = (
         "@echo off\n"
         ":wait\n"
@@ -378,8 +384,11 @@ def _launch_uninstall_helper(install_dir: Path) -> None:
         "    timeout /t 1 /nobreak >NUL\n"
         "    goto wait\n"
         ")\n"
+        'taskkill /F /IM plaud-mcp.exe >NUL 2>&1\n'
+        'timeout /t 1 /nobreak >NUL\n'
         f'rmdir /S /Q "{install_dir}"\n'
-        'del "%~f0"\n'
+        + log_lines +
+        '(goto) 2>nul & del "%~f0"\n'
     )
     tmp = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.bat"
     tmp.write_text(bat_content, encoding="utf-8")
@@ -389,6 +398,7 @@ def _launch_uninstall_helper(install_dir: Path) -> None:
     subprocess.Popen(
         ["cmd", "/c", "start", "", str(tmp)],
         creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        cwd=tempfile.gettempdir(),
     )
 
 
@@ -863,7 +873,7 @@ class UpdateDialog:
                 ")\n"
                 f'powershell -NoProfile -Command "Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{extract_dir}\' -Force"\n'
                 f'start "" "{install_dir}\\PlaudTools.exe"\n'
-                'del "%~f0"\n'
+                '(goto) 2>nul & del "%~f0"\n'
             )
             bat_path.write_text(bat_content, encoding="utf-8")
 
@@ -872,6 +882,7 @@ class UpdateDialog:
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 close_fds=True,
                 shell=True,
+                cwd=tempfile.gettempdir(),
             )
 
             if self._root:
@@ -974,7 +985,7 @@ class UninstallDialog:
                 else:
                     install_dir = Path(sys.executable).parent
                     win.destroy()
-                    _launch_uninstall_helper(install_dir)
+                    _launch_uninstall_helper(install_dir, delete_logs=var_logs.get())
                     # Quit the tray so the helper can delete the directory.
                     if self._root:
                         self._root.after(0, lambda: self._root.destroy() if self._root else None)  # type: ignore[union-attr]
@@ -993,6 +1004,170 @@ class UninstallDialog:
         win.focus_force()
         win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
 
+
+# ---------------------------------------------------------------------------
+# Home window (tray left-click target)
+# ---------------------------------------------------------------------------
+
+class HomeWindow:
+    def __init__(
+        self,
+        root: tk.Tk,
+        on_test_connection: Callable[[Callable[[bool, str], None]], None],
+        on_check_for_update: Callable[[Callable[[bool, str], None]], None],
+        on_open_update: Callable[[], None],
+        on_open_wizard: Callable[[], None],
+        on_sign_out: Callable[[], None],
+        on_open_uninstall: Callable[[], None],
+        get_session_label: Callable[[], str],
+        get_update_info: Callable[[], "tuple[str, str, str | None] | None"],
+    ) -> None:
+        self._root = root
+        self._on_test_connection = on_test_connection
+        self._on_check_for_update = on_check_for_update
+        self._on_open_update = on_open_update
+        self._on_open_wizard = on_open_wizard
+        self._on_sign_out = on_sign_out
+        self._on_open_uninstall = on_open_uninstall
+        self._get_session_label = get_session_label
+        self._get_update_info = get_update_info
+        self._win: tk.Toplevel | None = None
+        self._session_var: tk.StringVar | None = None
+        self._status_var: tk.StringVar | None = None
+        self._status_label: ttk.Label | None = None
+        self._test_btn: ttk.Button | None = None
+        self._update_btn: ttk.Button | None = None
+
+    def show(self) -> None:
+        if self._win and self._win.winfo_exists():
+            self._win.lift()
+            self._win.focus_force()
+            self._refresh_session()
+            self._refresh_update_btn()
+            return
+
+        win = tk.Toplevel(self._root)
+        win.title(APP_NAME)
+        win.resizable(False, False)
+        win.geometry("400x420")
+        self._win = win
+
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        self._session_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self._session_var,
+                  font=("", 10, "bold"), wraplength=360).pack(anchor="w")
+        self._refresh_session()
+
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill="x")
+
+        ttk.Button(btn_frame, text="Configure AI Agents…",
+                   command=self._on_open_wizard).pack(fill="x", pady=(0, 6))
+
+        self._test_btn = ttk.Button(btn_frame, text="Test Connection",
+                                     command=self._handle_test)
+        self._test_btn.pack(fill="x", pady=(0, 6))
+
+        self._update_btn = ttk.Button(btn_frame, text="Check for Updates",
+                                       command=self._handle_check_update)
+        self._update_btn.pack(fill="x")
+        self._refresh_update_btn()
+
+        self._status_var = tk.StringVar()
+        self._status_label = ttk.Label(frame, textvariable=self._status_var,
+                                        foreground="#15803d",
+                                        font=("Segoe UI", 9), wraplength=360)
+        self._status_label.pack(anchor="w", pady=(6, 0))
+
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
+
+        ttk.Button(frame, text="Sign out",
+                   command=self._handle_sign_out).pack(fill="x", pady=(0, 6))
+
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(0, 6))
+
+        ttk.Button(frame, text="Uninstall…",
+                   command=self._handle_uninstall).pack(fill="x")
+
+        footer = ttk.Frame(frame)
+        footer.pack(fill="x", pady=(10, 0))
+        ttk.Label(footer, text=f"v{APP_VERSION}",
+                  foreground="#6b7280",
+                  font=("Segoe UI", 8)).pack(side="right")
+
+        win.lift()
+        win.focus_force()
+
+    def _refresh_session(self) -> None:
+        if self._session_var is not None:
+            self._session_var.set(self._get_session_label())
+
+    def _refresh_update_btn(self) -> None:
+        if self._update_btn is None:
+            return
+        if self._get_update_info() is not None:
+            self._update_btn.configure(state="disabled")
+        else:
+            self._update_btn.configure(state="normal")
+
+    def _set_status(self, msg: str, ok: bool = True) -> None:
+        if self._status_var is None or self._status_label is None:
+            return
+        self._status_label.configure(foreground="#15803d" if ok else "#c0392b")
+        self._status_var.set(msg)
+
+    def _handle_test(self) -> None:
+        if self._test_btn is None:
+            return
+        self._test_btn.configure(state="disabled", text="Testing…")
+        if self._status_var is not None:
+            self._status_var.set("")
+
+        def _done(ok: bool, msg: str) -> None:
+            if self._test_btn is None:
+                return
+            self._test_btn.configure(state="normal", text="Test connection")
+            self._set_status(msg, ok)
+            if self._win and self._win.winfo_exists():
+                self._win.after(4000, lambda: self._status_var.set("") if self._status_var else None)
+
+        self._on_test_connection(_done)
+
+    def _handle_check_update(self) -> None:
+        if self._update_btn is None:
+            return
+        self._update_btn.configure(state="disabled", text="Checking…")
+        if self._status_var is not None:
+            self._status_var.set("")
+
+        def _done(found: bool, msg: str) -> None:
+            if self._update_btn is None:
+                return
+            self._update_btn.configure(text="Check for updates")
+            if found:
+                self._set_status(msg, ok=True)
+                self._on_open_update()
+            else:
+                self._update_btn.configure(state="normal")
+                self._set_status(msg, ok=True)
+                if self._win and self._win.winfo_exists():
+                    self._win.after(4000, lambda: self._status_var.set("") if self._status_var else None)
+
+        self._on_check_for_update(_done)
+
+    def _handle_sign_out(self) -> None:
+        self._on_sign_out()
+        if self._win and self._win.winfo_exists():
+            self._win.destroy()
+
+    def _handle_uninstall(self) -> None:
+        self._on_open_uninstall()
+
+
 # ---------------------------------------------------------------------------
 # Main tray application
 # ---------------------------------------------------------------------------
@@ -1007,6 +1182,7 @@ class TrayApp:
         self._update_info: tuple[str, str, str | None] | None = None
         self._login_win: LoginWindow | None = None
         self._wizard_win: WizardWindow | None = None
+        self._home_win: HomeWindow | None = None
         self._update_win: UpdateDialog | None = None
         self._uninstall_win: UninstallDialog | None = None
         self._icons: dict[str, Image.Image] = {}
@@ -1037,7 +1213,9 @@ class TrayApp:
 
     def _make_menu(self) -> pystray.Menu:
         state = self._tray_state()
-        items: list = []
+        items: list = [
+            pystray.MenuItem("Open", self._open_home, default=True, visible=False),
+        ]
 
         if self._update_info:
             version, url, _zip_url = self._update_info
@@ -1062,7 +1240,7 @@ class TrayApp:
             items.append(pystray.MenuItem(f"Signed in as {self._session.email}", None, enabled=False))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("Test connection", self._open_test_connection))
-            items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard, default=True))
+            items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard))
             items.append(pystray.MenuItem("Open log folder", self._open_log_folder))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem(
@@ -1072,7 +1250,7 @@ class TrayApp:
             ))
             items.append(pystray.MenuItem("Sign out", self._sign_out))
         else:
-            items.append(pystray.MenuItem("Sign in…", self._open_login, default=True))
+            items.append(pystray.MenuItem("Sign in…", self._open_login))
 
         items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem("Uninstall…", self._open_uninstall))
@@ -1094,6 +1272,12 @@ class TrayApp:
     def _tk(self, fn: Callable) -> None:
         if self._root:
             self._root.after(0, fn)
+
+    def _open_home(self) -> None:
+        if self._session:
+            self._tk(lambda: self._home_win.show() if self._home_win else None)
+        else:
+            self._open_login()
 
     def _open_login(self) -> None:
         self._tk(lambda: self._login_win.show() if self._login_win else None)
@@ -1117,6 +1301,20 @@ class TrayApp:
                 messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)
 
         self._tk(lambda: self._test_connection(_show))
+
+    def _check_for_update_action(self, on_done: Callable[[bool, str], None]) -> None:
+        def _worker() -> None:
+            result = _check_for_update()
+            if result:
+                self._update_info = result
+                v = result[0]
+                self._tk(self._refresh)
+                if self._root:
+                    self._root.after(0, lambda v=v: on_done(True, f"v{v} available"))
+            else:
+                if self._root:
+                    self._root.after(0, lambda: on_done(False, "You're up to date."))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _test_connection(self, on_done: Callable[[bool, str], None]) -> None:
         """Run get_user_info on a worker thread and deliver result on the tkinter thread."""
@@ -1175,8 +1373,8 @@ class TrayApp:
         # Auto-heal any stale paths now that we have a session; the startup
         # _auto_heal returned early when no session was loaded yet.
         threading.Thread(target=self._auto_heal, daemon=True).start()
-        if self._wizard_win:
-            self._wizard_win.show()
+        if self._home_win:
+            self._home_win.show()
 
     # ------------------------------------------------------------------
     # Background tasks
@@ -1252,6 +1450,17 @@ class TrayApp:
         )
         self._update_win = UpdateDialog(root, self)
         self._uninstall_win = UninstallDialog(root)
+        self._home_win = HomeWindow(
+            root,
+            on_test_connection=self._test_connection,
+            on_check_for_update=self._check_for_update_action,
+            on_open_update=self._open_update,
+            on_open_wizard=self._open_wizard,
+            on_sign_out=self._sign_out,
+            on_open_uninstall=self._open_uninstall,
+            get_session_label=self._session_label,
+            get_update_info=lambda: self._update_info,
+        )
 
         # Build tray icon
         state = self._tray_state()
