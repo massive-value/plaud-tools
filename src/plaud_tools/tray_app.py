@@ -1043,10 +1043,19 @@ class HomeWindow:
     def _refresh_update_btn(self) -> None:
         if self._update_btn is None:
             return
-        if self._get_update_info() is not None:
-            self._update_btn.configure(state="disabled")
+        info = self._get_update_info()
+        if info is not None:
+            self._update_btn.configure(
+                state="normal",
+                text=f"Update available: v{info[0]} — Install",
+                command=self._on_open_update,
+            )
         else:
-            self._update_btn.configure(state="normal")
+            self._update_btn.configure(
+                state="normal",
+                text="Check for Updates",
+                command=self._handle_check_update,
+            )
 
     def _set_status(self, msg: str, ok: bool = True) -> None:
         if self._status_var is None or self._status_label is None:
