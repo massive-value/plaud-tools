@@ -11,10 +11,13 @@ import json
 import logging
 import os
 import random
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.request
 from tkinter import ttk
 from pathlib import Path
 from typing import Callable
@@ -285,9 +288,11 @@ def _version_gt(a: str, b: str) -> bool:
         return False
 
 
-def _check_for_update() -> tuple[str, str] | None:
-    """Return (latest_version, release_url) if an update is available, else None."""
-    import urllib.request
+def _check_for_update() -> tuple[str, str, str | None] | None:
+    """Return (latest_version, release_url, zip_asset_url) if an update is available, else None.
+
+    zip_asset_url is the browser_download_url of the PlaudTools.zip asset, or None if not found.
+    """
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
@@ -295,7 +300,12 @@ def _check_for_update() -> tuple[str, str] | None:
             data = json.loads(resp.read().decode())
         latest = data["tag_name"].lstrip("v")
         if _version_gt(latest, APP_VERSION):
-            return latest, data["html_url"]
+            zip_url: str | None = None
+            for asset in data.get("assets", []):
+                if asset.get("name") == "PlaudTools.zip":
+                    zip_url = asset.get("browser_download_url")
+                    break
+            return latest, data["html_url"], zip_url
     except Exception:
         pass
     return None
@@ -576,6 +586,184 @@ class WizardWindow:
 
 
 # ---------------------------------------------------------------------------
+# Update dialog
+# ---------------------------------------------------------------------------
+
+class UpdateDialog:
+    """Dialog that shows an available update and allows in-app install (frozen only)."""
+
+    def __init__(self, root: tk.Tk, app: "TrayApp") -> None:
+        self._root = root
+        self._app = app
+        self._win: tk.Toplevel | None = None
+
+    def show(self) -> None:
+        if self._win and self._win.winfo_exists():
+            self._win.lift()
+            self._win.focus_force()
+            return
+
+        update_info = self._app._update_info
+        if update_info is None:
+            return
+        latest, url, zip_url = update_info
+
+        win = tk.Toplevel(self._root)
+        win.title(f"{APP_NAME} — Update available")
+        win.resizable(False, False)
+        win.geometry("400x240")
+        self._win = win
+
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="A new version of Plaud Tools is available.",
+                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
+
+        ttk.Label(frame, text=f"Current version:    {APP_VERSION}").pack(anchor="w")
+        ttk.Label(frame, text=f"Available version:  {latest}").pack(anchor="w", pady=(0, 12))
+
+        status_var = tk.StringVar()
+        status_label = ttk.Label(frame, textvariable=status_var, foreground="#1d4ed8", wraplength=360)
+        status_label.pack(anchor="w", pady=(0, 8))
+
+        frozen = getattr(sys, "frozen", False)
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill="x", pady=(4, 0))
+
+        if frozen and zip_url:
+            install_btn = ttk.Button(btn_frame, text="Install update and restart")
+            install_btn.pack(side="left")
+
+            def _start_install() -> None:
+                install_btn.config(state="disabled")
+                status_var.set("Downloading…")
+                threading.Thread(
+                    target=self._install_worker,
+                    args=(zip_url, status_var, install_btn),
+                    daemon=True,
+                ).start()
+
+            install_btn.config(command=_start_install)
+        elif not frozen:
+            ttk.Label(
+                frame,
+                text="In-app install is only available in the bundled tray.",
+                foreground="#6b7280",
+                font=("Segoe UI", 9),
+            ).pack(anchor="w", pady=(0, 8))
+        else:
+            # Frozen but no zip asset found — fall back to browser
+            ttk.Button(
+                btn_frame,
+                text="Open release page",
+                command=lambda: self._app._open_url(url),
+            ).pack(side="left")
+
+        def _close() -> None:
+            if win.winfo_exists():
+                win.destroy()
+
+        close_text = "Cancel" if (frozen and zip_url) else "Close"
+        ttk.Button(btn_frame, text=close_text, command=_close).pack(side="left", padx=8)
+
+        win.lift()
+        win.focus_force()
+        win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
+
+    def _install_worker(
+        self,
+        zip_url: str,
+        status_var: tk.StringVar,
+        install_btn: ttk.Button,
+    ) -> None:
+        """Download the zip, write the .bat helper, launch it, then quit the tray."""
+
+        def _set_status(text: str) -> None:
+            if self._root:
+                self._root.after(0, lambda: status_var.set(text))
+
+        def _on_error(err: Exception) -> None:
+            logging.exception("in-app update download failed")
+            if self._root:
+                self._root.after(0, lambda: (
+                    status_var.set(f"Download failed: {err}"),
+                    install_btn.config(state="normal"),
+                ))
+
+        try:
+            req = urllib.request.Request(
+                zip_url,
+                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                content_length = resp.headers.get("Content-Length")
+                total_mb: float | None = (
+                    int(content_length) / (1024 * 1024) if content_length else None
+                )
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=".zip", delete=False, prefix="plaud_update_"
+                )
+                try:
+                    downloaded = 0
+                    chunk_size = 65536
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+                        downloaded += len(chunk)
+                        downloaded_mb = downloaded / (1024 * 1024)
+                        if total_mb is not None:
+                            label = f"Downloading… ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
+                        else:
+                            label = f"Downloading… ({downloaded_mb:.1f} MB)"
+                        _set_status(label)
+                finally:
+                    tmp.close()
+
+            zip_path = Path(tmp.name)
+        except Exception as exc:
+            _on_error(exc)
+            return
+
+        try:
+            _set_status("Installing…")
+
+            install_dir = Path(sys.executable).parent
+            tray_pid = os.getpid()
+            bat_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.bat"
+
+            bat_content = (
+                "@echo off\n"
+                ":wait\n"
+                f'tasklist /FI "PID eq {tray_pid}" 2>NUL | find /I "{tray_pid}" >NUL\n'
+                "if %ERRORLEVEL%==0 (\n"
+                "    timeout /t 1 /nobreak >NUL\n"
+                "    goto wait\n"
+                ")\n"
+                f'powershell -NoProfile -Command "Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{install_dir}\' -Force"\n'
+                f'start "" "{install_dir}\\PlaudTools.exe"\n'
+                'del "%~f0"\n'
+            )
+            bat_path.write_text(bat_content, encoding="utf-8")
+
+            subprocess.Popen(
+                [str(bat_path)],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+                shell=True,
+            )
+
+            if self._root:
+                self._root.after(0, self._app._quit)
+
+        except Exception as exc:
+            _on_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Main tray application
 # ---------------------------------------------------------------------------
 
@@ -586,9 +774,10 @@ class TrayApp:
         self._session: PlaudSession | None = None
         self._icon: pystray.Icon | None = None
         self._root: tk.Tk | None = None
-        self._update_info: tuple[str, str] | None = None
+        self._update_info: tuple[str, str, str | None] | None = None
         self._login_win: LoginWindow | None = None
         self._wizard_win: WizardWindow | None = None
+        self._update_win: UpdateDialog | None = None
         self._icons: dict[str, Image.Image] = {}
 
     # ------------------------------------------------------------------
@@ -620,11 +809,17 @@ class TrayApp:
         items: list = []
 
         if self._update_info:
-            version, url = self._update_info
-            items.append(pystray.MenuItem(
-                f"Update available: v{version}",
-                lambda: self._open_url(url),
-            ))
+            version, url, _zip_url = self._update_info
+            if getattr(sys, "frozen", False):
+                items.append(pystray.MenuItem(
+                    f"Update available: v{version}",
+                    lambda: self._open_update(),
+                ))
+            else:
+                items.append(pystray.MenuItem(
+                    f"Update available: v{version}",
+                    lambda: self._open_url(url),
+                ))
             items.append(pystray.Menu.SEPARATOR)
 
         if state == "expiring":
@@ -670,6 +865,9 @@ class TrayApp:
 
     def _open_login(self) -> None:
         self._tk(lambda: self._login_win.show() if self._login_win else None)
+
+    def _open_update(self) -> None:
+        self._tk(lambda: self._update_win.show() if self._update_win else None)
 
     def _open_wizard(self) -> None:
         self._tk(lambda: self._wizard_win.show() if self._wizard_win else None)
@@ -817,6 +1015,7 @@ class TrayApp:
             on_sign_out=self._sign_out,
             get_session_label=self._session_label,
         )
+        self._update_win = UpdateDialog(root, self)
 
         # Build tray icon
         state = self._tray_state()
