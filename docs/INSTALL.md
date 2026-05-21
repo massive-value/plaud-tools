@@ -13,9 +13,21 @@ plaud-tools is an unofficial third-party tool that bridges your existing Plaud a
 
 ## Install
 
-### Tray bundle (Windows)
+### Tray bundle (Windows) — recommended
 
-Unzip `PlaudTools.zip` anywhere (e.g. `%LOCALAPPDATA%\Programs\PlaudTools\`) and run `PlaudTools.exe`.
+Open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
+```
+
+This downloads the latest release, extracts to `%LOCALAPPDATA%\Programs\PlaudTools\`, and launches the tray. No admin elevation required.
+
+To uninstall: use the tray menu's "Uninstall…" item.
+
+#### Manual zip install (advanced)
+
+Download `PlaudTools.zip` from the latest GitHub release and unzip anywhere (e.g. `%LOCALAPPDATA%\Programs\PlaudTools\`). Run `PlaudTools.exe`.
 
 On first launch the tray app:
 - Adds `PlaudTools\cli\` to your user `PATH` via `HKCU\Environment`, so `plaud-tools` and `pt` work from any new shell without manual PATH editing. No admin elevation required.
