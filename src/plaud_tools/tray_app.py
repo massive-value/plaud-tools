@@ -847,6 +847,9 @@ class UpdateDialog:
             _set_status("Installing…")
 
             install_dir = Path(sys.executable).parent
+            # The zip contains a top-level PlaudTools\ folder, so extract to
+            # the parent so files land at Programs\PlaudTools\ not Programs\PlaudTools\PlaudTools\.
+            extract_dir = install_dir.parent
             tray_pid = os.getpid()
             bat_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.bat"
 
@@ -858,7 +861,7 @@ class UpdateDialog:
                 "    timeout /t 1 /nobreak >NUL\n"
                 "    goto wait\n"
                 ")\n"
-                f'powershell -NoProfile -Command "Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{install_dir}\' -Force"\n'
+                f'powershell -NoProfile -Command "Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{extract_dir}\' -Force"\n'
                 f'start "" "{install_dir}\\PlaudTools.exe"\n'
                 'del "%~f0"\n'
             )

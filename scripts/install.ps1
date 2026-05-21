@@ -37,11 +37,14 @@ try {
     Write-Host "    Saved to: $zipTemp"
 
     # --- Step 3: extract to install directory ---
+    # The zip contains a top-level PlaudTools\ folder, so extract to the
+    # parent directory so the result lands at Programs\PlaudTools\.
+    $extractDir = Split-Path $installDir -Parent
     Write-Host "[3/4] Extracting to $installDir ..."
-    if (-not (Test-Path $installDir)) {
-        New-Item -ItemType Directory -Path $installDir | Out-Null
+    if (-not (Test-Path $extractDir)) {
+        New-Item -ItemType Directory -Path $extractDir | Out-Null
     }
-    Expand-Archive -Path $zipTemp -DestinationPath $installDir
+    Expand-Archive -Path $zipTemp -DestinationPath $extractDir -Force
     Write-Host '    Extraction complete.'
 
     # --- Cleanup: remove temp zip ---
