@@ -796,7 +796,7 @@ class UpdateDialog:
                 "    timeout /t 1 /nobreak >NUL\n"
                 "    goto wait\n"
                 ")\n"
-                f'powershell -NoProfile -Command "Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{extract_dir}\' -Force"\n'
+                f'powershell -NoProfile -Command "$ProgressPreference=\'SilentlyContinue\'; Expand-Archive -Path \'{zip_path}\' -DestinationPath \'{extract_dir}\' -Force"\n'
                 f'start "" "{install_dir}\\PlaudTools.exe"\n'
                 '(goto) 2>nul & del "%~f0"\n'
             )

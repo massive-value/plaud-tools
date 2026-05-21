@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-05-21
+
+### Changed
+
+- `scripts/install.ps1` extraction step now uses a .NET `ZipFile` loop
+  with the same inline `[===---]` progress bar as the download step.
+  `Expand-Archive` rendered an ugly Windows Terminal overlay; the new
+  approach is visually consistent end-to-end.
+- In-app update bat helper now passes `$ProgressPreference='SilentlyContinue'`
+  to its `Expand-Archive` call so the same overlay is suppressed during
+  the self-update extraction step.
+- `WizardWindow` (Configure AI Agents) cleaned up: removed the session
+  header ("Signed in as…"), **Test Connection** button, **Sign out**
+  button, and version footer. All of these now live exclusively on
+  `HomeWindow`. The dialog title is updated to "Configure AI Agents"
+  and the window is sized to fit its reduced content.
+
 ## [0.1.12] - 2026-05-21
 
 ### Added
@@ -196,7 +213,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/massive-value/plaud-tools/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/massive-value/plaud-tools/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/massive-value/plaud-tools/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/massive-value/plaud-tools/compare/v0.1.9...v0.1.10
