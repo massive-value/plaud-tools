@@ -32,11 +32,11 @@ GITHUB_REPO = "massive-value/plaud-tools"
 
 
 # ---------------------------------------------------------------------------
-# Logging (writes to %LOCALAPPDATA%\Plaud\tray.log in frozen builds)
+# Logging (writes to %LOCALAPPDATA%\PlaudTools\tray.log in frozen builds)
 # ---------------------------------------------------------------------------
 
 def _setup_logging() -> None:
-    log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Plaud"
+    log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=str(log_dir / "tray.log"),
@@ -722,7 +722,7 @@ class TrayApp:
         webbrowser.open(url)
 
     def _open_log_folder(self) -> None:
-        log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Plaud"
+        log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
         log_dir.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(str(log_dir))  # type: ignore[attr-defined]
