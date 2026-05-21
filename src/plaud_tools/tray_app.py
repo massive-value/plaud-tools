@@ -540,7 +540,7 @@ class WizardWindow:
         win = tk.Toplevel(self._root)
         win.title(f"{APP_NAME} — Configure AI Agents")
         win.resizable(False, False)
-        win.geometry("460x360")
+        win.geometry("460x340")
         self._win = win
 
         frame = ttk.Frame(win, padding=16)
@@ -575,13 +575,6 @@ class WizardWindow:
         action_row.pack(fill="x")
         ttk.Button(action_row, text="Close",
                    command=win.destroy).pack(side="right")
-
-        # Version footer — muted, bottom-right.
-        footer = ttk.Frame(frame)
-        footer.pack(fill="x", pady=(8, 0))
-        ttk.Label(footer, text=f"v{APP_VERSION}",
-                  foreground="#6b7280",
-                  font=("Segoe UI", 8)).pack(side="right")
 
         win.lift()
         win.focus_force()
