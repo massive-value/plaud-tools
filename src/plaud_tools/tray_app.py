@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
@@ -747,11 +749,29 @@ class TrayApp:
     # Background tasks
     # ------------------------------------------------------------------
 
-    def _poll_update(self) -> None:
-        result = _check_for_update()
-        if result:
-            self._update_info = result
-            self._refresh()
+    def _update_poll_loop(self) -> None:
+        interval_seconds = random.uniform(20 * 3600, 28 * 3600)
+        # Run the first check immediately (preserves current startup behaviour).
+        try:
+            result = _check_for_update()
+            if result:
+                self._update_info = result
+                self._refresh()
+        except Exception:
+            logging.warning("update check failed", exc_info=True)
+        last_check_wall_time = time.time()
+        while True:
+            time.sleep(300)
+            if time.time() - last_check_wall_time >= interval_seconds:
+                try:
+                    result = _check_for_update()
+                    if result:
+                        self._update_info = result
+                        self._refresh()
+                except Exception:
+                    logging.warning("update check failed", exc_info=True)
+                last_check_wall_time = time.time()
+                interval_seconds = random.uniform(20 * 3600, 28 * 3600)
 
     def _auto_heal(self) -> None:
         if not self._session:
@@ -809,7 +829,7 @@ class TrayApp:
         self._icon.run_detached()
 
         # Background threads
-        threading.Thread(target=self._poll_update, daemon=True).start()
+        threading.Thread(target=self._update_poll_loop, daemon=True).start()
         threading.Thread(target=self._auto_heal, daemon=True).start()
         threading.Thread(target=self._setup_env, daemon=True).start()
 
