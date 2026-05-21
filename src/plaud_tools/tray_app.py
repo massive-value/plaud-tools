@@ -1092,12 +1092,12 @@ class HomeWindow:
         def _done(found: bool, msg: str) -> None:
             if self._update_btn is None:
                 return
-            self._update_btn.configure(text="Check for updates")
             if found:
+                self._refresh_update_btn()
                 self._set_status(msg, ok=True)
                 self._on_open_update()
             else:
-                self._update_btn.configure(state="normal")
+                self._update_btn.configure(state="normal", text="Check for Updates")
                 self._set_status(msg, ok=True)
                 if self._win and self._win.winfo_exists():
                     self._win.after(4000, lambda: self._status_var.set("") if self._status_var else None)
@@ -1328,11 +1328,16 @@ class TrayApp:
     def _update_poll_loop(self) -> None:
         interval_seconds = random.uniform(20 * 3600, 28 * 3600)
         # Run the first check immediately (preserves current startup behaviour).
+        def _on_update_found(result: tuple) -> None:
+            self._update_info = result
+            self._refresh()
+            if self._root:
+                self._root.after(0, lambda: self._home_win._refresh_update_btn() if self._home_win else None)
+
         try:
             result = _check_for_update()
             if result:
-                self._update_info = result
-                self._refresh()
+                _on_update_found(result)
         except Exception:
             logging.warning("update check failed", exc_info=True)
         last_check_wall_time = time.time()
@@ -1342,8 +1347,7 @@ class TrayApp:
                 try:
                     result = _check_for_update()
                     if result:
-                        self._update_info = result
-                        self._refresh()
+                        _on_update_found(result)
                 except Exception:
                     logging.warning("update check failed", exc_info=True)
                 last_check_wall_time = time.time()
