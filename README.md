@@ -28,10 +28,17 @@ From PyPI:
 pip install plaud-tools
 ```
 
-Windows users can also grab a bundled tray app + frozen CLI + MCP server from
-the [latest release](https://github.com/massive-value/plaud-tools/releases/latest)
-(no Python install required). See [docs/INSTALL.md](docs/INSTALL.md) for the
-full walkthrough.
+Windows users can grab a bundled tray app + frozen CLI + MCP server (no Python
+install required). Recommended one-liner:
+
+```powershell
+irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
+```
+
+Or download `PlaudTools.zip` from the
+[latest release](https://github.com/massive-value/plaud-tools/releases/latest)
+and unzip manually. See [docs/INSTALL.md](docs/INSTALL.md) for the full
+walkthrough.
 
 ## Quickstart
 

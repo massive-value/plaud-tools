@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `plaud-tools update` CLI subcommand for pip users. Wraps
+  `sys.executable -m pip install --upgrade plaud-tools` with inherited
+  stdio for live pip output and propagates pip's exit code. Prints a
+  trailing reminder that pipx, uv, and conda users should use their own
+  upgrade command instead. (#10)
+- `scripts/install.ps1` one-liner installer for bundle users. Resolves
+  the latest GitHub release, downloads `PlaudTools.zip` to temp,
+  extracts to `%LOCALAPPDATA%\Programs\PlaudTools\`, and launches
+  `PlaudTools.exe`. Refuses to overwrite an existing install (points the
+  user to the tray updater). No admin elevation required. `docs/INSTALL.md`
+  now leads with the one-liner; manual zip extraction is retained as the
+  advanced path. (#13)
+- Tray in-app updater. When an update is available the tray now shows an
+  `UpdateDialog` with current/available versions and an "Install update
+  and restart" button. The button downloads `PlaudTools.zip` with live
+  byte-count progress, writes a `.bat` helper that waits for the tray
+  PID to exit, expands the zip over the install directory, relaunches
+  `PlaudTools.exe`, and self-deletes. Download failures re-enable the
+  button with an error label. In dev mode the install action is
+  unavailable; the existing browser-fallback menu item is preserved.
+  `_check_for_update` now also returns the zip asset URL. (#14)
+- Tray uninstaller. New "Uninstall…" tray menu item opens a checklist
+  dialog with six items: remove from user PATH, remove autostart
+  registry key, remove PowerShell profile sourcing lines, delete install
+  directory (default checked); delete session/credentials, delete log
+  files (default unchecked). Install directory deletion uses a `.bat`
+  helper that waits on the tray PID, removes the directory, and
+  self-deletes — Windows cannot remove a running `.exe` in place. In dev
+  mode the install-dir step is skipped with a log warning. (#12)
+
+### Changed
+
+- Tray update check is now wake-aware with jittered cadence. The
+  fire-and-forget `_poll_update` call is replaced by `_update_poll_loop`
+  which runs the first check immediately, then sleeps in 5-minute
+  chunks comparing wall-clock elapsed time against a random
+  `[20h, 28h]` interval (re-rolled per check). Wall-clock comparison
+  catches checks missed during laptop sleep within 5 minutes of waking;
+  the jitter spreads GitHub API hits across the user fleet. (#11)
+- Tray log directory moved from `%LOCALAPPDATA%\Plaud\` to
+  `%LOCALAPPDATA%\PlaudTools\` so we no longer share a directory with
+  the official Plaud desktop app. `_open_log_folder` updated to match.
+  (#9)
+
 ## [0.1.10] - 2026-05-19
 
 ### Fixed

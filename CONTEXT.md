@@ -23,6 +23,14 @@ That code is useful as a behavioral reference, but it is not the desired final a
 - transcript and summary data are not always returned inline and often require fetching linked content
 - uploads require special handling for accepted file types, transcoding, and multipart transfer
 
+## Distribution channels
+
+**Bundle** (also "tray bundle") — the frozen Windows distribution shipped as `PlaudTools.zip` on every GitHub release. Contains `PlaudTools.exe` (tray app), a frozen CLI, a frozen MCP server, and ffmpeg. No Python required. Bundle users install by running `scripts/install.ps1` (standard path) or by manually extracting the zip.
+
+**pip install** — installation via `pip install plaud-tools` from PyPI. Requires Python 3.11+. Users in this channel manage upgrades with `pip install --upgrade plaud-tools` or the `plaud-tools update` subcommand.
+
+**Bundle users** and **pip users** have different update and uninstall paths; features in this area must treat them separately.
+
 ## Rewrite priorities
 
 - reduce MCP tool count while improving reliability and token efficiency
