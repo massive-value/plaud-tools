@@ -5,6 +5,36 @@
 
 $ErrorActionPreference = 'Stop'
 
+function Expand-ArchiveWithProgress {
+    param([string]$Path, [string]$DestinationPath)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip     = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    $total   = $zip.Entries.Count
+    $done    = 0
+
+    try {
+        foreach ($entry in $zip.Entries) {
+            $dest = Join-Path $DestinationPath $entry.FullName
+            if ($entry.FullName.EndsWith('/') -or $entry.FullName.EndsWith('\')) {
+                if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
+            } else {
+                $dir = Split-Path $dest -Parent
+                if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            }
+            $done++
+            $pct    = [int]($done * 100 / $total)
+            $filled = [int]($pct * 30 / 100)
+            $bar    = ('=' * $filled).PadRight(30, '-')
+            [Console]::Write("`r    [$bar] $pct%  $done / $total files  ")
+        }
+    } finally {
+        $zip.Dispose()
+    }
+    [Console]::WriteLine()
+}
+
 function Get-FileWithProgress {
     param([string]$Uri, [string]$OutFile)
 
@@ -92,7 +122,7 @@ try {
     if (-not (Test-Path $extractDir)) {
         New-Item -ItemType Directory -Path $extractDir | Out-Null
     }
-    Expand-Archive -Path $zipTemp -DestinationPath $extractDir -Force
+    Expand-ArchiveWithProgress -Path $zipTemp -DestinationPath $extractDir
     Remove-Item -Path $zipTemp -ErrorAction SilentlyContinue
     Write-Host '    Extraction complete.'
 
