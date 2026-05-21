@@ -366,7 +366,7 @@ def _delete_log_files() -> None:
 
 
 def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> None:
-    """Write a .bat helper to %TEMP% that deletes the install dir after the tray exits."""
+    """Write a hidden PS1 helper to %TEMP% that deletes the install dir after the tray exits."""
     import subprocess
     import tempfile
     tray_pid = os.getpid()
@@ -375,29 +375,24 @@ def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> No
     if delete_logs:
         for name in ("PlaudTools", "Plaud"):
             log_dir = Path(localappdata) / name
-            log_lines += f'rmdir /S /Q "{log_dir}" >NUL 2>&1\n'
-    bat_content = (
-        "@echo off\n"
-        ":wait\n"
-        f'tasklist /FI "PID eq {tray_pid}" 2>NUL | find /I "{tray_pid}" >NUL\n'
-        "if %ERRORLEVEL%==0 (\n"
-        "    timeout /t 1 /nobreak >NUL\n"
-        "    goto wait\n"
-        ")\n"
-        'taskkill /F /IM plaud-mcp.exe >NUL 2>&1\n'
-        'timeout /t 1 /nobreak >NUL\n'
-        f'rmdir /S /Q "{install_dir}"\n'
+            log_lines += f"Remove-Item -Path '{log_dir}' -Recurse -Force -ErrorAction SilentlyContinue\n"
+    ps_content = (
+        f"$trayPid = {tray_pid}\n"
+        "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
+        "    Start-Sleep -Seconds 1\n"
+        "}\n"
+        "Stop-Process -Name plaud-mcp -Force -ErrorAction SilentlyContinue\n"
+        "Start-Sleep -Seconds 1\n"
+        f"Remove-Item -Path '{install_dir}' -Recurse -Force -ErrorAction SilentlyContinue\n"
         + log_lines +
-        '(goto) 2>nul & del "%~f0"\n'
+        "Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n"
     )
-    tmp = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.bat"
-    tmp.write_text(bat_content, encoding="utf-8")
-    logging.info("Launching uninstall helper bat: %s (will delete %s)", tmp, install_dir)
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    ps_path = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.ps1"
+    ps_path.write_text(ps_content, encoding="utf-8")
+    logging.info("Launching uninstall helper: %s (will delete %s)", ps_path, install_dir)
     subprocess.Popen(
-        ["cmd", "/c", "start", "", str(tmp)],
-        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         cwd=tempfile.gettempdir(),
     )
 
