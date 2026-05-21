@@ -7,7 +7,6 @@
 # use the tray menu's built-in update flow to upgrade.
 
 $ErrorActionPreference = 'Stop'
-$ProgressPreference    = 'SilentlyContinue'   # suppress default Invoke-* progress noise
 
 function Get-FileWithProgress {
     param([string]$Uri, [string]$OutFile, [string]$Label = 'Downloading')
