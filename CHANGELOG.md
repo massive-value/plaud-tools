@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-05-21
+
+### Added
+
+- Double-clicking `PlaudTools.exe` when the tray is already running now brings
+  `HomeWindow` to the front. The second instance signals the running one via a
+  named Windows event (`Global\PlaudToolsActivate`) and exits cleanly.
+- `PlaudTools.exe` always opens `HomeWindow` on launch when signed in (or
+  `LoginWindow` when not), so double-clicking the exe when it is not yet
+  running also surfaces the UI immediately.
+- Custom app icon applied to all tkinter title bars and the Windows taskbar
+  (`SetCurrentProcessExplicitAppUserModelID`).
+- Fresh install via `install.ps1` auto-opens `HomeWindow` after launch when
+  credentials are already present.
+
+### Fixed
+
+- `UpdateDialog` no longer shows only a Close button when the background
+  poller cached a `None` zip URL (race between poller startup and CI asset
+  upload). The dialog now re-fetches and enables the install button once the
+  asset is available.
+- Uninstall helper no longer opens a blank cmd prompt window. Switched to a
+  hidden PowerShell script, matching the in-app updater approach.
+- `HomeWindow` "Check for Updates" button no longer stays grayed out after a
+  manual check finds a new version.
+
 ## [0.1.17] - 2026-05-21
 
 ### Fixed
@@ -266,7 +292,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/massive-value/plaud-tools/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/massive-value/plaud-tools/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/massive-value/plaud-tools/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/massive-value/plaud-tools/compare/v0.1.14...v0.1.15

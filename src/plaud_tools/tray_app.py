@@ -110,6 +110,15 @@ def _load_icons() -> dict[str, Image.Image]:
 # dependency is missing so dev installs without the [tray] extras still run.
 # ---------------------------------------------------------------------------
 
+def _set_app_icon(win: tk.Wm) -> None:
+    ico = _assets_path() / "icon.ico"
+    if ico.exists():
+        try:
+            win.iconbitmap(str(ico))
+        except Exception:
+            pass
+
+
 def _apply_theme(root: tk.Tk) -> None:
     try:
         import sv_ttk
@@ -129,6 +138,8 @@ def _apply_theme(root: tk.Tk) -> None:
 # ---------------------------------------------------------------------------
 
 _MUTEX_HANDLE = None
+_ACTIVATE_EVENT = "Global\\PlaudToolsActivate"
+
 
 def _acquire_instance_lock() -> bool:
     global _MUTEX_HANDLE
@@ -136,7 +147,14 @@ def _acquire_instance_lock() -> bool:
         return True
     import ctypes
     _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance")
-    return ctypes.windll.kernel32.GetLastError() != 183  # 183 = ERROR_ALREADY_EXISTS
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        # Signal the running instance to surface its window, then exit.
+        h = ctypes.windll.kernel32.OpenEventW(0x0002, False, _ACTIVATE_EVENT)  # EVENT_MODIFY_STATE
+        if h:
+            ctypes.windll.kernel32.SetEvent(h)
+            ctypes.windll.kernel32.CloseHandle(h)
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +466,7 @@ class LoginWindow:
             self._win.focus_force()
             return
         win = tk.Toplevel(self._root)
+        _set_app_icon(win)
         win.title(f"{APP_NAME} — Sign in")
         win.resizable(False, False)
         win.geometry("340x220")
@@ -533,6 +552,7 @@ class WizardWindow:
             return
 
         win = tk.Toplevel(self._root)
+        _set_app_icon(win)
         win.title(f"{APP_NAME} — Configure AI Agents")
         win.resizable(False, False)
         win.geometry("460x340")
@@ -654,6 +674,7 @@ class UpdateDialog:
         latest, url, zip_url = update_info
 
         win = tk.Toplevel(self._root)
+        _set_app_icon(win)
         win.title(f"{APP_NAME} — Update available")
         win.resizable(False, False)
         win.geometry("400x240")
@@ -677,21 +698,7 @@ class UpdateDialog:
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill="x", pady=(4, 0))
 
-        if frozen and zip_url:
-            install_btn = ttk.Button(btn_frame, text="Install update and restart")
-            install_btn.pack(side="left")
-
-            def _start_install() -> None:
-                install_btn.config(state="disabled")
-                status_var.set("Downloading…")
-                threading.Thread(
-                    target=self._install_worker,
-                    args=(zip_url, status_var, install_btn),
-                    daemon=True,
-                ).start()
-
-            install_btn.config(command=_start_install)
-        elif not frozen:
+        if not frozen:
             ttk.Label(
                 frame,
                 text="In-app install is only available in the bundled tray.",
@@ -699,18 +706,54 @@ class UpdateDialog:
                 font=("Segoe UI", 9),
             ).pack(anchor="w", pady=(0, 8))
         else:
-            # Frozen but no zip asset found — fall back to browser
-            ttk.Button(
-                btn_frame,
-                text="Open release page",
-                command=lambda: self._app._open_url(url),
-            ).pack(side="left")
+            install_btn = ttk.Button(btn_frame, text="Install update and restart")
+            install_btn.pack(side="left")
+
+            def _start_install(zu: str) -> None:
+                install_btn.config(state="disabled")
+                status_var.set("Downloading…")
+                threading.Thread(
+                    target=self._install_worker,
+                    args=(zu, status_var, install_btn),
+                    daemon=True,
+                ).start()
+
+            if zip_url:
+                install_btn.config(command=lambda zu=zip_url: _start_install(zu))
+            else:
+                # zip_url was cached as None (poller ran before CI finished uploading).
+                # Re-fetch once; enable the button if the asset is now available.
+                install_btn.config(state="disabled", text="Checking…")
+
+                def _refetch() -> None:
+                    fresh = _check_for_update()
+                    fresh_zip = fresh[2] if fresh else None
+                    if self._root:
+                        def _apply(zu: str | None = fresh_zip) -> None:
+                            if not win.winfo_exists():
+                                return
+                            if zu:
+                                self._app._update_info = (fresh[0], fresh[1], zu)
+                                install_btn.config(
+                                    state="normal",
+                                    text="Install update and restart",
+                                    command=lambda: _start_install(zu),
+                                )
+                            else:
+                                install_btn.config(
+                                    text="Open release page",
+                                    state="normal",
+                                    command=lambda: self._app._open_url(url),
+                                )
+                        self._root.after(0, _apply)
+
+                threading.Thread(target=_refetch, daemon=True).start()
 
         def _close() -> None:
             if win.winfo_exists():
                 win.destroy()
 
-        close_text = "Cancel" if (frozen and zip_url) else "Close"
+        close_text = "Cancel" if frozen else "Close"
         ttk.Button(btn_frame, text=close_text, command=_close).pack(side="left", padx=8)
 
         win.lift()
@@ -832,6 +875,7 @@ class UninstallDialog:
             return
 
         win = tk.Toplevel(self._root)
+        _set_app_icon(win)
         win.title(f"Uninstall {APP_NAME}")
         win.resizable(False, False)
         self._win = win
@@ -978,6 +1022,7 @@ class HomeWindow:
             return
 
         win = tk.Toplevel(self._root)
+        _set_app_icon(win)
         win.title(APP_NAME)
         win.resizable(False, False)
         win.geometry("400x420")
@@ -1320,6 +1365,25 @@ class TrayApp:
     # Background tasks
     # ------------------------------------------------------------------
 
+    def _watch_activate_event(self) -> None:
+        """Show the appropriate window whenever a second instance signals us."""
+        if sys.platform != "win32":
+            return
+        import ctypes
+        h = ctypes.windll.kernel32.CreateEventW(None, False, False, _ACTIVATE_EVENT)
+        if not h:
+            return
+        try:
+            while True:
+                if ctypes.windll.kernel32.WaitForSingleObject(h, 0xFFFFFFFF) == 0:
+                    if self._root:
+                        if self._session and self._home_win:
+                            self._root.after(0, self._home_win.show)
+                        elif not self._session and self._login_win:
+                            self._root.after(0, self._login_win.show)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+
     def _update_poll_loop(self) -> None:
         interval_seconds = random.uniform(20 * 3600, 28 * 3600)
         # Run the first check immediately (preserves current startup behaviour).
@@ -1382,6 +1446,7 @@ class TrayApp:
         root = tk.Tk()
         root.withdraw()
         _apply_theme(root)
+        root.after(0, lambda: _set_app_icon(root))
         self._root = root
 
         self._login_win = LoginWindow(root, self._store, self._on_login_success)
@@ -1414,13 +1479,16 @@ class TrayApp:
         threading.Thread(target=self._update_poll_loop, daemon=True).start()
         threading.Thread(target=self._auto_heal, daemon=True).start()
         threading.Thread(target=self._setup_env, daemon=True).start()
+        threading.Thread(target=self._watch_activate_event, daemon=True).start()
 
         # Ensure autostart on first run when a session already exists
         if self._session and not _autostart_enabled():
             _set_autostart(True)
 
-        # Show login window on first launch if not signed in
-        if not self._session:
+        # Always surface the appropriate window on launch.
+        if self._session:
+            root.after(200, self._home_win.show)
+        else:
             root.after(200, self._login_win.show)
 
         # If relaunched after an in-app update, open HomeWindow with a success message.
@@ -1437,6 +1505,17 @@ class TrayApp:
             except Exception:
                 logging.warning("Could not read update sentinel", exc_info=True)
 
+        # If launched by install.ps1, open HomeWindow (existing creds path —
+        # the no-session path is already handled by the login window block above).
+        install_sentinel = Path(tempfile.gettempdir()) / "plaud_just_installed.txt"
+        if install_sentinel.exists():
+            try:
+                install_sentinel.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if self._session and self._home_win:
+                root.after(500, self._home_win.show)
+
         root.mainloop()
 
         # Cleanup after mainloop exits
@@ -1447,4 +1526,10 @@ class TrayApp:
 def main() -> None:
     if not _acquire_instance_lock():
         return
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PlaudTools.TrayApp")
+        except Exception:
+            pass
     TrayApp().run()

@@ -131,6 +131,8 @@ try {
     if (-not (Test-Path $exePath)) {
         throw "PlaudTools.exe not found at '$exePath' after extraction. The zip layout may have changed."
     }
+    # Sentinel so the tray knows to open its window on this first launch.
+    [System.IO.File]::WriteAllText("$env:TEMP\plaud_just_installed.txt", '')
     Start-Process -FilePath $exePath
 
     Write-Host ''
