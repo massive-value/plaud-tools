@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-05-21
+
+### Fixed
+
+- In-app update now kills `plaud-mcp.exe` before extracting the zip. The MCP
+  process holds a file lock on `mcp/plaud-mcp.exe` while running; `Expand-Archive`
+  threw a terminating error when it hit that locked file, leaving the zip
+  in place, the PS1 script not self-deleted, and the installed binary unchanged.
+  The update PS1 helper now mirrors the uninstall helper: it sends
+  `Stop-Process -Name plaud-mcp -Force` after the tray exits and before
+  extraction. The downloaded zip is also cleaned up after extraction.
+
 ## [0.1.18] - 2026-05-21
 
 ### Added
@@ -292,7 +304,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/massive-value/plaud-tools/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/massive-value/plaud-tools/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/massive-value/plaud-tools/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/massive-value/plaud-tools/compare/v0.1.15...v0.1.16

@@ -835,9 +835,11 @@ class UpdateDialog:
                 "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
                 "    Start-Sleep -Seconds 1\n"
                 "}\n"
+                "Stop-Process -Name plaud-mcp -Force -ErrorAction SilentlyContinue\n"
                 "Start-Sleep -Seconds 2\n"
                 "$ProgressPreference = 'SilentlyContinue'\n"
                 f"Expand-Archive -Path '{zip_path}' -DestinationPath '{extract_dir}' -Force\n"
+                f"Remove-Item -Path '{zip_path}' -ErrorAction SilentlyContinue\n"
                 f"Start-Process '{install_dir}\\PlaudTools.exe'\n"
                 "Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n"
             )
