@@ -74,29 +74,59 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Apply a state change to a recording: rename, trash, restore, delete, move, or rename_speaker.",
+        description="Apply a reversible state change to a recording: rename, trash, restore, or move.",
         inputSchema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
                 "mutation": {
                     "type": "string",
-                    "enum": ["rename", "trash", "restore", "delete", "move", "rename_speaker"],
+                    "enum": ["rename", "trash", "restore", "move"],
                 },
                 "new_name": {
                     "type": "string",
-                    "description": "Required for rename and rename_speaker",
+                    "description": "Required for rename",
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); required for move; use '-' to clear",
+                    "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",
                 },
-                "original_label": {
-                    "type": "string",
-                    "description": "Required for rename_speaker: existing speaker label",
+                "clear_folder": {
+                    "type": "boolean",
+                    "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",
                 },
             },
             "required": ["recording_id", "mutation"],
+        },
+    ),
+    types.Tool(
+        name="delete_recording",
+        description="Permanently and irreversibly delete a recording.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recording_id": {"type": "string"},
+            },
+            "required": ["recording_id"],
+        },
+    ),
+    types.Tool(
+        name="rename_speaker",
+        description="Rename a speaker label across all transcript segments for a recording.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recording_id": {"type": "string"},
+                "original_label": {
+                    "type": "string",
+                    "description": "Existing speaker label to replace",
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "Replacement speaker name",
+                },
+            },
+            "required": ["recording_id", "original_label", "new_name"],
         },
     ),
     types.Tool(
