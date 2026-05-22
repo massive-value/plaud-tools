@@ -291,12 +291,27 @@ try {
     }
 
     # 4c. Register autostart in HKCU Run key (idempotent)
-    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    #
+    # The value name MUST match plaud_tools.tray.setup._AUTOSTART_NAME ("Plaud
+    # Tools", with a space) — that is what the tray reads in _autostart_enabled
+    # and writes in _set_autostart.  Earlier revisions of this script wrote
+    # "PlaudTools" (no space); we strip that stale name on every run so users
+    # who upgraded through the buggy version do not end up with two Run keys
+    # firing on login.
+    $runKey       = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $autostartName = 'Plaud Tools'
     try {
-        $existing = (Get-ItemProperty -Path $runKey -Name PlaudTools -ErrorAction SilentlyContinue).'PlaudTools'
+        # Remove the stale "PlaudTools" (no-space) value if it was left behind
+        # by a previous buggy install.  Harmless when absent.
+        if ($null -ne (Get-ItemProperty -Path $runKey -Name 'PlaudTools' -ErrorAction SilentlyContinue)) {
+            Remove-ItemProperty -Path $runKey -Name 'PlaudTools' -ErrorAction SilentlyContinue
+            Write-Host '    Removed legacy "PlaudTools" autostart entry (now using "Plaud Tools").'
+        }
+
+        $existing = (Get-ItemProperty -Path $runKey -Name $autostartName -ErrorAction SilentlyContinue).$autostartName
         if ($existing -ne $exePath) {
-            Set-ItemProperty -Path $runKey -Name PlaudTools -Value $exePath -Type String
-            Write-Host '    Registered PlaudTools for autostart.'
+            Set-ItemProperty -Path $runKey -Name $autostartName -Value $exePath -Type String
+            Write-Host "    Registered '$autostartName' for autostart."
         } else {
             Write-Host '    Autostart already registered.'
         }
