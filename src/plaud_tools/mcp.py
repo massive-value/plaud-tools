@@ -101,18 +101,19 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             until_ms = _parse_isoish(until, "until", end_of_day=True) if until else None
             has_filters = any(value is not None for value in (since, until, query, folder))
             if has_filters:
-                items = client.list_recordings()
-                items = _filter_recordings(
-                    items,
+                all_items = client.list_recordings()
+                all_items = _filter_recordings(
+                    all_items,
                     since_ms=since_ms,
                     until_ms=until_ms,
                     query=query,
                     folder_id=folder,
                 )
-                items = sorted(items, key=lambda item: item.start_time, reverse=True)
-                items = items[after:after + limit]
+                all_items = sorted(all_items, key=lambda item: item.start_time, reverse=True)
+                page = all_items[after:after + limit]
+                has_more = len(all_items) > after + limit
             else:
-                items = client.list_recordings(
+                page = client.list_recordings(
                     PlaudRecordingQuery(
                         skip=after if after else None,
                         limit=limit,
@@ -121,7 +122,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         is_desc=True,
                     )
                 )
-            return _json_result([_summarize_recording(item) for item in items])
+                has_more = len(page) == limit
+            next_after = after + len(page) if has_more else None
+            return _json_result({
+                "items": [_summarize_recording(item) for item in page],
+                "next_after": next_after,
+            })
 
         return _call(get_client, inner)
 
