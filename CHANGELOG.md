@@ -24,19 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediately after the transcribe/summarize request is accepted, `transcript`
   waits only for transcript readiness, and `summary` preserves the previous
   blocking behavior. (#31)
-
-### Changed
-
-- MCP `process_recording` now defaults to `wait="transcript"` so MCP clients do
-  not block on long-running summary generation unless they explicitly request it. (#31)
-
 - First-run welcome: on first launch after `install.ps1`, a Windows toast
   notification appears explaining where the tray icon lives.  `HomeWindow`
   also shows a one-time blue banner directing the user to "Configure AI
   Agents…"; the banner is dismissed when that button is clicked.  The
   `plaud_just_installed.txt` sentinel is consumed immediately so neither
   surface repeats on subsequent launches.  Falls back gracefully when the
-  toast API is unavailable.
+  toast API is unavailable. (#27)
+- `plaud-tools doctor` — self-diagnosis command that prints a JSON document
+  covering version, frozen/pip install mode, executable paths, session status
+  (token masked), AI client MCP wiring, and the tray log path. (#45)
+
+### Changed
+
+- MCP `process_recording` now defaults to `wait="transcript"` so MCP clients do
+  not block on long-running summary generation unless they explicitly request it. (#31)
 
 ### Fixed
 

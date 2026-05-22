@@ -126,6 +126,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("update", help="Upgrade plaud-tools via pip (pip users only).")
 
+    sub.add_parser(
+        "doctor",
+        help="Print a self-diagnosis JSON document for support and debugging.",
+        description=(
+            "Collects the local install state — version, executable paths, session status, "
+            "and AI client wiring — and prints it as JSON. "
+            "The session token is never included; only masked metadata is surfaced."
+        ),
+    )
+
     ping_cmd = sub.add_parser("ping")
     return parser
 
@@ -244,6 +254,11 @@ def run_cli(
             )
         sys.exit(result.returncode)
         return ""  # unreachable; satisfies return-type checker
+
+    if args.command == "doctor":
+        from .doctor import run_doctor_json
+
+        return run_doctor_json(store)
 
     client = client or _build_runtime_client(store)
 

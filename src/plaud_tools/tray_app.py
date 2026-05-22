@@ -1068,6 +1068,7 @@ class HomeWindow:
         on_open_uninstall: Callable[[], None],
         get_session_label: Callable[[], str],
         get_update_info: Callable[[], "tuple[str, str, str | None] | None"],
+        on_open_log_folder: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._on_test_connection = on_test_connection
@@ -1078,6 +1079,7 @@ class HomeWindow:
         self._on_open_uninstall = on_open_uninstall
         self._get_session_label = get_session_label
         self._get_update_info = get_update_info
+        self._on_open_log_folder = on_open_log_folder
         self._win: tk.Toplevel | None = None
         self._session_var: tk.StringVar | None = None
         self._status_var: tk.StringVar | None = None
@@ -1141,8 +1143,12 @@ class HomeWindow:
 
         self._update_btn = ttk.Button(btn_frame, text="Check for Updates",
                                        command=self._handle_check_update)
-        self._update_btn.pack(fill="x")
+        self._update_btn.pack(fill="x", pady=(0, 6))
         self._refresh_update_btn()
+
+        if self._on_open_log_folder is not None:
+            ttk.Button(btn_frame, text="View Logs",
+                       command=self._on_open_log_folder).pack(fill="x")
 
         self._status_var = tk.StringVar()
         self._status_label = ttk.Label(frame, textvariable=self._status_var,
@@ -1575,6 +1581,7 @@ class TrayApp:
             on_open_uninstall=self._open_uninstall,
             get_session_label=self._session_label,
             get_update_info=lambda: self._update_info,
+            on_open_log_folder=self._open_log_folder,
         )
 
         # Build tray icon
