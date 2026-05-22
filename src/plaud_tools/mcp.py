@@ -321,7 +321,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             except ValueError as exc:
                 return _error_result(str(exc), error_code="validation", retryable=False)
             raw_bytes = path.read_bytes()
-            audio_data = transcode_to_mp3(raw_bytes, path.suffix) if needs_transcode else raw_bytes
+            try:
+                audio_data = transcode_to_mp3(raw_bytes, path.suffix) if needs_transcode else raw_bytes
+            except RuntimeError as exc:
+                # transcode_to_mp3 raises RuntimeError when ffmpeg fails.
+                return _json_result({"error": str(exc)}, is_error=True)
             rec_title = title or path.stem
             start_ms: int | None = None
             if isinstance(start_time, str):
