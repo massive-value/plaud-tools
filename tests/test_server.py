@@ -103,7 +103,6 @@ def test_mcp_log_path_uses_localappdata(monkeypatch, tmp_path):
 def test_setup_mcp_logging_writes_startup_banner(monkeypatch, tmp_path):
     """Pin issue #78 fix: the MCP server now leaves an on-disk audit trail."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    # Strip any pre-existing root handlers so basicConfig actually installs ours.
     root = logging.getLogger()
     saved_handlers = root.handlers[:]
     saved_level = root.level
@@ -111,7 +110,6 @@ def test_setup_mcp_logging_writes_startup_banner(monkeypatch, tmp_path):
         root.removeHandler(h)
     try:
         _setup_mcp_logging()
-        # Force the rotating handler to flush so the assertion sees the banner.
         for h in root.handlers:
             h.flush()
         log_path = tmp_path / "PlaudTools" / "mcp.log"
@@ -120,6 +118,42 @@ def test_setup_mcp_logging_writes_startup_banner(monkeypatch, tmp_path):
         assert "plaud-mcp" in contents
         assert "starting" in contents
         assert "pid=" in contents
+    finally:
+        for h in root.handlers[:]:
+            root.removeHandler(h)
+        for h in saved_handlers:
+            root.addHandler(h)
+        root.setLevel(saved_level)
+
+
+def test_setup_mcp_logging_attaches_even_when_root_already_has_handlers(monkeypatch, tmp_path):
+    """Regression for the v0.2.2 pip-install path: an earlier import
+    (or pip's own logging) can leave the root logger pre-configured.
+    ``logging.basicConfig`` is a silent no-op in that case, which made the
+    pip-installed plaud-mcp v0.2.2 never write its mcp.log banner even
+    though _setup_mcp_logging ran.  We now attach directly.
+    """
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    for h in saved_handlers:
+        root.removeHandler(h)
+    # Simulate "some earlier import configured logging" by attaching a dummy handler.
+    dummy = logging.StreamHandler()
+    root.addHandler(dummy)
+    try:
+        _setup_mcp_logging()
+        for h in root.handlers:
+            h.flush()
+        log_path = tmp_path / "PlaudTools" / "mcp.log"
+        assert log_path.exists(), (
+            "_setup_mcp_logging must attach the file handler even when the "
+            "root logger already has handlers (the v0.2.2 pip-install regression)."
+        )
+        assert "plaud-mcp" in log_path.read_text(encoding="utf-8")
+        # And the pre-existing handler must still be there — we add, not replace.
+        assert dummy in root.handlers
     finally:
         for h in root.handlers[:]:
             root.removeHandler(h)
