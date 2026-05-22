@@ -961,9 +961,6 @@ class UpdateDialog:
             _set_status("Installing…")
 
             install_dir = Path(sys.executable).parent
-            # The zip contains a top-level PlaudTools\ folder, so extract to
-            # the parent so files land at Programs\PlaudTools\ not Programs\PlaudTools\PlaudTools\.
-            extract_dir = install_dir.parent
             tray_pid = os.getpid()
             sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
             ps_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.ps1"
@@ -975,7 +972,7 @@ class UpdateDialog:
                 tray_pid=tray_pid,
                 install_dir=str(install_dir),
                 zip_path=str(zip_path),
-                extract_dir=str(extract_dir),
+                extract_dir=str(install_dir.parent),
             )
             ps_path.write_text(ps_content, encoding="utf-8")
             sentinel.write_text(new_version, encoding="utf-8")
