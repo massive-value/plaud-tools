@@ -1,2127 +1,254 @@
-"""Plaud Tools system tray application.
+"""Plaud Tools system tray application — compatibility shim.
 
-Requires the [tray] optional dependencies:
+The tray code lives under :mod:`plaud_tools.tray` (split across ``setup``,
+``updater``, ``uninstaller``, ``windows.*``, and ``app``).  This module
+re-exports every public symbol the rest of the codebase, the test suite, and
+the PyInstaller entry script expect to find on ``plaud_tools.tray_app``.
+
+Several tests use ``monkeypatch.setattr(tray_app, "_foo", value)`` and then
+exercise code paths that live in the submodules.  To make those patches reach
+the submodule globals (which is where the function bodies look up ``_foo``),
+this module installs a custom ``__class__`` on itself that propagates every
+attribute assignment to the submodules that originally defined the name.
+
+Requires the ``[tray]`` optional dependencies::
+
     pip install plaud-tools[tray]
 
-Entry point: plaud-tray (see pyproject.toml)
+Entry point: ``plaud-tray`` (see ``pyproject.toml``).
 """
 from __future__ import annotations
 
-import json
-import logging
-import logging.handlers
-import os
-import random
+# ---------------------------------------------------------------------------
+# Module-level imports that tests monkeypatch via ``tray_app.<name>``.
+# Keep these in the shim's namespace too so e.g. ``tray_app.subprocess``,
+# ``tray_app.tempfile``, ``tray_app.time``, ``tray_app.Path`` all resolve.
+# ---------------------------------------------------------------------------
+import json  # noqa: F401
+import logging  # noqa: F401
+import logging.handlers  # noqa: F401
+import os  # noqa: F401
+import random  # noqa: F401
 import subprocess
 import sys
 import tempfile
-import threading
+import threading  # noqa: F401
 import time
-import tkinter as tk
-import urllib.request
-from tkinter import ttk
+import tkinter as tk  # noqa: F401
+import urllib.request  # noqa: F401
 from pathlib import Path
-from typing import Callable
+from types import ModuleType
+from typing import Callable  # noqa: F401
 
-import pystray
-from PIL import Image, ImageDraw
-
-from .ai_clients import CLIENTS, connect, connect_all, disconnect, status_all
-from .auth import PlaudAuth
 from . import __version__ as APP_VERSION
+from .ai_clients import CLIENTS, connect, connect_all, disconnect, status_all  # noqa: F401
+from .auth import PlaudAuth  # noqa: F401
 from .client import PlaudClient
-from .errors import PlaudApiError, PlaudSessionExpiredError
-from .ps1_templates import render_uninstall_ps1, render_update_ps1
-from .session import PlaudSession, SessionManager, SessionStore
-
-APP_NAME = "Plaud Tools"
-GITHUB_REPO = "massive-value/plaud-tools"
-
+from .errors import PlaudApiError, PlaudSessionExpiredError  # noqa: F401
+from .ps1_templates import render_uninstall_ps1, render_update_ps1  # noqa: F401
+from .session import PlaudSession, SessionManager, SessionStore  # noqa: F401
 
 # ---------------------------------------------------------------------------
-# Logging (writes to %LOCALAPPDATA%\PlaudTools\tray.log in frozen builds)
+# Re-export submodules so they are addressable via ``tray_app.<submodule>``
+# (some tests reach into them) and so the shim can propagate setattr to them.
 # ---------------------------------------------------------------------------
-
-_TEST_CONNECTION_TIMEOUT = 15  # seconds
-
-
-def _setup_logging() -> None:
-    log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(
-        str(log_dir / "tray.log"),
-        maxBytes=1_000_000,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logging.basicConfig(
-        level=logging.DEBUG,
-        handlers=[handler],
-    )
-    # Also capture unhandled tkinter callback exceptions
-    def _tk_error(exc, val, tb):  # type: ignore[override]
-        logging.exception("tkinter callback error", exc_info=(exc, val, tb))
-    tk.Tk.report_callback_exception = _tk_error  # type: ignore[assignment]
+from .tray import app as _app_mod
+from .tray import background as _background_mod
+from .tray import icons as _icons_mod
+from .tray import setup as _setup_mod
+from .tray import toasts as _toasts_mod
+from .tray import uninstaller as _uninstaller_mod
+from .tray import updater as _updater_mod
+from .tray.windows import home as _home_mod
+from .tray.windows import login as _login_mod
+from .tray.windows import wizard as _wizard_mod
 
 # ---------------------------------------------------------------------------
-# Paths
+# Explicit re-exports.  These give every consumer a stable
+# ``plaud_tools.tray_app.<name>`` import path.
 # ---------------------------------------------------------------------------
-
-def _mcp_exe() -> str:
-    if getattr(sys, "frozen", False):
-        return str(Path(sys.executable).parent / "mcp" / "plaud-mcp.exe")
-    # Dev fallback: PyInstaller onedir output next to repo root
-    return str(Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe")
-
-
-# ---------------------------------------------------------------------------
-# Icons — loaded from bundled assets, Pillow circle as fallback
-# ---------------------------------------------------------------------------
-
-def _assets_path() -> Path:
-    # PyInstaller (onefile + onedir 6+) exposes data files via sys._MEIPASS,
-    # which points at _internal/ for onedir. The exe-parent fallback covers
-    # older PyInstaller layouts where data files sat next to the exe.
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        candidates = []
-        if meipass:
-            candidates.append(Path(meipass) / "assets")
-        candidates.append(Path(sys.executable).parent / "assets")
-        candidates.append(Path(sys.executable).parent / "_internal" / "assets")
-        for c in candidates:
-            if c.exists():
-                return c
-        return candidates[0]
-    return Path(__file__).parent / "assets"
-
-
-def _load_icon(filename: str, fallback_color: str) -> Image.Image:
-    path = _assets_path() / filename
-    if path.exists():
-        return Image.open(path).convert("RGBA")
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    ImageDraw.Draw(img).ellipse([4, 4, 60, 60], fill=fallback_color)
-    return img
-
-
-def _load_icons() -> dict[str, Image.Image]:
-    return {
-        "signed-out": _load_icon("tray-signed-out.png", "#888888"),
-        "signed-in":  _load_icon("tray-signed-in.png",  "#27ae60"),
-        "expiring":   _load_icon("tray-expiring.png",   "#f39c12"),
-        "expired":    _load_icon("tray-expired.png",    "#e74c3c"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Theme (Sun Valley via sv_ttk) — falls back silently to default ttk if the
-# dependency is missing so dev installs without the [tray] extras still run.
-# ---------------------------------------------------------------------------
-
-def _set_app_icon(win: tk.Wm) -> None:
-    ico = _assets_path() / "icon.ico"
-    if ico.exists():
-        try:
-            win.iconbitmap(str(ico))
-        except Exception:
-            pass
-
-
-def _apply_theme(root: tk.Tk) -> None:
-    try:
-        import sv_ttk
-        sv_ttk.set_theme("light")
-    except Exception:
-        logging.warning("sv_ttk theme unavailable; falling back to default ttk", exc_info=True)
-        return
-    style = ttk.Style(root)
-    # Slightly larger default font and roomier button padding to match the
-    # Sun Valley look-and-feel.
-    style.configure(".", font=("Segoe UI", 10))
-    style.configure("TButton", padding=(12, 4))
-
+from .tray.app import (
+    TrayApp,
+    _TEST_CONNECTION_TIMEOUT,
+    main,
+)
+from .tray.icons import _load_icon, _load_icons
+from .tray.toasts import _show_install_toast, _show_session_expired_toast
+from .tray.setup import (
+    APP_NAME,
+    EnvStatus,
+    _ACTIVATE_EVENT,
+    _AUTOSTART_KEY,
+    _AUTOSTART_NAME,
+    _MUTEX_HANDLE,
+    _acquire_instance_lock,
+    _apply_theme,
+    _assets_path,
+    _autostart_enabled,
+    _check_cli_path,
+    _check_ps_completions,
+    _cli_dir,
+    _completions_dir,
+    _events_path,
+    _install_completions_dir,
+    _install_dir,
+    _mcp_exe,
+    _set_app_icon,
+    _set_autostart,
+    _setup_cli_path,
+    _setup_logging,
+    _setup_ps_completions,
+    _stale_sourcing_re,
+    _verify_env,
+)
+from .tray.uninstaller import (
+    UninstallDialog,
+    _delete_log_files,
+    _delete_session_files,
+    _launch_uninstall_helper,
+    _remove_cli_path,
+    _remove_ps_completions,
+)
+from .tray.updater import (
+    GITHUB_REPO,
+    UpdateDialog,
+    _check_for_update,
+    _version_gt,
+)
+from .tray.windows.home import HomeWindow
+from .tray.windows.login import LoginWindow
+from .tray.windows.wizard import (
+    WizardWindow,
+    _STATUS_BADGE,
+)
 
 # ---------------------------------------------------------------------------
-# Single-instance lock (Windows only)
+# Monkeypatch propagation
+#
+# Tests do things like ``monkeypatch.setattr(tray_app, "_cli_dir", X)`` and
+# then call a function that lives in ``plaud_tools.tray.setup``.  The function
+# body looks up ``_cli_dir`` in its own module globals (``tray.setup``), so the
+# patch on this shim wouldn't reach it.  To preserve the contract, we install
+# a custom module class that mirrors every attribute assignment into the
+# submodule(s) that defined the name.
 # ---------------------------------------------------------------------------
 
-_MUTEX_HANDLE = None
-_ACTIVATE_EVENT = "Global\\PlaudToolsActivate"
+# Order matters: submodules earlier in the list are checked first when looking
+# up the original module for a name.  ``app`` is checked first because it
+# (re-)defines symbols that also exist in ``setup`` (e.g. ``Path``).
+_FORWARD_TARGETS = (
+    _app_mod,
+    _background_mod,
+    _toasts_mod,
+    _updater_mod,
+    _uninstaller_mod,
+    _home_mod,
+    _login_mod,
+    _wizard_mod,
+    _icons_mod,
+    _setup_mod,
+)
 
 
-def _acquire_instance_lock() -> bool:
-    global _MUTEX_HANDLE
-    if sys.platform != "win32":
-        return True
-    import ctypes
-    _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance")
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        # Signal the running instance to surface its window, then exit.
-        h = ctypes.windll.kernel32.OpenEventW(0x0002, False, _ACTIVATE_EVENT)  # EVENT_MODIFY_STATE
-        if h:
-            ctypes.windll.kernel32.SetEvent(h)
-            ctypes.windll.kernel32.CloseHandle(h)
-        return False
-    return True
+class _TrayAppShim(ModuleType):
+    """Module subclass that mirrors attribute writes into the tray submodules.
 
-
-# ---------------------------------------------------------------------------
-# Autostart (Windows registry)
-# ---------------------------------------------------------------------------
-
-_AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-_AUTOSTART_NAME = APP_NAME
-
-
-def _autostart_enabled() -> bool:
-    if sys.platform != "win32":
-        return False
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as key:
-            val, _ = winreg.QueryValueEx(key, _AUTOSTART_NAME)
-            return Path(val).resolve() == Path(sys.executable).resolve()
-    except OSError:
-        return False
-
-
-def _set_autostart(enable: bool) -> None:
-    if sys.platform != "win32":
-        return
-    import winreg
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY, 0, winreg.KEY_SET_VALUE) as key:
-        if enable:
-            winreg.SetValueEx(key, _AUTOSTART_NAME, 0, winreg.REG_SZ, str(sys.executable))
-        else:
-            try:
-                winreg.DeleteValue(key, _AUTOSTART_NAME)
-            except FileNotFoundError:
-                pass
-
-
-# ---------------------------------------------------------------------------
-# First-run environment setup (PATH + PowerShell completions)
-# ---------------------------------------------------------------------------
-
-def _install_dir() -> Path:
-    """Return the canonical install directory (%LOCALAPPDATA%\\Programs\\PlaudTools)."""
-    localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(localappdata) / "Programs" / "PlaudTools"
-
-
-def _cli_dir() -> Path | None:
-    """Return the CLI directory inside the frozen bundle, or None in dev mode."""
-    if not getattr(sys, "frozen", False) or sys.platform != "win32":
-        return None
-    return Path(sys.executable).parent / "cli"
-
-
-def _completions_dir() -> Path | None:
-    """Return the bundled completions directory, or None in dev mode."""
-    if not getattr(sys, "frozen", False):
-        return None
-    meipass = getattr(sys, "_MEIPASS", None)
-    candidates: list[Path] = []
-    if meipass:
-        candidates.append(Path(meipass) / "completions")
-    candidates.append(Path(sys.executable).parent / "completions")
-    candidates.append(Path(sys.executable).parent / "_internal" / "completions")
-    for c in candidates:
-        if (c / "plaud-tools.ps1").exists():
-            return c
-    return None
-
-
-def _install_completions_dir() -> Path:
-    """Return the expected completions path inside the canonical install dir."""
-    return _install_dir() / "completions"
-
-
-def _stale_sourcing_re() -> "re.Pattern[str]":
-    """Regex that matches only sourcing lines that point at the PlaudTools install dir.
-
-    Anchored to the canonical install path so unrelated user scripts that happen
-    to live in a directory called ``completions`` are never touched.
+    monkeypatch.setattr(tray_app, "_foo", value) becomes:
+        tray_app._foo = value
+        # plus, for every submodule that already has a "_foo" attribute,
+        tray.setup._foo = value  (etc.)
+    On teardown monkeypatch reapplies setattr(tray_app, "_foo", original_value),
+    which restores all of them.
     """
-    import re
-    # Escape backslashes for use inside a regex; the install dir may contain
-    # only standard ASCII path characters so a simple re.escape is safe.
-    install_completions = str(_install_completions_dir())
-    escaped = re.escape(install_completions)
-    # Allow either forward or back slashes as the trailing separator.
-    return re.compile(
-        r'^\. "' + escaped.replace(re.escape("\\"), r"[/\\]") + r'[/\\]plaud[^"]*\.ps1"',
-        re.IGNORECASE,
-    )
 
-
-def _setup_cli_path() -> None:
-    """Add PlaudTools/cli/ to the user PATH via HKCU\\Environment (idempotent)."""
-    if sys.platform != "win32":
-        return
-    cli = _cli_dir()
-    if cli is None or not cli.exists():
-        return
-    import ctypes
-    import winreg
-    cli_str = str(cli)
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
-            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
-        ) as key:
-            try:
-                current, reg_type = winreg.QueryValueEx(key, "Path")
-            except FileNotFoundError:
-                current, reg_type = "", winreg.REG_EXPAND_SZ
-            parts = [p.strip() for p in current.split(";") if p.strip()]
-            if any(Path(p) == cli for p in parts):
-                return
-            parts.append(cli_str)
-            winreg.SetValueEx(key, "Path", 0, reg_type, ";".join(parts))
-        # Notify open shells that the user environment changed.
-        HWND_BROADCAST = 0xFFFF
-        WM_SETTINGCHANGE = 0x001A
-        ctypes.windll.user32.SendMessageTimeoutW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
-            0x0002, 5000, None,
-        )
-        logging.info("Added %s to user PATH", cli_str)
-    except OSError:
-        logging.warning("Could not update user PATH", exc_info=True)
-
-
-def _setup_ps_completions() -> None:
-    """Source plaud-tools.ps1 from the user's PowerShell profiles (idempotent).
-
-    Also removes any stale sourcing lines left by older builds that pointed at
-    the same install directory (e.g. plaud.ps1 renamed to plaud-tools.ps1).
-    Only lines pointing at the canonical PlaudTools install directory are removed;
-    unrelated user scripts in other completions folders are not touched.
-    """
-    completions = _completions_dir()
-    if completions is None:
-        return
-    ps1 = completions / "plaud-tools.ps1"
-    if not ps1.exists():
-        return
-    source_line = f'. "{ps1}"'
-    stale_re = _stale_sourcing_re()
-    user_docs = Path.home() / "Documents"
-    profiles = [
-        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ]
-    for profile in profiles:
-        try:
-            if profile.exists():
-                content = profile.read_text(encoding="utf-8-sig")
-                lines = [l for l in content.splitlines(keepends=True) if not stale_re.match(l.strip())]
-                content = "".join(lines)
-                if source_line in content:
-                    profile.write_text(content, encoding="utf-8")
-                    continue
-            else:
-                profile.parent.mkdir(parents=True, exist_ok=True)
-                content = ""
-            profile.write_text(
-                (content.rstrip("\n") + "\n" + source_line + "\n") if content else (source_line + "\n"),
-                encoding="utf-8",
-            )
-            logging.info("Added plaud-tools completions to %s", profile)
-        except OSError:
-            logging.warning("Could not update PowerShell profile %s", profile, exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# Environment verification (read-only; used by the tray at startup)
-# ---------------------------------------------------------------------------
-
-class EnvStatus:
-    """Result of a read-only environment check performed at tray startup."""
-
-    def __init__(
-        self,
-        path_ok: bool,
-        completions_ok: bool,
-        autostart_ok: bool,
-    ) -> None:
-        self.path_ok = path_ok
-        self.completions_ok = completions_ok
-        self.autostart_ok = autostart_ok
-
-    @property
-    def all_ok(self) -> bool:
-        return self.path_ok and self.completions_ok and self.autostart_ok
-
-    def missing_labels(self) -> list[str]:
-        out: list[str] = []
-        if not self.path_ok:
-            out.append("PATH")
-        if not self.completions_ok:
-            out.append("shell completions")
-        if not self.autostart_ok:
-            out.append("autostart")
-        return out
-
-
-def _check_cli_path() -> bool:
-    """Return True if the bundled cli/ directory is already on the user PATH."""
-    if sys.platform != "win32":
-        return True
-    cli = _cli_dir()
-    if cli is None:
-        return True  # not a frozen bundle — nothing to verify
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            current, _ = winreg.QueryValueEx(key, "Path")
-        parts = [p.strip() for p in current.split(";") if p.strip()]
-        return any(Path(p) == cli for p in parts)
-    except OSError:
-        return False
-
-
-def _check_ps_completions() -> bool:
-    """Return True if a plaud-tools.ps1 sourcing line is present in at least one profile."""
-    completions = _completions_dir()
-    if completions is None:
-        return True  # not a frozen bundle — nothing to verify
-    ps1 = completions / "plaud-tools.ps1"
-    if not ps1.exists():
-        return True  # completions script not present; nothing to verify
-    source_line = f'. "{ps1}"'
-    user_docs = Path.home() / "Documents"
-    profiles = [
-        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ]
-    for profile in profiles:
-        try:
-            if profile.exists() and source_line in profile.read_text(encoding="utf-8-sig"):
-                return True
-        except OSError:
-            pass
-    return False
-
-
-def _verify_env() -> EnvStatus:
-    """Read-only environment check — does not modify PATH, profiles, or registry."""
-    return EnvStatus(
-        path_ok=_check_cli_path(),
-        completions_ok=_check_ps_completions(),
-        autostart_ok=_autostart_enabled(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Uninstall helpers (inverses of the setup helpers above)
-# ---------------------------------------------------------------------------
-
-def _remove_cli_path() -> None:
-    """Remove PlaudTools/cli/ from the user PATH in HKCU\\Environment."""
-    if sys.platform != "win32":
-        return
-    cli = _cli_dir()
-    if cli is None:
-        return
-    import ctypes
-    import winreg
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
-            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
-        ) as key:
-            try:
-                current, reg_type = winreg.QueryValueEx(key, "Path")
-            except FileNotFoundError:
-                return
-            parts = [p.strip() for p in current.split(";") if p.strip()]
-            new_parts = [p for p in parts if Path(p) != cli]
-            if len(new_parts) == len(parts):
-                return  # nothing to remove
-            winreg.SetValueEx(key, "Path", 0, reg_type, ";".join(new_parts))
-        HWND_BROADCAST = 0xFFFF
-        WM_SETTINGCHANGE = 0x001A
-        ctypes.windll.user32.SendMessageTimeoutW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
-            0x0002, 5000, None,
-        )
-        logging.info("Removed %s from user PATH", cli)
-    except OSError:
-        logging.warning("Could not update user PATH during uninstall", exc_info=True)
-
-
-def _remove_ps_completions() -> None:
-    """Remove plaud-tools sourcing lines from the user's PowerShell profiles.
-
-    Only lines that point at the canonical PlaudTools install directory are removed;
-    unrelated user scripts in other completions folders are not touched.
-    """
-    stale_re = _stale_sourcing_re()
-    user_docs = Path.home() / "Documents"
-    profiles = [
-        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ]
-    for profile in profiles:
-        if not profile.exists():
-            continue
-        try:
-            content = profile.read_text(encoding="utf-8-sig")
-            lines = [l for l in content.splitlines(keepends=True) if not stale_re.match(l.strip())]
-            new_content = "".join(lines)
-            if new_content != content:
-                profile.write_text(new_content, encoding="utf-8")
-                logging.info("Removed plaud-tools completions from %s", profile)
-        except OSError:
-            logging.warning("Could not update PowerShell profile %s during uninstall", profile, exc_info=True)
-
-
-def _delete_session_files() -> None:
-    """Delete stored session/credentials via SessionStore and the fallback file."""
-    SessionStore().clear()
-    fallback = Path.home() / ".config" / "plaud-tools" / "session.json"
-    try:
-        fallback.unlink(missing_ok=True)
-    except OSError:
-        logging.warning("Could not delete session file %s", fallback, exc_info=True)
-    logging.info("Deleted session/credentials")
-
-
-def _delete_log_files() -> None:
-    """Delete tray log files from both the legacy and current log directories."""
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    # Check both legacy path (Plaud) and potential future path (PlaudTools)
-    for log_dir_name in ("Plaud", "PlaudTools"):
-        log_dir = localappdata / log_dir_name
-        if not log_dir.exists():
-            continue
-        for log_file in log_dir.glob("tray.log*"):
-            try:
-                log_file.unlink(missing_ok=True)
-                logging.info("Deleted log file %s", log_file)
-            except OSError:
-                logging.warning("Could not delete log file %s", log_file, exc_info=True)
-
-
-def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> None:
-    """Write a hidden PS1 dispatcher to %TEMP% that invokes the bundled uninstall.ps1."""
-    import subprocess
-    import tempfile
-    tray_pid = os.getpid()
-    log_dirs: list[str] = []
-    if delete_logs:
-        localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        for name in ("PlaudTools", "Plaud"):
-            log_dirs.append(str(Path(localappdata) / name))
-    ps_content = render_uninstall_ps1(
-        tray_pid=tray_pid,
-        install_dir=str(install_dir),
-        log_dirs=log_dirs if log_dirs else None,
-    )
-    ps_path = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.ps1"
-    ps_path.write_text(ps_content, encoding="utf-8")
-    logging.info("Launching uninstall helper: %s (will delete %s)", ps_path, install_dir)
-    subprocess.Popen(
-        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        cwd=tempfile.gettempdir(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Update check
-# ---------------------------------------------------------------------------
-
-def _version_gt(a: str, b: str) -> bool:
-    try:
-        return tuple(int(x) for x in a.split(".")) > tuple(int(x) for x in b.split("."))
-    except ValueError:
-        return False
-
-
-def _check_for_update() -> tuple[str, str, str | None] | None:
-    """Return (latest_version, release_url, zip_asset_url) if an update is available, else None.
-
-    zip_asset_url is the browser_download_url of the PlaudTools.zip asset, or None if not found.
-    """
-    try:
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
-        latest = data["tag_name"].lstrip("v")
-        if _version_gt(latest, APP_VERSION):
-            zip_url: str | None = None
-            for asset in data.get("assets", []):
-                if asset.get("name") == "PlaudTools.zip":
-                    zip_url = asset.get("browser_download_url")
-                    break
-            return latest, data["html_url"], zip_url
-    except Exception:
-        pass
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Events file path (shared with mcp.py via same convention)
-# ---------------------------------------------------------------------------
-
-def _events_path() -> Path:
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    return localappdata / "PlaudTools" / "events.jsonl"
-
-
-# ---------------------------------------------------------------------------
-# Session-expired toast notification
-# ---------------------------------------------------------------------------
-
-def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
-    """Show a Windows toast notifying the user their Plaud session expired.
-
-    Uses the ``winrt`` (winsdk) package when available, then falls back to a
-    hidden PowerShell snippet.  Any failure is logged and silently ignored.
-    The ``on_click`` callback (if provided) is invoked when the toast is
-    activated — note: winrt activation callbacks require WinRT message-loop
-    integration that is not available here, so on_click is only honoured by
-    callers who invoke LoginWindow directly after the toast.
-    """
-    title = APP_NAME
-    message = "Plaud session expired — click the tray icon to sign in again."
-
-    # --- attempt 1: winrt / winsdk ---
-    try:
-        from winrt.windows.ui.notifications import (  # type: ignore[import]
-            ToastNotificationManager,
-            ToastNotification,
-        )
-        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import]
-
-        app_id = "PlaudTools.TrayApp"
-        xml_str = (
-            "<toast>"
-            f"<visual><binding template='ToastGeneric'>"
-            f"<text>{title}</text>"
-            f"<text>{message}</text>"
-            "</binding></visual>"
-            "</toast>"
-        )
-        doc = XmlDocument()
-        doc.load_xml(xml_str)
-        notifier = ToastNotificationManager.create_toast_notifier(app_id)
-        notifier.show(ToastNotification(doc))
-        logging.info("Session-expired toast shown via winrt")
-        return
-    except Exception:
-        logging.debug("winrt toast unavailable, falling back to PowerShell", exc_info=True)
-
-    # --- attempt 2: hidden PowerShell snippet ---
-    if sys.platform != "win32":
-        return
-    try:
-        ps_script = (
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"
-            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
-            "$xml.LoadXml('<toast>"
-            "<visual><binding template=\"ToastGeneric\">"
-            f"<text>{title}</text>"
-            f"<text>{message}</text>"
-            "</binding></visual></toast>')\n"
-            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
-            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"
-            "$notifier.Show($toast)\n"
-        )
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-        logging.info("Session-expired toast dispatched via PowerShell")
-    except Exception:
-        logging.warning("Could not show session-expired toast notification", exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# First-run toast notification
-# ---------------------------------------------------------------------------
-
-def _show_install_toast() -> None:
-    """Show a Windows 11 toast notification explaining the tray icon.
-
-    Uses the ``winrt`` (winsdk) package when available, then falls back to a
-    hidden PowerShell snippet.  Any failure is logged and silently ignored so
-    it never blocks the tray from starting.
-    """
-    title = APP_NAME
-    message = (
-        "PlaudTools is now running in your system tray — "
-        "click the icon to sign in."
-    )
-
-    # --- attempt 1: winrt / winsdk ---
-    try:
-        from winrt.windows.ui.notifications import (  # type: ignore[import]
-            ToastNotificationManager,
-            ToastNotification,
-        )
-        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import]
-
-        app_id = "PlaudTools.TrayApp"
-        xml_str = (
-            "<toast>"
-            f"<visual><binding template='ToastGeneric'>"
-            f"<text>{title}</text>"
-            f"<text>{message}</text>"
-            "</binding></visual>"
-            "</toast>"
-        )
-        doc = XmlDocument()
-        doc.load_xml(xml_str)
-        notifier = ToastNotificationManager.create_toast_notifier(app_id)
-        notifier.show(ToastNotification(doc))
-        logging.info("First-run toast shown via winrt")
-        return
-    except Exception:
-        logging.debug("winrt toast unavailable, falling back to PowerShell", exc_info=True)
-
-    # --- attempt 2: hidden PowerShell snippet ---
-    if sys.platform != "win32":
-        return
-    try:
-        ps_script = (
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"
-            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
-            "$xml.LoadXml('<toast>"
-            "<visual><binding template=\"ToastGeneric\">"
-            f"<text>{title}</text>"
-            f"<text>{message}</text>"
-            "</binding></visual></toast>')\n"
-            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
-            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"
-            "$notifier.Show($toast)\n"
-        )
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-        logging.info("First-run toast dispatched via PowerShell")
-    except Exception:
-        logging.warning("Could not show first-run toast notification", exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# Login window
-# ---------------------------------------------------------------------------
-
-class LoginWindow:
-    def __init__(self, root: tk.Tk, store: SessionStore, on_success: Callable) -> None:
-        self._root = root
-        self._store = store
-        self._on_success = on_success
-        self._win: tk.Toplevel | None = None
-
-    def show(self) -> None:
-        if self._win and self._win.winfo_exists():
-            self._win.lift()
-            self._win.focus_force()
+    def __setattr__(self, name: str, value: object) -> None:  # type: ignore[override]
+        super().__setattr__(name, value)
+        # Skip dunder names — propagating __name__, __loader__, etc. into the
+        # submodules would corrupt their identities (especially during reload).
+        if name.startswith("__") and name.endswith("__"):
             return
-        win = tk.Toplevel(self._root)
-        _set_app_icon(win)
-        win.title(f"{APP_NAME} — Sign in")
-        win.resizable(False, False)
-        win.geometry("340x220")
-        self._win = win  # set before widget build so partial state is always visible
-
-        frame = ttk.Frame(win, padding=16)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="Email").grid(row=0, column=0, sticky="w", pady=4)
-        email_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=email_var, width=32).grid(row=0, column=1, padx=8, pady=4)
-
-        ttk.Label(frame, text="Password").grid(row=1, column=0, sticky="w", pady=4)
-        password_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=password_var, show="•", width=32).grid(row=1, column=1, padx=8, pady=4)
-
-        ttk.Label(frame, text="Region").grid(row=2, column=0, sticky="w", pady=4)
-        region_var = tk.StringVar(value="us")
-        ttk.Combobox(frame, textvariable=region_var, values=["us", "eu"], state="readonly", width=10).grid(
-            row=2, column=1, sticky="w", padx=8, pady=4
-        )
-
-        error_var = tk.StringVar()
-        error_label = ttk.Label(frame, textvariable=error_var, foreground="#c0392b", wraplength=280)
-        error_label.grid(row=3, column=0, columnspan=2, pady=4)
-
-        btn = ttk.Button(frame, text="Sign in")
-        btn.grid(row=4, column=0, columnspan=2, pady=8)
-
-        def do_login() -> None:
-            btn.config(state="disabled", text="Signing in…")
-            error_var.set("")
-            win.update()
-            try:
-                auth = PlaudAuth(self._store)
-                auth.login(email_var.get().strip(), password_var.get(), region_var.get())
-                win.destroy()
-                self._on_success()
-            except (PlaudApiError, PlaudSessionExpiredError) as exc:
-                error_var.set(str(exc))
-                btn.config(state="normal", text="Sign in")
-
-        btn.config(command=do_login)
-        win.bind("<Return>", lambda _: do_login())
-
-        # Bring to front after the event loop has drawn the window, then grab.
-        # grab_set() requires the window to be "viewable"; deferring 50 ms
-        # ensures it is mapped before we attempt to grab.
-        win.lift()
-        win.focus_force()
-        win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
-
-
-# ---------------------------------------------------------------------------
-# Wizard window (AI client wiring)
-# ---------------------------------------------------------------------------
-
-_STATUS_BADGE: dict[str, tuple[str, str]] = {
-    "not-detected": ("Not installed", "#6b7280"),
-    "not-connected": ("Not connected", "#1d4ed8"),
-    "connected": ("✓ Connected", "#15803d"),
-    "stale": ("⚠ Path outdated", "#b45309"),
-}
-
-
-class WizardWindow:
-    def __init__(
-        self,
-        root: tk.Tk,
-        on_done: Callable,
-    ) -> None:
-        self._root = root
-        self._on_done = on_done
-        self._win: tk.Toplevel | None = None
-        self._row_widgets: dict[str, dict[str, object]] = {}
-        self._help_var: tk.StringVar | None = None
-
-    def show(self) -> None:
-        if self._win and self._win.winfo_exists():
-            self._win.lift()
-            self._win.focus_force()
-            self._render()
-            return
-
-        win = tk.Toplevel(self._root)
-        _set_app_icon(win)
-        win.title(f"{APP_NAME} — Configure AI Agents")
-        win.resizable(False, False)
-        win.geometry("460x340")
-        self._win = win
-
-        frame = ttk.Frame(win, padding=16)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="Connect Plaud to your AI clients:",
-                  font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
-
-        rows_frame = ttk.Frame(frame)
-        rows_frame.pack(fill="x")
-        self._row_widgets.clear()
-        for cid, label in CLIENTS.items():
-            row = ttk.Frame(rows_frame)
-            row.pack(fill="x", pady=4)
-            name = ttk.Label(row, text=label, width=18)
-            name.pack(side="left")
-            badge_var = tk.StringVar()
-            badge = ttk.Label(row, textvariable=badge_var)
-            badge.pack(side="left", padx=(0, 8))
-            btn = ttk.Button(row, text="…", width=12)
-            btn.pack(side="right")
-            self._row_widgets[cid] = {"badge": badge, "badge_var": badge_var, "btn": btn}
-
-        self._help_var = tk.StringVar()
-        help_label = ttk.Label(frame, textvariable=self._help_var,
-                               foreground="#15803d", wraplength=420, justify="left")
-        help_label.pack(anchor="w", pady=(8, 0))
-
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
-
-        action_row = ttk.Frame(frame)
-        action_row.pack(fill="x")
-        ttk.Button(action_row, text="Close",
-                   command=win.destroy).pack(side="right")
-
-        win.lift()
-        win.focus_force()
-        self._render()
-
-    # --- helpers ---
-
-    def _render(self) -> None:
-        mcp = _mcp_exe()
-        statuses = status_all(mcp)
-        for cid, status in statuses.items():
-            self._apply_status(cid, status, mcp)
-
-    def _apply_status(self, cid: str, status: str, mcp: str) -> None:
-        widgets = self._row_widgets.get(cid)
-        if not widgets:
-            return
-        text, color = _STATUS_BADGE.get(status, ("unknown", "#6b7280"))
-        widgets["badge_var"].set(text)        # type: ignore[union-attr]
-        widgets["badge"].configure(foreground=color)  # type: ignore[union-attr]
-
-        btn: ttk.Button = widgets["btn"]      # type: ignore[assignment]
-        if status == "not-detected":
-            btn.configure(text="—", state="disabled", command=lambda: None)
-        elif status == "connected":
-            btn.configure(text="Disconnect", state="normal",
-                          command=lambda c=cid: self._do(c, "disconnect", mcp))
-        elif status == "stale":
-            btn.configure(text="Reconnect", state="normal",
-                          command=lambda c=cid: self._do(c, "connect", mcp))
-        else:  # not-connected
-            btn.configure(text="Connect", state="normal",
-                          command=lambda c=cid: self._do(c, "connect", mcp))
-
-    def _do(self, cid: str, action: str, mcp: str) -> None:
-        widgets = self._row_widgets[cid]
-        btn: ttk.Button = widgets["btn"]      # type: ignore[assignment]
-        btn.configure(state="disabled",
-                      text="Connecting…" if action == "connect" else "Disconnecting…")
-        try:
-            if action == "connect":
-                connect(cid, mcp)
-            else:
-                disconnect(cid)
-        except Exception as exc:
-            btn.configure(text=f"Failed: {exc}", state="normal")
-            return
-        self._render()
-        if self._help_var is not None:
-            label = CLIENTS[cid]
-            if action == "connect":
-                self._help_var.set(
-                    f"✓ Connected {label}. Restart {label} to load the new MCP server, "
-                    "then ask it about your Plaud notes to confirm."
-                )
-            else:
-                self._help_var.set("")
-        self._on_done()
-
-
-# ---------------------------------------------------------------------------
-# Update dialog
-# ---------------------------------------------------------------------------
-
-class UpdateDialog:
-    """Dialog that shows an available update and allows in-app install (frozen only)."""
-
-    def __init__(self, root: tk.Tk, app: "TrayApp") -> None:
-        self._root = root
-        self._app = app
-        self._win: tk.Toplevel | None = None
-
-    def show(self) -> None:
-        if self._win and self._win.winfo_exists():
-            self._win.lift()
-            self._win.focus_force()
-            return
-
-        update_info = self._app._update_info
-        if update_info is None:
-            return
-        latest, url, zip_url = update_info
-
-        win = tk.Toplevel(self._root)
-        _set_app_icon(win)
-        win.title(f"{APP_NAME} — Update available")
-        win.resizable(False, False)
-        win.geometry("400x240")
-        self._win = win
-
-        frame = ttk.Frame(win, padding=20)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="A new version of Plaud Tools is available.",
-                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
-
-        ttk.Label(frame, text=f"Current version:    {APP_VERSION}").pack(anchor="w")
-        ttk.Label(frame, text=f"Available version:  {latest}").pack(anchor="w", pady=(0, 12))
-
-        status_var = tk.StringVar()
-        status_label = ttk.Label(frame, textvariable=status_var, foreground="#1d4ed8", wraplength=360)
-        status_label.pack(anchor="w", pady=(0, 8))
-
-        frozen = getattr(sys, "frozen", False)
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill="x", pady=(4, 0))
-
-        if not frozen:
-            ttk.Label(
-                frame,
-                text="In-app install is only available in the bundled tray.",
-                foreground="#6b7280",
-                font=("Segoe UI", 9),
-            ).pack(anchor="w", pady=(0, 8))
-        else:
-            install_btn = ttk.Button(btn_frame, text="Install update and restart")
-            install_btn.pack(side="left")
-
-            def _start_install(zu: str) -> None:
-                install_btn.config(state="disabled")
-                status_var.set("Downloading…")
-                threading.Thread(
-                    target=self._install_worker,
-                    args=(zu, status_var, install_btn),
-                    daemon=True,
-                ).start()
-
-            if zip_url:
-                install_btn.config(command=lambda zu=zip_url: _start_install(zu))
-            else:
-                # zip_url was cached as None (poller ran before CI finished uploading).
-                # Re-fetch once; enable the button if the asset is now available.
-                install_btn.config(state="disabled", text="Checking…")
-
-                def _refetch() -> None:
-                    fresh = _check_for_update()
-                    fresh_zip = fresh[2] if fresh else None
-                    if self._root:
-                        def _apply(zu: str | None = fresh_zip) -> None:
-                            if not win.winfo_exists():
-                                return
-                            if zu:
-                                self._app._update_info = (fresh[0], fresh[1], zu)
-                                install_btn.config(
-                                    state="normal",
-                                    text="Install update and restart",
-                                    command=lambda: _start_install(zu),
-                                )
-                            else:
-                                install_btn.config(
-                                    text="Open release page",
-                                    state="normal",
-                                    command=lambda: self._app._open_url(url),
-                                )
-                        self._root.after(0, _apply)
-
-                threading.Thread(target=_refetch, daemon=True).start()
-
-        def _close() -> None:
-            if win.winfo_exists():
-                win.destroy()
-
-        close_text = "Cancel" if frozen else "Close"
-        ttk.Button(btn_frame, text=close_text, command=_close).pack(side="left", padx=8)
-
-        win.lift()
-        win.focus_force()
-        win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
-
-    def _install_worker(
-        self,
-        zip_url: str,
-        status_var: tk.StringVar,
-        install_btn: ttk.Button,
-    ) -> None:
-        """Download the zip, write the .bat helper, launch it, then quit the tray."""
-
-        def _set_status(text: str) -> None:
-            if self._root:
-                self._root.after(0, lambda: status_var.set(text))
-
-        def _on_error(err: Exception) -> None:
-            logging.exception("in-app update download failed")
-            if self._root:
-                self._root.after(0, lambda: (
-                    status_var.set(f"Download failed: {err}"),
-                    install_btn.config(state="normal"),
-                ))
-
-        try:
-            req = urllib.request.Request(
-                zip_url,
-                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                content_length = resp.headers.get("Content-Length")
-                total_mb: float | None = (
-                    int(content_length) / (1024 * 1024) if content_length else None
-                )
-                tmp = tempfile.NamedTemporaryFile(
-                    suffix=".zip", delete=False, prefix="plaud_update_"
-                )
+        for submod in _FORWARD_TARGETS:
+            # Only mirror names that the submodule already exposes — avoids
+            # spraying unrelated globals across modules.
+            if hasattr(submod, name):
                 try:
-                    downloaded = 0
-                    chunk_size = 65536
-                    while True:
-                        chunk = resp.read(chunk_size)
-                        if not chunk:
-                            break
-                        tmp.write(chunk)
-                        downloaded += len(chunk)
-                        downloaded_mb = downloaded / (1024 * 1024)
-                        if total_mb is not None:
-                            label = f"Downloading… ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
-                        else:
-                            label = f"Downloading… ({downloaded_mb:.1f} MB)"
-                        _set_status(label)
-                finally:
-                    tmp.close()
-
-            zip_path = Path(tmp.name)
-        except Exception as exc:
-            _on_error(exc)
-            return
-
-        try:
-            _set_status("Installing…")
-
-            install_dir = Path(sys.executable).parent
-            tray_pid = os.getpid()
-            sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
-            ps_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.ps1"
-
-            update_info = self._app._update_info
-            new_version = update_info[0] if update_info else "unknown"
-
-            ps_content = render_update_ps1(
-                tray_pid=tray_pid,
-                install_dir=str(install_dir),
-                zip_path=str(zip_path),
-                extract_dir=str(install_dir.parent),
-            )
-            ps_path.write_text(ps_content, encoding="utf-8")
-            sentinel.write_text(new_version, encoding="utf-8")
-
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                cwd=tempfile.gettempdir(),
-            )
-
-            if self._root:
-                self._root.after(0, self._app._quit)
-
-        except Exception as exc:
-            _on_error(exc)
-
-
-# ---------------------------------------------------------------------------
-# Uninstall dialog
-# ---------------------------------------------------------------------------
-
-class UninstallDialog:
-    """Checklist dialog that removes selected Plaud Tools components."""
-
-    def __init__(self, root: tk.Tk) -> None:
-        self._root = root
-        self._win: tk.Toplevel | None = None
-
-    # ------------------------------------------------------------------
-    # Public helper — pure predicate, easy to unit-test
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def ai_client_warning_visible(delete_installdir: bool, disconnect_clients: bool) -> bool:
-        """Return True when the AI-client warning should be shown.
-
-        The dangerous combination is: install dir will be deleted but AI client
-        configs will NOT be cleaned up — clients will have dangling paths.
-        """
-        return delete_installdir and not disconnect_clients
-
-    def show(self) -> None:
-        if self._win and self._win.winfo_exists():
-            self._win.lift()
-            self._win.focus_force()
-            return
-
-        win = tk.Toplevel(self._root)
-        _set_app_icon(win)
-        win.title(f"Uninstall {APP_NAME}")
-        win.resizable(False, False)
-        self._win = win
-
-        frame = ttk.Frame(win, padding=16)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(
-            frame,
-            text="Select items to remove:",
-            font=("", 10, "bold"),
-        ).pack(anchor="w", pady=(0, 8))
-
-        # --- checkboxes ---
-        var_clients   = tk.BooleanVar(value=True)
-        var_path      = tk.BooleanVar(value=True)
-        var_autostart = tk.BooleanVar(value=True)
-        var_ps        = tk.BooleanVar(value=True)
-        var_installdir = tk.BooleanVar(value=True)
-        var_session   = tk.BooleanVar(value=False)
-        var_logs      = tk.BooleanVar(value=False)
-
-        checks_frame = ttk.Frame(frame)
-        checks_frame.pack(fill="x")
-
-        items = [
-            (var_clients,    "Disconnect AI clients (Claude Desktop, Claude Code, Codex)"),
-            (var_path,       "Remove from user PATH"),
-            (var_autostart,  "Remove autostart registry key"),
-            (var_ps,         "Remove PowerShell profile sourcing lines"),
-            (var_installdir, "Delete install directory"),
-            (var_session,    "Delete session / credentials"),
-            (var_logs,       "Delete log files"),
-        ]
-        for var, label in items:
-            ttk.Checkbutton(checks_frame, text=label, variable=var).pack(anchor="w", pady=2)
-
-        # --- AI-client warning label (orange, hidden until needed) ---
-        warning_var = tk.StringVar()
-        warning_label = ttk.Label(
-            frame,
-            textvariable=warning_var,
-            foreground="#c05000",
-            wraplength=380,
-            justify="left",
-        )
-        warning_label.pack(anchor="w", pady=(6, 0))
-
-        def _update_warning(*_args: object) -> None:
-            if self.ai_client_warning_visible(var_installdir.get(), var_clients.get()):
-                warning_var.set(
-                    "⚠ AI clients will still point at the deleted install directory. "
-                    "Restart Claude Desktop / Claude Code / Codex after uninstalling to clear the error."
-                )
-            else:
-                warning_var.set("")
-
-        var_installdir.trace_add("write", _update_warning)
-        var_clients.trace_add("write", _update_warning)
-        # Seed the initial state (install dir checked, clients checked → no warning).
-        _update_warning()
-
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=12)
-
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x")
-
-        cancel_btn = ttk.Button(btn_row, text="Cancel", command=win.destroy)
-        cancel_btn.pack(side="left")
-
-        def _set_buttons_in_flight(in_flight: bool) -> None:
-            """Disable/re-enable both action buttons while uninstall runs."""
-            state = "disabled" if in_flight else "normal"
-            cancel_btn.config(state=state)
-            uninstall_btn.config(
-                state=state,
-                text="Uninstalling…" if in_flight else "Uninstall",
-            )
-
-        def do_uninstall() -> None:
-            from tkinter import messagebox
-
-            # Disable buttons immediately so a second click cannot spawn a
-            # second helper process racing to delete the install directory.
-            _set_buttons_in_flight(True)
-            win.update()
-
-            # Execute simple removals first.
-            if var_clients.get():
-                try:
-                    from .ai_clients import disconnect_all
-                    disconnect_all()
-                    logging.info("Disconnected AI clients")
-                except Exception:
-                    logging.warning("Could not disconnect AI clients", exc_info=True)
-            if var_path.get():
-                _remove_cli_path()
-            if var_autostart.get():
-                try:
-                    _set_autostart(False)
-                    logging.info("Removed autostart registry key")
-                except Exception:
-                    logging.warning("Could not remove autostart key", exc_info=True)
-            if var_ps.get():
-                _remove_ps_completions()
-            if var_session.get():
-                _delete_session_files()
-            if var_logs.get():
-                _delete_log_files()
-
-            # Install directory deletion: requires .bat helper in frozen mode.
-            if var_installdir.get():
-                if not getattr(sys, "frozen", False):
-                    logging.warning("dev mode: skipping install dir deletion")
-                    win.destroy()
-                    messagebox.showinfo(
-                        APP_NAME,
-                        "Uninstall complete. The selected items were removed.\n\n"
-                        "(Install directory deletion skipped in dev mode.)",
-                        parent=self._root,
-                    )
-                else:
-                    install_dir = Path(sys.executable).parent
-                    win.destroy()
-                    _launch_uninstall_helper(install_dir, delete_logs=var_logs.get())
-                    # Quit the tray so the helper can delete the directory.
-                    if self._root:
-                        self._root.after(0, lambda: self._root.destroy() if self._root else None)  # type: ignore[union-attr]
-                    # (icon.stop() will be called by TrayApp._quit path via mainloop exit)
-            else:
-                win.destroy()
-                messagebox.showinfo(
-                    APP_NAME,
-                    "Uninstall complete. The selected items were removed.",
-                    parent=self._root,
-                )
-
-        uninstall_btn = ttk.Button(btn_row, text="Uninstall", command=do_uninstall)
-        uninstall_btn.pack(side="right")
-
-        win.lift()
-        win.focus_force()
-        win.after(50, lambda: win.grab_set() if win.winfo_exists() else None)
-
-
-# ---------------------------------------------------------------------------
-# Home window (tray left-click target)
-# ---------------------------------------------------------------------------
-
-class HomeWindow:
-    def __init__(
-        self,
-        root: tk.Tk,
-        on_test_connection: Callable[[Callable[[bool, str], None]], None],
-        on_check_for_update: Callable[[Callable[[bool, str], None]], None],
-        on_open_update: Callable[[], None],
-        on_open_wizard: Callable[[], None],
-        on_sign_out: Callable[[], None],
-        on_open_uninstall: Callable[[], None],
-        on_repair_setup: "Callable[[Callable[[bool, str], None]], None] | None",
-        get_session_label: Callable[[], str],
-        get_update_info: Callable[[], "tuple[str, str, str | None] | None"],
-        get_env_status: "Callable[[], EnvStatus | None]",
-        on_open_log_folder: Callable[[], None] | None = None,
-    ) -> None:
-        self._root = root
-        self._on_test_connection = on_test_connection
-        self._on_check_for_update = on_check_for_update
-        self._on_open_update = on_open_update
-        self._on_open_wizard = on_open_wizard
-        self._on_sign_out = on_sign_out
-        self._on_open_uninstall = on_open_uninstall
-        self._on_repair_setup = on_repair_setup
-        self._get_session_label = get_session_label
-        self._get_update_info = get_update_info
-        self._get_env_status = get_env_status
-        self._on_open_log_folder = on_open_log_folder
-        self._win: tk.Toplevel | None = None
-        self._session_var: tk.StringVar | None = None
-        self._status_var: tk.StringVar | None = None
-        self._status_label: ttk.Label | None = None
-        self._test_btn: ttk.Button | None = None
-        self._update_btn: ttk.Button | None = None
-        self._repair_btn: ttk.Button | None = None
-        self._welcome_banner_armed: bool = False
-        self._welcome_banner: tk.Frame | None = None
-        # Setup-failure row: yellow banner at the top of HomeWindow shown when
-        # _verify_env reports any missing entries.
-        self._setup_failure_row: tk.Frame | None = None
-        self._setup_failure_label: tk.Label | None = None
-
-    def show(self) -> None:
-        if self._win and self._win.winfo_exists():
-            self._win.lift()
-            self._win.focus_force()
-            self._refresh_session()
-            self._refresh_update_btn()
-            self._refresh_repair_btn()
-            self._refresh_setup_failure_row()
-            return
-
-        win = tk.Toplevel(self._root)
-        _set_app_icon(win)
-        win.title(APP_NAME)
-        win.resizable(False, False)
-        win.geometry("400x420")
-        self._win = win
-
-        frame = ttk.Frame(win, padding=20)
-        frame.pack(fill="both", expand=True)
-
-        # Setup-failure row — yellow banner at the top shown when _verify_env
-        # detects any missing setup entries (PATH, completions, autostart).
-        # Created here so it is always available; shown/hidden by
-        # _refresh_setup_failure_row().
-        self._setup_failure_row = tk.Frame(frame, background="#b45309", padx=10, pady=6)
-        self._setup_failure_label = tk.Label(
-            self._setup_failure_row,
-            text="",
-            background="#b45309",
-            foreground="white",
-            font=("Segoe UI", 9),
-            cursor="hand2",
-            wraplength=340,
-            justify="left",
-        )
-        self._setup_failure_label.pack(anchor="w")
-        self._setup_failure_label.bind("<Button-1>", lambda _e: self._handle_repair_setup())
-        self._setup_failure_row.bind("<Button-1>", lambda _e: self._handle_repair_setup())
-        # Rendered (shown or hidden) after the window is fully laid out.
-
-        # Welcome banner — shown once after first install, dismissed on
-        # "Configure AI Agents…" click.
-        self._welcome_banner = None
-        if self._welcome_banner_armed:
-            banner = tk.Frame(frame, background="#1d4ed8", padx=10, pady=8)
-            banner.pack(fill="x", pady=(0, 10))
-            tk.Label(
-                banner,
-                text="Welcome to PlaudTools — connect your AI client below.",
-                background="#1d4ed8",
-                foreground="white",
-                font=("Segoe UI", 9),
-                wraplength=340,
-                justify="left",
-            ).pack(anchor="w")
-            self._welcome_banner = banner
-
-        self._session_var = tk.StringVar()
-        ttk.Label(frame, textvariable=self._session_var,
-                  font=("", 10, "bold"), wraplength=360).pack(anchor="w")
-        self._refresh_session()
-
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill="x")
-
-        ttk.Button(btn_frame, text="Configure AI Agents…",
-                   command=self._handle_open_wizard).pack(fill="x", pady=(0, 6))
-
-        self._test_btn = ttk.Button(btn_frame, text="Test Connection",
-                                     command=self._handle_test)
-        self._test_btn.pack(fill="x", pady=(0, 6))
-
-        self._update_btn = ttk.Button(btn_frame, text="Check for Updates",
-                                       command=self._handle_check_update)
-        self._update_btn.pack(fill="x", pady=(0, 6))
-        self._refresh_update_btn()
-
-        # Repair setup button — shown only when _verify_env detects missing entries
-        self._repair_btn = ttk.Button(btn_frame, text="Repair setup",
-                                       command=self._handle_repair_setup)
-        self._refresh_repair_btn()
-        self._refresh_setup_failure_row()
-
-        if self._on_open_log_folder is not None:
-            ttk.Button(btn_frame, text="View Logs",
-                       command=self._on_open_log_folder).pack(fill="x")
-
-        self._status_var = tk.StringVar()
-        self._status_label = ttk.Label(frame, textvariable=self._status_var,
-                                        foreground="#15803d",
-                                        font=("Segoe UI", 9), wraplength=360)
-        self._status_label.pack(anchor="w", pady=(6, 0))
-
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
-
-        ttk.Button(frame, text="Sign out",
-                   command=self._handle_sign_out).pack(fill="x", pady=(0, 6))
-
-        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(0, 6))
-
-        ttk.Button(frame, text="Uninstall…",
-                   command=self._handle_uninstall).pack(fill="x")
-
-        footer = ttk.Frame(frame)
-        footer.pack(fill="x", pady=(10, 0))
-        ttk.Label(footer, text=f"v{APP_VERSION}",
-                  foreground="#6b7280",
-                  font=("Segoe UI", 8)).pack(side="right")
-
-        win.lift()
-        win.focus_force()
-
-    def arm_welcome_banner(self) -> None:
-        """Mark the next open() call as a first-run welcome.  No-op if the
-        window is already open (the banner would have been shown already)."""
-        self._welcome_banner_armed = True
-
-    def _handle_open_wizard(self) -> None:
-        """Open the AI-client wizard and dismiss the welcome banner on first click."""
-        if self._welcome_banner_armed:
-            self._welcome_banner_armed = False
-            if self._welcome_banner is not None:
-                try:
-                    self._welcome_banner.destroy()
-                except Exception:
+                    setattr(submod, name, value)
+                except (AttributeError, TypeError):
                     pass
-                self._welcome_banner = None
-        self._on_open_wizard()
 
-    def _refresh_session(self) -> None:
-        if self._session_var is not None:
-            self._session_var.set(self._get_session_label())
-
-    def _refresh_update_btn(self) -> None:
-        if self._update_btn is None:
+    def __delattr__(self, name: str) -> None:  # type: ignore[override]
+        super().__delattr__(name)
+        if name.startswith("__") and name.endswith("__"):
             return
-        info = self._get_update_info()
-        if info is not None:
-            self._update_btn.configure(
-                state="normal",
-                text=f"Update available: v{info[0]} — Install",
-                command=self._on_open_update,
-            )
-        else:
-            self._update_btn.configure(
-                state="normal",
-                text="Check for Updates",
-                command=self._handle_check_update,
-            )
-
-    def _refresh_repair_btn(self) -> None:
-        if self._repair_btn is None:
-            return
-        status = self._get_env_status()
-        if status is not None and not status.all_ok and self._on_repair_setup is not None:
-            missing = ", ".join(status.missing_labels())
-            self._repair_btn.configure(text=f"Repair setup ({missing})", state="normal")
-            self._repair_btn.pack(fill="x", pady=(0, 6))
-        else:
-            self._repair_btn.pack_forget()
-
-    def _refresh_setup_failure_row(self) -> None:
-        """Show or hide the yellow setup-failure banner at the top of HomeWindow.
-
-        The row is visible when ``_verify_env`` has reported at least one missing
-        entry AND a repair callback is available.  On success the row is hidden
-        (after a brief green message displayed via ``_set_status``).
-
-        Because the row widget is created first inside the frame in ``show()``,
-        calling ``pack()`` on it will place it above all other widgets.
-        """
-        if self._setup_failure_row is None or self._setup_failure_label is None:
-            return
-        status = self._get_env_status()
-        if status is not None and not status.all_ok and self._on_repair_setup is not None:
-            missing = ", ".join(status.missing_labels())
-            self._setup_failure_label.configure(
-                text=f"Some setup is missing ({missing}) — click to repair.",
-                background="#b45309",
-                foreground="white",
-                cursor="hand2",
-            )
-            self._setup_failure_row.pack(fill="x", pady=(0, 10))
-        else:
-            self._setup_failure_row.pack_forget()
-
-    def _set_status(self, msg: str, ok: bool = True) -> None:
-        if self._status_var is None or self._status_label is None:
-            return
-        self._status_label.configure(foreground="#15803d" if ok else "#c0392b")
-        self._status_var.set(msg)
-
-    def _handle_test(self) -> None:
-        if self._test_btn is None:
-            return
-        self._test_btn.configure(state="disabled", text="Testing…")
-        if self._status_var is not None:
-            self._status_var.set("")
-
-        def _done(ok: bool, msg: str) -> None:
-            if self._test_btn is None:
-                return
-            self._test_btn.configure(state="normal", text="Test connection")
-            self._set_status(msg, ok)
-            if self._win and self._win.winfo_exists():
-                self._win.after(4000, lambda: self._status_var.set("") if self._status_var else None)
-
-        self._on_test_connection(_done)
-
-    def _handle_check_update(self) -> None:
-        if self._update_btn is None:
-            return
-        self._update_btn.configure(state="disabled", text="Checking…")
-        if self._status_var is not None:
-            self._status_var.set("")
-
-        def _done(found: bool, msg: str) -> None:
-            if self._update_btn is None:
-                return
-            if found:
-                self._refresh_update_btn()
-                self._set_status(msg, ok=True)
-                self._on_open_update()
-            else:
-                self._update_btn.configure(state="normal", text="Check for Updates")
-                self._set_status(msg, ok=True)
-                if self._win and self._win.winfo_exists():
-                    self._win.after(4000, lambda: self._status_var.set("") if self._status_var else None)
-
-        self._on_check_for_update(_done)
-
-    def _handle_repair_setup(self) -> None:
-        if self._on_repair_setup is None:
-            return
-        if self._repair_btn is not None:
-            self._repair_btn.configure(state="disabled", text="Repairing…")
-        if self._status_var is not None:
-            self._status_var.set("")
-        # Show "Repairing…" state in the setup-failure row while the worker runs.
-        if self._setup_failure_row is not None and self._setup_failure_label is not None:
-            self._setup_failure_label.configure(
-                text="Repairing setup…",
-                cursor="",
-            )
-            self._setup_failure_row.pack(fill="x", pady=(0, 10))
-
-        def _done(ok: bool, msg: str) -> None:
-            if ok:
-                # Show a brief green "Setup complete" in the failure row, then
-                # dismiss it after a few seconds.
-                if self._setup_failure_row is not None and self._setup_failure_label is not None:
-                    self._setup_failure_label.configure(
-                        text="Setup complete.",
-                        background="#15803d",
-                        foreground="white",
-                        cursor="",
-                    )
-                    self._setup_failure_row.configure(background="#15803d")
-                    self._setup_failure_row.pack(fill="x", pady=(0, 10))
-                    if self._win and self._win.winfo_exists():
-                        def _dismiss_row() -> None:
-                            self._refresh_setup_failure_row()
-                            # Reset colour for next time the row might be shown.
-                            if self._setup_failure_row is not None:
-                                self._setup_failure_row.configure(background="#b45309")
-                            if self._setup_failure_label is not None:
-                                self._setup_failure_label.configure(background="#b45309")
-                        self._win.after(4000, _dismiss_row)
-            else:
-                # On failure: show the error in the row; add log-folder hint.
-                if self._setup_failure_row is not None and self._setup_failure_label is not None:
-                    hint = ""
-                    if self._on_open_log_folder is not None:
-                        hint = " — see logs for details."
-                    self._setup_failure_label.configure(
-                        text=f"Repair failed: {msg}{hint}",
-                        cursor="hand2" if self._on_open_log_folder else "",
-                    )
-                    if self._on_open_log_folder is not None:
-                        # Rebind click to open log folder when repair failed.
-                        self._setup_failure_label.bind(
-                            "<Button-1>",
-                            lambda _e: self._on_open_log_folder() if self._on_open_log_folder else None,
-                        )
-                    self._setup_failure_row.pack(fill="x", pady=(0, 10))
-            self._set_status(msg, ok)
-            self._refresh_repair_btn()
-            if self._win and self._win.winfo_exists():
-                self._win.after(5000, lambda: self._status_var.set("") if self._status_var else None)
-
-        self._on_repair_setup(_done)
-
-    def _handle_sign_out(self) -> None:
-        self._on_sign_out()
-        if self._win and self._win.winfo_exists():
-            self._win.destroy()
-
-    def _handle_uninstall(self) -> None:
-        self._on_open_uninstall()
-
-
-# ---------------------------------------------------------------------------
-# Main tray application
-# ---------------------------------------------------------------------------
-
-class TrayApp:
-    def __init__(self) -> None:
-        self._store = SessionStore()
-        self._manager = SessionManager(self._store)
-        self._session: PlaudSession | None = None
-        self._icon: pystray.Icon | None = None
-        self._root: tk.Tk | None = None
-        self._update_info: tuple[str, str, str | None] | None = None
-        self._env_status: EnvStatus | None = None
-        self._login_win: LoginWindow | None = None
-        self._wizard_win: WizardWindow | None = None
-        self._home_win: HomeWindow | None = None
-        self._update_win: UpdateDialog | None = None
-        self._uninstall_win: UninstallDialog | None = None
-        self._icons: dict[str, Image.Image] = {}
-
-    # ------------------------------------------------------------------
-    # Session helpers
-    # ------------------------------------------------------------------
-
-    def _load_session(self) -> None:
-        try:
-            self._session = self._manager.require()
-        except PlaudSessionExpiredError:
-            self._session = self._store.load()  # keep for display even if expired
-
-    def _tray_state(self) -> str:
-        if self._session is None:
-            return "signed-out"
-        days = self._manager.days_until_expiry()
-        if days is None or days == 0:
-            return "expired"
-        if days <= 30:
-            return "expiring"
-        return "signed-in"
-
-    # ------------------------------------------------------------------
-    # Tray icon / menu
-    # ------------------------------------------------------------------
-
-    def _make_menu(self) -> pystray.Menu:
-        state = self._tray_state()
-        items: list = [
-            pystray.MenuItem("Open", self._open_home, default=True, visible=False),
-        ]
-
-        if self._update_info:
-            version, url, _zip_url = self._update_info
-            if getattr(sys, "frozen", False):
-                items.append(pystray.MenuItem(
-                    f"Update available: v{version}",
-                    lambda: self._open_update(),
-                ))
-            else:
-                items.append(pystray.MenuItem(
-                    f"Update available: v{version}",
-                    lambda: self._open_url(url),
-                ))
-            items.append(pystray.Menu.SEPARATOR)
-
-        if state == "expiring":
-            days = self._manager.days_until_expiry() or 0
-            items.append(pystray.MenuItem(f"Session expires in {days} days — sign in again", self._open_login))
-            items.append(pystray.Menu.SEPARATOR)
-
-        if self._session:
-            items.append(pystray.MenuItem(f"Signed in as {self._session.email}", None, enabled=False))
-            items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem("Test connection", self._open_test_connection))
-            items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard))
-            items.append(pystray.MenuItem("Open log folder", self._open_log_folder))
-            items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem(
-                "Start with Windows",
-                self._toggle_autostart,
-                checked=lambda _: _autostart_enabled(),
-            ))
-            items.append(pystray.MenuItem("Sign out", self._sign_out))
-        else:
-            items.append(pystray.MenuItem("Sign in…", self._open_login))
-
-        items.append(pystray.Menu.SEPARATOR)
-        items.append(pystray.MenuItem("Uninstall…", self._open_uninstall))
-        items.append(pystray.MenuItem("Quit", self._quit))
-        return pystray.Menu(*items)
-
-    def _refresh(self) -> None:
-        if self._icon is None:
-            return
-        state = self._tray_state()
-        self._icon.icon = self._icons[state]
-        self._icon.title = f"{APP_NAME} — {state.replace('-', ' ')}"
-        self._icon.menu = self._make_menu()
-
-    # ------------------------------------------------------------------
-    # Menu actions (called from pystray thread — schedule on tkinter)
-    # ------------------------------------------------------------------
-
-    def _tk(self, fn: Callable) -> None:
-        if self._root:
-            self._root.after(0, fn)
-
-    def _open_home(self) -> None:
-        if self._session:
-            self._tk(lambda: self._home_win.show() if self._home_win else None)
-        else:
-            self._open_login()
-
-    def _open_login(self) -> None:
-        self._tk(lambda: self._login_win.show() if self._login_win else None)
-
-    def _open_update(self) -> None:
-        self._tk(lambda: self._update_win.show() if self._update_win else None)
-
-    def _open_wizard(self) -> None:
-        self._tk(lambda: self._wizard_win.show() if self._wizard_win else None)
-
-    def _open_uninstall(self) -> None:
-        self._tk(lambda: self._uninstall_win.show() if self._uninstall_win else None)
-
-    def _open_test_connection(self) -> None:
-        from tkinter import messagebox
-
-        def _show(ok: bool, msg: str) -> None:
-            if ok:
-                messagebox.showinfo(APP_NAME, msg, parent=self._root)
-            else:
-                messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)
-
-        self._tk(lambda: self._test_connection(_show))
-
-    def _check_for_update_action(self, on_done: Callable[[bool, str], None]) -> None:
-        def _worker() -> None:
-            result = _check_for_update()
-            if result:
-                self._update_info = result
-                v = result[0]
-                self._tk(self._refresh)
-                if self._root:
-                    self._root.after(0, lambda v=v: on_done(True, f"v{v} available"))
-            else:
-                if self._root:
-                    self._root.after(0, lambda: on_done(False, "You're up to date."))
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _test_connection(self, on_done: Callable[[bool, str], None]) -> None:
-        """Run get_user_info on a worker thread and deliver result on the tkinter thread.
-
-        If the Plaud API does not respond within _TEST_CONNECTION_TIMEOUT seconds,
-        on_done is called with a timeout error message.
-        """
-        result_holder: list[tuple[bool, str]] = []
-        done_event = threading.Event()
-
-        def _worker() -> None:
-            try:
-                PlaudClient(self._manager).get_user_info()
-                result_holder.append((True, "Successfully connected to Plaud."))
-            except Exception as exc:
-                result_holder.append((False, str(exc)))
-            done_event.set()
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-
-        def _wait_and_deliver() -> None:
-            finished = done_event.wait(timeout=_TEST_CONNECTION_TIMEOUT)
-            if finished and result_holder:
-                ok, msg = result_holder[0]
-            else:
-                ok, msg = False, "Plaud connection timed out."
-            if self._root:
-                self._root.after(0, lambda: on_done(ok, msg))
-
-        threading.Thread(target=_wait_and_deliver, daemon=True).start()
-
-    def _session_label(self) -> str:
-        if self._session is None:
-            return "Not signed in."
-        days = self._manager.days_until_expiry()
-        if days is None:
-            return f"Signed in as {self._session.email}."
-        return f"Signed in as {self._session.email}. Token valid for {days} days."
-
-    def _sign_out(self) -> None:
-        self._store.clear()
-        self._session = None
-        self._refresh()
-        self._tk(lambda: self._login_win.show() if self._login_win else None)
-
-    def _toggle_autostart(self) -> None:
-        _set_autostart(not _autostart_enabled())
-
-    def _quit(self) -> None:
-        # Destroy the tkinter root on the tk main thread.  When mainloop()
-        # returns, _run() calls icon.stop() from the main thread — safe.
-        # Do NOT call icon.stop() here: if _quit() is invoked from the tk
-        # main thread (e.g. via root.after()), calling icon.stop()
-        # synchronously can deadlock because pystray's backend thread may be
-        # waiting to schedule a callback back onto the tk thread.
-        self._tk(lambda: self._root.destroy() if self._root else None)
-
-    def _open_url(self, url: str) -> None:
-        import webbrowser
-        webbrowser.open(url)
-
-    def _open_log_folder(self) -> None:
-        log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        if sys.platform == "win32":
-            os.startfile(str(log_dir))  # type: ignore[attr-defined]
-        else:
-            import webbrowser
-            webbrowser.open(log_dir.as_uri())
-
-    # ------------------------------------------------------------------
-    # Post-login flow
-    # ------------------------------------------------------------------
-
-    def _on_login_success(self) -> None:
-        self._load_session()
-        self._refresh()
-        # Auto-heal any stale paths now that we have a session; the startup
-        # _auto_heal returned early when no session was loaded yet.
-        threading.Thread(target=self._auto_heal, daemon=True).start()
-        if self._home_win:
-            self._home_win.show()
-
-    # ------------------------------------------------------------------
-    # Background tasks
-    # ------------------------------------------------------------------
-
-    def _watch_activate_event(self) -> None:
-        """Show the appropriate window whenever a second instance signals us."""
-        if sys.platform != "win32":
-            return
-        import ctypes
-        h = ctypes.windll.kernel32.CreateEventW(None, False, False, _ACTIVATE_EVENT)
-        if not h:
-            return
-        try:
-            while True:
-                if ctypes.windll.kernel32.WaitForSingleObject(h, 0xFFFFFFFF) == 0:
-                    if self._root:
-                        if self._session and self._home_win:
-                            self._root.after(0, self._home_win.show)
-                        elif not self._session and self._login_win:
-                            self._root.after(0, self._login_win.show)
-        finally:
-            ctypes.windll.kernel32.CloseHandle(h)
-
-    def _update_poll_loop(self) -> None:
-        interval_seconds = random.uniform(20 * 3600, 28 * 3600)
-        # Run the first check immediately (preserves current startup behaviour).
-        def _on_update_found(result: tuple) -> None:
-            self._update_info = result
-            self._refresh()
-            if self._root:
-                self._root.after(0, lambda: self._home_win._refresh_update_btn() if self._home_win else None)
-
-        try:
-            result = _check_for_update()
-            if result:
-                _on_update_found(result)
-        except Exception:
-            logging.warning("update check failed", exc_info=True)
-        last_check_wall_time = time.time()
-        while True:
-            time.sleep(300)
-            if time.time() - last_check_wall_time >= interval_seconds:
+        for submod in _FORWARD_TARGETS:
+            if hasattr(submod, name):
                 try:
-                    result = _check_for_update()
-                    if result:
-                        _on_update_found(result)
-                except Exception:
-                    logging.warning("update check failed", exc_info=True)
-                last_check_wall_time = time.time()
-                interval_seconds = random.uniform(20 * 3600, 28 * 3600)
-
-    def _event_poll_loop(self) -> None:
-        """Poll %LOCALAPPDATA%\\PlaudTools\\events.jsonl every 5 s for tray events.
-
-        Currently handles ``session_expired`` events written by the MCP server.
-        Lines are consumed (the file is truncated) after reading so events are
-        not re-processed on the next poll.
-        """
-        events_path = _events_path()
-        while True:
-            time.sleep(5)
-            try:
-                if not events_path.exists():
-                    continue
-                try:
-                    lines = events_path.read_text(encoding="utf-8").splitlines()
-                    # Truncate — clear processed events
-                    events_path.write_text("", encoding="utf-8")
-                except OSError:
-                    continue
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except Exception:
-                        continue
-                    if event.get("type") == "session_expired":
-                        logging.info("Tray: session_expired event received from MCP")
-                        _show_session_expired_toast()
-                        # Open the login window on the tkinter thread
-                        if self._root:
-                            self._root.after(0, self._open_login)
-                        break  # one toast per poll cycle is enough
-            except Exception:
-                logging.warning("event poll error", exc_info=True)
-
-    def _auto_heal(self) -> None:
-        if not self._session:
-            return
-        mcp = _mcp_exe()
-        statuses = status_all(mcp)
-        if any(s == "stale" for s in statuses.values()):
-            connect_all(mcp)
-
-    def _run_verify_env(self) -> None:
-        """Background thread: check PATH/completions/autostart without mutating.
-
-        Stores the result in ``self._env_status`` and nudges the HomeWindow to
-        show the setup-failure banner and "Repair setup" button if anything is
-        missing.
-        """
-        try:
-            status = _verify_env()
-            self._env_status = status
-            if not status.all_ok:
-                missing = ", ".join(status.missing_labels())
-                logging.warning("Environment check: missing %s", missing)
-                if self._root and self._home_win:
-                    def _nudge_home() -> None:
-                        if self._home_win:
-                            self._home_win._refresh_repair_btn()
-                            self._home_win._refresh_setup_failure_row()
-                    self._root.after(0, _nudge_home)
-        except Exception:
-            logging.warning("Environment check failed", exc_info=True)
-
-    def _repair_env(self, on_done: "Callable[[bool, str], None]") -> None:
-        """Re-run the mutating setup helpers and report success/failure via callback.
-
-        Runs in a background thread so the UI stays responsive.
-        """
-        def _work() -> None:
-            try:
-                _setup_cli_path()
-                _setup_ps_completions()
-                if not _autostart_enabled():
-                    _set_autostart(True)
-                # Re-verify so the button hides itself on success
-                self._env_status = _verify_env()
-                if self._root:
-                    self._root.after(0, lambda: on_done(True, "Setup repaired successfully."))
-            except Exception as exc:
-                logging.warning("Repair setup failed", exc_info=True)
-                if self._root:
-                    self._root.after(0, lambda: on_done(False, f"Repair failed: {exc}"))
-        threading.Thread(target=_work, daemon=True).start()
-
-    # ------------------------------------------------------------------
-    # Entry
-    # ------------------------------------------------------------------
-
-    def run(self) -> None:
-        _setup_logging()
-        logging.info("Plaud Tools %s starting", APP_VERSION)
-        try:
-            self._run()
-        except Exception:
-            logging.exception("fatal error in TrayApp.run")
-            raise
-
-    def _run(self) -> None:
-        self._load_session()
-        self._icons = _load_icons()
-        logging.debug("icons loaded from %s", _assets_path())
-
-        # tkinter root (hidden — only Toplevels are shown)
-        root = tk.Tk()
-        root.withdraw()
-        _apply_theme(root)
-        root.after(0, lambda: _set_app_icon(root))
-        self._root = root
-
-        self._login_win = LoginWindow(root, self._store, self._on_login_success)
-        self._wizard_win = WizardWindow(root, on_done=lambda: None)
-        self._update_win = UpdateDialog(root, self)
-        self._uninstall_win = UninstallDialog(root)
-        self._home_win = HomeWindow(
-            root,
-            on_test_connection=self._test_connection,
-            on_check_for_update=self._check_for_update_action,
-            on_open_update=self._open_update,
-            on_open_wizard=self._open_wizard,
-            on_sign_out=self._sign_out,
-            on_open_uninstall=self._open_uninstall,
-            on_repair_setup=self._repair_env,
-            get_session_label=self._session_label,
-            get_update_info=lambda: self._update_info,
-            get_env_status=lambda: self._env_status,
-            on_open_log_folder=self._open_log_folder,
-        )
-
-        # Build tray icon
-        state = self._tray_state()
-        self._icon = pystray.Icon(
-            APP_NAME,
-            self._icons[state],
-            f"{APP_NAME}",
-            menu=self._make_menu(),
-        )
-        self._icon.run_detached()
-
-        # Background threads
-        threading.Thread(target=self._update_poll_loop, daemon=True).start()
-        threading.Thread(target=self._auto_heal, daemon=True).start()
-        # Verify (not mutate) env — shows "Repair setup" button if anything is missing.
-        # Actual setup is performed by install.ps1 at install time.
-        threading.Thread(target=self._run_verify_env, daemon=True).start()
-        threading.Thread(target=self._watch_activate_event, daemon=True).start()
-        threading.Thread(target=self._event_poll_loop, daemon=True).start()
-
-        # Always surface the appropriate window on launch.
-        if self._session:
-            root.after(200, self._home_win.show)
-        else:
-            root.after(200, self._login_win.show)
-
-        # If relaunched after an in-app update, open HomeWindow with a success message.
-        sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
-        if sentinel.exists():
-            try:
-                updated_to = sentinel.read_text(encoding="utf-8").strip()
-                sentinel.unlink(missing_ok=True)
-                if self._session and self._home_win:
-                    def _show_update_success(v: str = updated_to) -> None:
-                        self._home_win.show()
-                        self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
-                    root.after(500, _show_update_success)
-            except Exception:
-                logging.warning("Could not read update sentinel", exc_info=True)
-
-        # If launched by install.ps1, show a Windows toast notification and
-        # wire the HomeWindow welcome banner.  The sentinel is consumed here
-        # (before the mainloop) so it is only shown once regardless of which
-        # surface is seen first.
-        install_sentinel = Path(tempfile.gettempdir()) / "plaud_just_installed.txt"
-        if install_sentinel.exists():
-            try:
-                install_sentinel.unlink(missing_ok=True)
-            except Exception:
-                logging.warning("Could not delete install sentinel", exc_info=True)
-            _show_install_toast()
-            if self._session and self._home_win:
-                self._home_win.arm_welcome_banner()
-                root.after(500, self._home_win.show)
-
-        root.mainloop()
-
-        # Cleanup after mainloop exits
-        if self._icon:
-            self._icon.stop()
+                    delattr(submod, name)
+                except (AttributeError, TypeError):
+                    pass
 
 
-def main() -> None:
-    if not _acquire_instance_lock():
-        return
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PlaudTools.TrayApp")
-        except Exception:
-            pass
-    TrayApp().run()
+sys.modules[__name__].__class__ = _TrayAppShim
+
+
+__all__ = [
+    # Module-level imports tests reach into (subprocess, time, tempfile, Path)
+    "subprocess",
+    "sys",
+    "tempfile",
+    "time",
+    "Path",
+    # Re-exports from .tray.setup
+    "APP_NAME",
+    "EnvStatus",
+    "_ACTIVATE_EVENT",
+    "_AUTOSTART_KEY",
+    "_AUTOSTART_NAME",
+    "_acquire_instance_lock",
+    "_apply_theme",
+    "_assets_path",
+    "_autostart_enabled",
+    "_check_cli_path",
+    "_check_ps_completions",
+    "_cli_dir",
+    "_completions_dir",
+    "_events_path",
+    "_install_completions_dir",
+    "_install_dir",
+    "_mcp_exe",
+    "_set_app_icon",
+    "_set_autostart",
+    "_setup_cli_path",
+    "_setup_logging",
+    "_setup_ps_completions",
+    "_stale_sourcing_re",
+    "_verify_env",
+    # Re-exports from .tray.uninstaller
+    "UninstallDialog",
+    "_delete_log_files",
+    "_delete_session_files",
+    "_launch_uninstall_helper",
+    "_remove_cli_path",
+    "_remove_ps_completions",
+    # Re-exports from .tray.updater
+    "GITHUB_REPO",
+    "UpdateDialog",
+    "_check_for_update",
+    "_version_gt",
+    # Re-exports from .tray.windows
+    "HomeWindow",
+    "LoginWindow",
+    "WizardWindow",
+    # Re-exports from .tray.app
+    "TrayApp",
+    "_TEST_CONNECTION_TIMEOUT",
+    "_load_icon",
+    "_load_icons",
+    "_show_install_toast",
+    "_show_session_expired_toast",
+    "main",
+    # Top-level imports used by tests
+    "APP_VERSION",
+    "PlaudClient",
+    "SessionStore",
+]

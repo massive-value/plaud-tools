@@ -1,0 +1,171 @@
+"""Background-thread methods used by :class:`TrayApp`.
+
+Pulled out of ``tray/app.py`` as a mixin to keep that file under 400 lines.
+``BackgroundMixin`` is otherwise inert and depends only on ``self`` attributes
+defined by :class:`TrayApp`.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import random
+import sys
+import threading
+import time
+from typing import Callable
+
+from ..ai_clients import connect_all, status_all
+from .setup import (
+    _ACTIVATE_EVENT,
+    _autostart_enabled,
+    _events_path,
+    _mcp_exe,
+    _set_autostart,
+    _setup_cli_path,
+    _setup_ps_completions,
+    _verify_env,
+)
+from .toasts import _show_session_expired_toast
+from .updater import _check_for_update
+
+
+class _BackgroundMixin:
+    """Background-thread helpers for TrayApp.  No __init__ — relies on TrayApp's."""
+
+    def _watch_activate_event(self) -> None:
+        """Show the appropriate window whenever a second instance signals us."""
+        if sys.platform != "win32":
+            return
+        import ctypes
+        h = ctypes.windll.kernel32.CreateEventW(None, False, False, _ACTIVATE_EVENT)
+        if not h:
+            return
+        try:
+            while True:
+                if ctypes.windll.kernel32.WaitForSingleObject(h, 0xFFFFFFFF) == 0:
+                    if self._root:
+                        if self._session and self._home_win:
+                            self._root.after(0, self._home_win.show)
+                        elif not self._session and self._login_win:
+                            self._root.after(0, self._login_win.show)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+
+    def _update_poll_loop(self) -> None:
+        interval_seconds = random.uniform(20 * 3600, 28 * 3600)
+        # Run the first check immediately (preserves current startup behaviour).
+        def _on_update_found(result: tuple) -> None:
+            self._update_info = result
+            self._refresh()
+            if self._root:
+                self._root.after(0, lambda: self._home_win._refresh_update_btn() if self._home_win else None)
+
+        try:
+            result = _check_for_update()
+            if result:
+                _on_update_found(result)
+        except Exception:
+            logging.warning("update check failed", exc_info=True)
+        last_check_wall_time = time.time()
+        while True:
+            time.sleep(300)
+            if time.time() - last_check_wall_time >= interval_seconds:
+                try:
+                    result = _check_for_update()
+                    if result:
+                        _on_update_found(result)
+                except Exception:
+                    logging.warning("update check failed", exc_info=True)
+                last_check_wall_time = time.time()
+                interval_seconds = random.uniform(20 * 3600, 28 * 3600)
+
+    def _event_poll_loop(self) -> None:
+        """Poll %LOCALAPPDATA%\\PlaudTools\\events.jsonl every 5 s for tray events.
+
+        Currently handles ``session_expired`` events written by the MCP server.
+        Lines are consumed (the file is truncated) after reading so events are
+        not re-processed on the next poll.
+        """
+        events_path = _events_path()
+        while True:
+            time.sleep(5)
+            try:
+                if not events_path.exists():
+                    continue
+                try:
+                    lines = events_path.read_text(encoding="utf-8").splitlines()
+                    # Truncate — clear processed events
+                    events_path.write_text("", encoding="utf-8")
+                except OSError:
+                    continue
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    if event.get("type") == "session_expired":
+                        logging.info("Tray: session_expired event received from MCP")
+                        _show_session_expired_toast()
+                        # Open the login window on the tkinter thread
+                        if self._root:
+                            self._root.after(0, self._open_login)
+                        break  # one toast per poll cycle is enough
+            except Exception:
+                logging.warning("event poll error", exc_info=True)
+
+    def _auto_heal(self) -> None:
+        if not self._session:
+            return
+        mcp = _mcp_exe()
+        statuses = status_all(mcp)
+        if any(s == "stale" for s in statuses.values()):
+            connect_all(mcp)
+
+    def _run_verify_env(self) -> None:
+        """Background thread: check PATH/completions/autostart without mutating.
+
+        Stores the result in ``self._env_status`` and nudges the HomeWindow to
+        show the setup-failure banner and "Repair setup" button if anything is
+        missing.
+        """
+        try:
+            status = _verify_env()
+            self._env_status = status
+            if not status.all_ok:
+                missing = ", ".join(status.missing_labels())
+                logging.warning("Environment check: missing %s", missing)
+                if self._root and self._home_win:
+                    def _nudge_home() -> None:
+                        if self._home_win:
+                            self._home_win._refresh_repair_btn()
+                            self._home_win._refresh_setup_failure_row()
+                    self._root.after(0, _nudge_home)
+        except Exception:
+            logging.warning("Environment check failed", exc_info=True)
+
+    def _repair_env(self, on_done: "Callable[[bool, str], None]") -> None:
+        """Re-run the mutating setup helpers and report success/failure via callback.
+
+        Runs in a background thread so the UI stays responsive.
+        """
+        def _work() -> None:
+            try:
+                _setup_cli_path()
+                _setup_ps_completions()
+                if not _autostart_enabled():
+                    _set_autostart(True)
+                # Re-verify so the button hides itself on success
+                self._env_status = _verify_env()
+                if self._root:
+                    self._root.after(0, lambda: on_done(True, "Setup repaired successfully."))
+            except Exception as exc:
+                logging.warning("Repair setup failed", exc_info=True)
+                if self._root:
+                    self._root.after(0, lambda: on_done(False, f"Repair failed: {exc}"))
+        threading.Thread(target=_work, daemon=True).start()
+
+
+__all__ = ["_BackgroundMixin"]
