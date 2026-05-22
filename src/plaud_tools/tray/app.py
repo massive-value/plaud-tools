@@ -342,6 +342,34 @@ class TrayApp(_BackgroundMixin):
         else:
             root.after(200, self._login_win.show)
 
+        # If the previous in-app update aborted, surface the reason. The
+        # failure sentinel takes precedence over the success sentinel — and
+        # update.ps1 deletes the success sentinel when writing the failure
+        # one, so in practice they should never both exist.
+        fail_sentinel = Path(tempfile.gettempdir()) / "plaud_update_failed.txt"
+        if fail_sentinel.exists():
+            try:
+                import json as _json
+                payload = _json.loads(fail_sentinel.read_text(encoding="utf-8"))
+                fail_sentinel.unlink(missing_ok=True)
+                reason = payload.get("reason", "Update failed for an unknown reason.")
+                log_path = payload.get("log", "")
+                logging.warning("Previous in-app update failed: %s (log: %s)", reason, log_path)
+
+                def _show_update_failure(r: str = reason, lp: str = log_path) -> None:
+                    from tkinter import messagebox
+                    body = r
+                    if lp:
+                        body += f"\n\nLog file:\n{lp}"
+                    messagebox.showerror(
+                        f"{APP_NAME} — Update failed",
+                        body,
+                        parent=self._root,
+                    )
+                root.after(800, _show_update_failure)
+            except Exception:
+                logging.warning("Could not read update failure sentinel", exc_info=True)
+
         # If relaunched after an in-app update, open HomeWindow with a success message.
         sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
         if sentinel.exists():
