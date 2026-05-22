@@ -25,7 +25,7 @@ from .setup import (
     _setup_ps_completions,
     _verify_env,
 )
-from .toasts import _show_session_expired_toast
+from .toasts import _show_session_expired_toast, _show_update_available_toast
 from .updater import _check_for_update
 
 
@@ -63,12 +63,19 @@ class _BackgroundMixin:
 
     def _update_poll_loop(self) -> None:
         interval_seconds = random.uniform(20 * 3600, 28 * 3600)
+        _notified_version: str | None = None
+
         # Run the first check immediately (preserves current startup behaviour).
         def _on_update_found(result: tuple) -> None:
+            nonlocal _notified_version
             self._update_info = result
             self._refresh()
             if self._root:
                 self._root.after(0, lambda: self._home_win._refresh_update_btn() if self._home_win else None)
+            version = result[0]
+            if version != _notified_version:
+                _notified_version = version
+                _show_update_available_toast(version)
 
         try:
             result = _check_for_update()

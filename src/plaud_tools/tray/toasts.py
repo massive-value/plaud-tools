@@ -130,4 +130,13 @@ def _show_install_toast() -> None:
     _show_powershell_toast(title, message, "First-run toast dispatched via PowerShell")
 
 
-__all__ = ["_show_session_expired_toast", "_show_install_toast"]
+def _show_update_available_toast(version: str) -> None:
+    """Show a Windows toast notifying the user that a new version is available."""
+    title = f"{APP_NAME} — Update Available"
+    message = f"v{version} is ready — open the tray menu to install."
+    if _show_winrt_toast(title, message, f"Update-available toast shown via winrt (v{version})"):
+        return
+    _show_powershell_toast(title, message, f"Update-available toast dispatched via PowerShell (v{version})")
+
+
+__all__ = ["_show_session_expired_toast", "_show_install_toast", "_show_update_available_toast"]
