@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ from time import time
 from typing import Literal, Protocol
 
 from .errors import PlaudSessionExpiredError
+
+log = logging.getLogger(__name__)
 
 TOKEN_REFRESH_BUFFER_SECONDS = 30 * 24 * 60 * 60
 _SECONDS_PER_DAY = 86_400
@@ -93,6 +96,7 @@ class SessionStore:
         try:
             return importlib.import_module("keyring")
         except ImportError:
+            log.warning("keyring module not importable; falling back to file store")
             return None
 
     def _load_from_keyring(self) -> PlaudSession | None:
@@ -102,16 +106,23 @@ class SessionStore:
         try:
             payload = keyring.get_password(self.service_name, self.account_name)
         except Exception:
+            log.warning(
+                "keyring.get_password failed for service=%r account=%r",
+                self.service_name, self.account_name,
+                exc_info=True,
+            )
             return None
         if not payload:
             return None
         try:
             parsed = json.loads(payload)
         except json.JSONDecodeError:
+            log.warning("keyring payload is not valid JSON; treating as missing")
             return None
         try:
             return PlaudSession(**parsed)
         except TypeError:
+            log.warning("keyring payload has unexpected shape; treating as missing")
             return None
 
     def _save_to_keyring(self, session: PlaudSession) -> bool:
@@ -121,6 +132,16 @@ class SessionStore:
         try:
             keyring.set_password(self.service_name, self.account_name, json.dumps(asdict(session)))
         except Exception:
+            # Surfacing this is the only signal that explains a "logged in, then
+            # gone after process exit" symptom — the bare swallow used to make
+            # silent fall-through to the file store indistinguishable from
+            # success.  We still return False so the caller falls back, but the
+            # log line tells us a keyring backend bug exists.
+            log.warning(
+                "keyring.set_password failed for service=%r account=%r; falling back to file store",
+                self.service_name, self.account_name,
+                exc_info=True,
+            )
             return False
         return True
 

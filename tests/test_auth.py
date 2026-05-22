@@ -61,3 +61,46 @@ def test_login_raises_clean_error_on_http_failure(tmp_path):
     )
     with pytest.raises(PlaudApiError, match="HTTP 502"):
         auth.login("user@example.com", "pw", "us")
+
+
+def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
+    """Pin the keyring-failure log line.
+
+    Before this was added, `_save_to_keyring` swallowed every exception
+    silently and fell back to the file store, which made "saved keyring
+    OK but session is gone next launch" symptoms impossible to diagnose
+    from the tray log.
+    """
+    import logging
+
+    from plaud_tools.session import PlaudSession, SessionStore
+
+    class BrokenKeyring:
+        @staticmethod
+        def set_password(*_a, **_k):
+            raise RuntimeError("simulated keyring backend failure")
+
+        @staticmethod
+        def get_password(*_a, **_k):
+            return None
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: BrokenKeyring if name == "keyring" else __import__(name),
+    )
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-keyring-warn")
+    session = PlaudSession(access_token="header.payload.sig", region="us", email="user@example.com")
+
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+        store.save(session)
+
+    # File store wrote the fallback.
+    assert (tmp_path / "session.json").exists()
+    # And the warning was emitted.
+    matching = [r for r in caplog.records if "keyring.set_password failed" in r.message]
+    assert matching, (
+        "Expected a 'keyring.set_password failed' warning when the keyring "
+        "backend raises; got none.  Records: "
+        + ", ".join(r.message for r in caplog.records)
+    )

@@ -90,3 +90,33 @@ def test_server_process_recording_wait_schema_defaults_to_transcript():
 def test_server_constructs_without_error():
     server = _make_server()
     assert server is not None
+
+
+def test_make_server_constructs_one_session_manager(monkeypatch):
+    """Pin per-process SessionManager sharing.
+
+    Regression for the v0.2.0 bug where ``get_client`` constructed a fresh
+    ``SessionManager(store)`` on every MCP tool call — defeating the
+    in-memory keyring cache added in v0.1.22 and forcing the 30-day buffer
+    check to re-validate from cold state every call.
+
+    The fix hoists construction into ``_make_server`` itself, so the count
+    is exactly one immediately after the function returns.
+    """
+    from plaud_tools import server as srv_mod
+
+    instances: list[object] = []
+    original_init = srv_mod.SessionManager.__init__
+
+    def counting_init(self, store):  # type: ignore[no-untyped-def]
+        instances.append(self)
+        original_init(self, store)
+
+    monkeypatch.setattr(srv_mod.SessionManager, "__init__", counting_init)
+
+    _make_server()
+    assert len(instances) == 1, (
+        f"_make_server() must construct exactly one SessionManager per "
+        f"process; got {len(instances)}.  This regression guards against "
+        f"re-introducing per-call SessionManager(store) inside get_client."
+    )
