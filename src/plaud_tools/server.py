@@ -46,7 +46,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder": {
                     "type": "string",
-                    "description": "Folder ID filter; pass empty string to match unfiled recordings",
+                    "description": "The `id` returned by `list_folders`. Pass empty string to filter to unfiled recordings.",
                 },
                 "after": {
                     "type": "integer",
@@ -98,7 +98,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Required for move; use '-' to clear folder assignment",
+                    "description": "The `id` returned by `list_folders`. Required for move. Pass '-' to clear the folder assignment.",
                 },
                 "original_label": {
                     "type": "string",
@@ -127,7 +127,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Folder to assign the recording to after upload",
+                    "description": "The `id` returned by `list_folders`. Folder to assign the recording to after upload.",
                 },
                 "start_time": {
                     "type": ["integer", "string"],

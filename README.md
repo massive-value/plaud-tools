@@ -126,9 +126,10 @@ including the `PLAUD_LIVE_READS=1` live-test gate.
 
 ## Token & secrets
 
-Plaud JWTs last ~300 days; `plaud-tools` auto-refreshes silently when the
-token is within 30 days of expiry. Sessions are stored in the OS keyring when
-available, with a mode-`600` fallback at
+Plaud JWTs last ~300 days. When the stored token is within 30 days of expiry,
+`plaud-tools` will raise a session-expired error and prompt you to sign in
+again — run `plaud-tools login` to refresh your credentials. Sessions are
+stored in the OS keyring when available, with a mode-`600` fallback at
 `~/.config/plaud-tools/session.json`.
 
 ## Docs
