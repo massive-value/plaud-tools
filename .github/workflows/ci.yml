@@ -26,3 +26,31 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  bundle-smoke:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install ".[tray,dev]"
+
+      - name: Generate Windows PE version info
+        run: python pyinstaller/version_info.py
+
+      - name: Build plaud-mcp
+        run: pyinstaller pyinstaller/plaud-mcp.spec --distpath out/plaud-mcp --noconfirm
+
+      - name: Build plaud CLI
+        run: pyinstaller pyinstaller/plaud.spec --distpath out/plaud-cli --noconfirm
+
+      - name: Smoke test MCP executable
+        run: out\plaud-mcp\plaud-mcp\plaud-mcp.exe --version
+
+      - name: Smoke test CLI executable
+        run: out\plaud-cli\plaud-tools\plaud-tools.exe --version
