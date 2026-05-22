@@ -107,10 +107,12 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
     )
 
 
-def test_load_does_not_retry_on_clean_none(tmp_path, monkeypatch):
-    """A clean ``None`` from keyring is the legitimate 'no entry exists' path
-    and must not trigger a retry — that would slow every actually-signed-out
-    state by the retry delay.
+def test_load_retries_once_on_clean_none(tmp_path, monkeypatch):
+    """A transient None from Windows Credential Manager looks identical to a
+    legitimate "no entry" response, so we retry once before accepting None.
+    Confirmed in production (post-v0.2.5): get_password returned None while
+    the entry existed; a diagnostic call 50 ms later succeeded with 299 days
+    remaining.  Two consecutive Nones are accepted as a genuine absent entry.
     """
     from plaud_tools.session import SessionStore
 
@@ -120,16 +122,48 @@ def test_load_does_not_retry_on_clean_none(tmp_path, monkeypatch):
         @staticmethod
         def get_password(*_a, **_k):
             call_count["n"] += 1
-            return None  # legitimate "no entry"
+            return None  # consistently absent — should settle after 2 reads
 
     monkeypatch.setattr(
         "plaud_tools.session.importlib.import_module",
         lambda name: EmptyKeyring if name == "keyring" else __import__(name),
     )
+    monkeypatch.setattr("plaud_tools.session.SessionStore._KEYRING_RETRY_DELAY_S", 0.0)
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-no-retry")
     assert store.load() is None
-    assert call_count["n"] == 1, f"Expected exactly 1 keyring read for clean None, got {call_count['n']}"
+    assert call_count["n"] == 2, f"Expected 2 keyring reads (retry on first None), got {call_count['n']}"
+
+
+def test_load_recovers_from_transient_none(tmp_path, monkeypatch):
+    """First get_password call returns None (Windows Credential Manager hiccup);
+    second call succeeds — mirrors the post-v0.2.5 production incident.
+    """
+    import json
+    from dataclasses import asdict
+
+    from plaud_tools.session import PlaudSession, SessionStore
+
+    session_data = json.dumps(asdict(PlaudSession(access_token="tok", email="u@example.com")))
+    call_count = {"n": 0}
+
+    class TransientKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            call_count["n"] += 1
+            return None if call_count["n"] == 1 else session_data
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: TransientKeyring if name == "keyring" else __import__(name),
+    )
+    monkeypatch.setattr("plaud_tools.session.SessionStore._KEYRING_RETRY_DELAY_S", 0.0)
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-transient-none")
+    result = store.load()
+    assert result is not None, "Expected retry to recover from transient None"
+    assert result.email == "u@example.com"
+    assert call_count["n"] == 2
 
 
 def test_load_retry_gives_up_after_two_consecutive_failures(tmp_path, caplog, monkeypatch):

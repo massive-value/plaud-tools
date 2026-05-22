@@ -99,14 +99,16 @@ class SessionStore:
             log.warning("keyring module not importable; falling back to file store")
             return None
 
-    # Windows Credential Manager occasionally returns transient errors under
-    # load (observed once during issue #78 root-cause: keyring.get_password
-    # raised, was swallowed and returned None, then the very next call worked).
-    # Without retry, that single hiccup is interpreted by the MCP as
-    # "user is logged out" and pops a sign-in prompt.  One retry with a short
-    # backoff costs nothing in the happy path and prevents the spurious
-    # logout.  We do NOT retry on a clean None payload — that's the legitimate
-    # "no entry exists" path and must propagate without delay.
+    # Windows Credential Manager occasionally returns transient errors *or*
+    # a spurious None under load.  Both cases have been observed in production:
+    # - issue #78: get_password raised, was swallowed, the next call worked.
+    # - post-v0.2.5: get_password returned None despite the entry existing
+    #   (confirmed by a diagnostic call 50 ms later returning the same entry
+    #   with 299 days remaining).  Without a None-retry that single hiccup is
+    #   read as "user is logged out" and pops a sign-in prompt.
+    # We accept one retry on both exception and None.  A genuine "no entry"
+    # returns None twice and propagates cleanly; total extra latency in that
+    # path is _KEYRING_RETRY_DELAY_S (100 ms).
     _KEYRING_RETRY_DELAY_S = 0.1
 
     def _get_password_with_retry(self, keyring) -> str | None:
@@ -114,7 +116,7 @@ class SessionStore:
 
         for attempt in (1, 2):
             try:
-                return keyring.get_password(self.service_name, self.account_name)
+                result = keyring.get_password(self.service_name, self.account_name)
             except Exception:
                 if attempt == 1:
                     log.warning(
@@ -132,6 +134,19 @@ class SessionStore:
                     exc_info=True,
                 )
                 return None
+            else:
+                if result is not None or attempt == 2:
+                    return result
+                # First attempt returned None — retry once before accepting
+                # it as a legitimate "no entry" to guard against transient
+                # Windows Credential Manager hiccups.
+                log.warning(
+                    "keyring.get_password returned None on attempt %d for service=%r "
+                    "account=%r; retrying in %.3fs",
+                    attempt, self.service_name, self.account_name,
+                    self._KEYRING_RETRY_DELAY_S,
+                )
+                sleep(self._KEYRING_RETRY_DELAY_S)
         return None
 
     def _load_from_keyring(self) -> PlaudSession | None:

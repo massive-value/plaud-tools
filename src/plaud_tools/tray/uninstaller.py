@@ -18,6 +18,7 @@ from .setup import (
     _set_app_icon,
     _set_autostart,
     _stale_sourcing_re,
+    _unregister_com_activator,
 )
 
 
@@ -272,6 +273,10 @@ class UninstallDialog:
                     logging.info("Removed autostart registry key")
                 except Exception:
                     logging.warning("Could not remove autostart key", exc_info=True)
+            try:
+                _unregister_com_activator()
+            except Exception:
+                logging.warning("Could not remove COM activator registry keys", exc_info=True)
             if var_ps.get():
                 _remove_ps_completions()
             if var_session.get():
