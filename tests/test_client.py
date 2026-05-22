@@ -264,6 +264,37 @@ def test_region_failover_updates_persisted_region(tmp_path):
     assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
 
 
+def test_region_redirect_preserves_request_body(tmp_path):
+    """Regression: -302 redirect must re-send the original POST body, not drop it."""
+    manager, store = make_manager(tmp_path, region="us")
+    transport = StubTransport(
+        [
+            # First call returns -302 region mismatch
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+                {},
+            ),
+            # Retry after region update should succeed
+            HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    # move_to_trash issues POST /file/trash/ with body ["rec1"]
+    client.move_to_trash(["rec1"])
+
+    assert len(transport.calls) == 2
+    # First call went to the original (us) region
+    assert transport.calls[0]["url"].startswith("https://api.plaud.ai/")
+    # Second call went to the eu region
+    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
+    # Body must be preserved in the retried request
+    retry_body = json.loads(transport.calls[1]["body"].decode("utf-8"))
+    assert retry_body == ["rec1"], "retry must carry original body, not None"
+    # Region was persisted
+    assert store.load().region == "eu"
+
+
 def test_missing_session_raises(tmp_path):
     manager = SessionManager(FileSessionStore(tmp_path / "missing.json"))
     client = PlaudClient(manager, transport=StubTransport([]))

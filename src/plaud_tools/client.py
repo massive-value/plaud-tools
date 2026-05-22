@@ -436,7 +436,7 @@ class PlaudClient:
             domain = ((payload.get("data") or {}).get("domains") or {}).get("api", "")
             next_region = "eu" if "euc1" in domain else "us"
             self._session_manager.update_region(next_region)
-            return self._request_json(method, path, strict=strict)
+            return self._request_json(method, path, strict=strict, body=body)
 
         if strict and payload.get("status") != 0:
             msg = payload.get("msg") or f"status {payload.get('status')}"

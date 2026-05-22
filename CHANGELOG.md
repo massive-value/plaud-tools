@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `_request_json` now passes `body` through the `-302` region-redirect recursive retry, preventing POST/PATCH/DELETE requests from silently dropping their payload on a region mismatch.
+
 ## [0.1.19] - 2026-05-21
 
 ### Fixed
