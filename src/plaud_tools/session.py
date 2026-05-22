@@ -140,8 +140,11 @@ class SessionStore:
 class SessionManager:
     def __init__(self, store: SessionStoreProtocol) -> None:
         self.store = store
+        self._cached_session: PlaudSession | None = None
 
     def require(self) -> PlaudSession:
+        if self._cached_session is not None:
+            return self._cached_session
         session = self.store.load()
         if not session:
             raise PlaudSessionExpiredError("No Plaud session available.")
@@ -150,9 +153,17 @@ class SessionManager:
             raise PlaudSessionExpiredError("Stored Plaud token is malformed.")
         if int(time()) + TOKEN_REFRESH_BUFFER_SECONDS > expires_at:
             raise PlaudSessionExpiredError("Plaud session expired or expiring soon.")
+        self._cached_session = session
         return session
 
+    def invalidate_cache(self) -> None:
+        """Discard the in-memory session cache so the next ``require()`` reloads from the store."""
+        self._cached_session = None
+
     def update_region(self, region: str) -> PlaudSession:
+        # Bypass the cache to ensure we read the freshest token from the store,
+        # then update both the store and the cache atomically.
+        self._cached_session = None
         session = self.require()
         updated = PlaudSession(
             access_token=session.access_token,
@@ -160,6 +171,7 @@ class SessionManager:
             email=session.email,
         )
         self.store.save(updated)
+        self._cached_session = updated
         return updated
 
     def days_until_expiry(self) -> int | None:
