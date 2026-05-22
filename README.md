@@ -1,6 +1,134 @@
 # plaud-tools
 
-Bridge your [Plaud](https://www.plaud.ai/) recordings into AI assistants via a Python CLI and an MCP server.
+**Talk to your Plaud recordings.** Connect your Plaud account to Claude (or another AI assistant) so you can ask questions about your meetings, generate summaries, and search across every recording — in plain English.
+
+**What you can do:**
+- Ask things like *"Summarize my client call from Tuesday afternoon."*
+- Ask things like *"What did we decide about the Henderson account in last week's meeting?"*
+- Drop an audio file into the chat and say *"Upload and transcribe this."*
+
+Windows users get a one-click installer with auto-updates. macOS and Linux users can install via pip — see [docs/INSTALL-METHODS.md](docs/INSTALL-METHODS.md).
+
+## Quickstart
+
+**1. Open PowerShell.** Press the Windows key, type `PowerShell`, and press Enter. A blue window opens.
+
+**2. Paste this command and press Enter:**
+
+```powershell
+irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
+```
+
+This downloads PlaudTools from GitHub to your user folder. No admin rights are needed and nothing is installed system-wide.
+
+**3. Sign in.** When the install finishes, a Windows notification appears saying *"PlaudTools is now running in your system tray — click the icon to sign in."* Click the PlaudTools icon in your taskbar (bottom-right, next to the clock — you may need to click the up-arrow `^` to find it). A sign-in window opens. Enter your Plaud email and password.
+
+> **Signed up for Plaud with Google?** You don't have a Plaud password yet. Visit [web.plaud.ai](https://web.plaud.ai), click "Forgot password," and Plaud will email you a reset link — even though you've never set a password before. Use that new password here.
+
+**4. Connect the apps you use.** After sign-in, the PlaudTools window opens. Click **Configure AI Agents…**, then click **Connect** next to each AI app you have installed (Claude Desktop, Claude Code, or Codex). Apps you don't have installed are shown as **Not installed** and can't be connected.
+
+**5. Restart the apps you connected.** New connections only load on a fresh start.
+
+- **Claude Desktop** — go to **File → Exit** (closing the window keeps it running in the tray), then reopen it from the Start menu.
+- **Claude Code** — in your existing session, type `/exit`, then run `claude` again in a new terminal.
+- **Codex** — press `Ctrl+C` to end the session, then run `codex` again in a new terminal.
+
+**6. Try it.** In your AI assistant, paste this prompt:
+
+```text
+I just installed an MCP for Plaud. Can you take a look and make sure
+everything is wired up. As an example, can you tell me about my most
+recent meeting that has a summary. After that, tell me about what sort
+of things you can do with the plaud tools and some potential ways that
+it can apply to my workflows.
+```
+
+The assistant will confirm the tools are wired up, walk through one of your recent recordings, and explain what else it can do for you.
+
+## Keeping PlaudTools up to date
+
+PlaudTools checks GitHub for new releases once a day and notifies you when one is available.
+
+### Installing an update
+
+When an update is ready, you'll see an **Update available: vX.X.X** item at the top of the tray menu. Click it, then click **Install update and restart**. PlaudTools downloads the new version, swaps it in, and relaunches — usually under 30 seconds. Your sign-in and connected apps carry over.
+
+### Checking your version
+
+Click the PlaudTools icon in your taskbar to open the home window. Your current version is shown in the footer.
+
+### If something goes wrong
+
+Re-run the install command in PowerShell with **`-Repair`**:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1))) -Repair
+```
+
+This shuts down PlaudTools, wipes the install folder, and reinstalls the latest release. Your sign-in is preserved.
+
+## Uninstalling
+
+Open the tray menu, click **Uninstall…**, review the checklist, and click **Uninstall**. Your saved sign-in and log files are kept by default, so a future reinstall picks up where you left off.
+
+## What PlaudTools can do
+
+PlaudTools gives your AI assistant seven tools for working with your Plaud account. You don't call these directly — you ask in plain English, and the assistant picks the right one.
+
+| What it does | What you'd ask |
+|---|---|
+| Find recordings | *"Show me my recordings from last week."* |
+| Read a recording | *"What did I say in the Henderson meeting?"* |
+| Rename, move, or trash | *"Rename yesterday's 9am recording to 'Tax planning call'."* |
+| Upload audio | *"Upload this audio file and transcribe it."* (with attachment) |
+| Transcribe and summarize | *"Transcribe and summarize yesterday's recording."* |
+| List folders | *"What folders do I have in Plaud?"* |
+| Merge recordings | *"Merge these three call segments into one recording."* |
+
+## Other ways to install
+
+The Windows tray bundle above is the recommended path for most users. Two other install methods exist:
+
+- **PyPI** — if you have Python 3.11+, run `pip install plaud-tools`. You'll get the `plaud-tools` CLI and `plaud-mcp` server but no tray app or auto-updates.
+- **Manual zip** — download `PlaudTools.zip` from the [latest GitHub release](https://github.com/massive-value/plaud-tools/releases/latest) and unzip anywhere. Useful for air-gapped machines or restrictive IT environments.
+
+Full instructions for both: [docs/INSTALL-METHODS.md](docs/INSTALL-METHODS.md).
+
+## Signing in again later
+
+Your Plaud sign-in is good for about a year. When it's a month from expiring, the tray menu shows **Session expires in N days — sign in again** — click it and re-enter your password. If you wait until it fully expires, your AI assistant will tell you it can't reach Plaud; open the tray menu, click **Sign in…**, and you're back.
+
+## Troubleshooting
+
+**Claude (or your AI assistant) says it can't see Plaud after you wired it up.**
+The connection only loads on a fresh start. Fully quit the app first — see step 5 of the Quickstart for the right way to do it on each platform — then reopen and try again.
+
+**The PlaudTools icon isn't in your taskbar.**
+Click the small up-arrow (`^`) next to the clock in the bottom-right of your taskbar — Windows hides newly-installed tray icons there by default. If you still don't see it, re-run the install command in PowerShell with `-Repair` (see "If something goes wrong" above).
+
+Everything else — ffmpeg setup, region mismatches, manual config-file editing, antivirus quarantine, multi-account workflows — is in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+## For developers
+
+Source, dev environment setup, contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## More documentation
+
+- [docs/INSTALL-METHODS.md](docs/INSTALL-METHODS.md) — pip install, manual zip extraction, install from source
+- [docs/AI-CLIENTS.md](docs/AI-CLIENTS.md) — manual JSON/TOML wiring for Claude Desktop, Claude Code, and Codex (Windows, macOS, Linux)
+- [docs/CLI.md](docs/CLI.md) — full `plaud-tools` CLI reference
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — ffmpeg, region mismatches, antivirus quarantine, multi-account
+- [CHANGELOG.md](CHANGELOG.md) — release notes
+- [SECURITY.md](SECURITY.md) — security policy
+- [LICENSE](LICENSE) — LGPL-3.0-or-later
+
+## Important
+
+**Alpha** — APIs and flags may change between minor versions. Pin versions in production wiring and check the [CHANGELOG](CHANGELOG.md) before upgrading.
+
+**Unofficial** — not affiliated with, endorsed by, or sponsored by Plaud Inc. PlaudTools uses Plaud's web API directly, which their Terms of Service may restrict; your account could be rate-limited or suspended. Use at your own risk. You still need a real Plaud account; PlaudTools does not replace the Plaud mobile or web apps.
+
+---
 
 [![CI](https://github.com/massive-value/plaud-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/massive-value/plaud-tools/actions/workflows/ci.yml)
 [![Bundle smoke](https://github.com/massive-value/plaud-tools/actions/workflows/ci.yml/badge.svg?event=push&label=bundle-smoke)](https://github.com/massive-value/plaud-tools/actions/workflows/ci.yml)
@@ -8,135 +136,3 @@ Bridge your [Plaud](https://www.plaud.ai/) recordings into AI assistants via a P
 ![status: alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: LGPL-3.0-or-later](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue)](LICENSE)
-
-> **Alpha software.** This project is pre-1.0. APIs, tool names, and CLI flags
-> may change between minor versions. Pin a known-good version in production
-> wiring and review the [CHANGELOG](CHANGELOG.md) before upgrading.
-
-> **Unofficial — not affiliated with Plaud.** The Plaud API is reverse-engineered
-> from the Plaud web app. "Plaud" is a trademark of Plaud Inc.; this project is
-> not affiliated with, endorsed by, or sponsored by Plaud. Use at your own risk:
-> Plaud's Terms of Service may restrict reverse-engineering and automated
-> access, and your account could be rate-limited or suspended. You still need
-> a real Plaud account; this package does not replace the Plaud mobile or web
-> apps.
-
-## Install
-
-From PyPI:
-
-```
-pip install plaud-tools
-```
-
-Windows users can grab a bundled tray app + frozen CLI + MCP server (no Python
-install required). Recommended one-liner:
-
-```powershell
-irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
-```
-
-Or download `PlaudTools.zip` from the
-[latest release](https://github.com/massive-value/plaud-tools/releases/latest)
-and unzip manually. See [docs/INSTALL.md](docs/INSTALL.md) for the full
-walkthrough.
-
-## Quickstart
-
-```
-# Sign in once. Region is `us` or `eu`; auto-detected on first API call.
-plaud-tools login --email you@example.com --region us
-
-# Recent recordings
-plaud-tools list
-
-# Full detail for one recording (title, date, duration, headline)
-plaud-tools show <recording-id>
-```
-
-The CLI ships as both `plaud-tools` and the shorter alias `pt`. Run
-`plaud-tools --help` for the full subcommand list.
-
-### Wire the MCP server into your AI client
-
-Log in via the CLI **before** starting the AI client; the MCP server reads the
-saved session automatically.
-
-**Claude Desktop** — add to `claude_desktop_config.json` (Windows:
-`%APPDATA%\Claude\claude_desktop_config.json`; macOS:
-`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "plaud": {
-      "command": "plaud-mcp"
-    }
-  }
-}
-```
-
-**Claude Code** — same JSON block, in `~/.claude.json` (user-level) or
-`.claude.json` at the project root.
-
-**Codex CLI** — in `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.plaud]
-command = "plaud-mcp"
-```
-
-Fully quit and relaunch the AI client after editing the config — MCP servers
-are loaded once at startup. Full wiring details, troubleshooting, and tray
-bundle install steps live in [docs/INSTALL.md](docs/INSTALL.md).
-
-## What's in the box
-
-| Entry point | What it is |
-|---|---|
-| `plaud-tools` / `pt` | Python CLI — list, search, transcribe, upload, rename, trash, merge recordings |
-| `plaud-mcp` | MCP server (stdio transport) — exposes the tool surface below to AI clients |
-| `plaud-tray` (optional, `pip install plaud-tools[tray]`) | Windows system-tray app for one-click sign-in and MCP wiring |
-
-## MCP tool surface
-
-The MCP server exposes 7 workflow-oriented tools (canonical list in
-[`src/plaud_tools/server.py`](src/plaud_tools/server.py)):
-
-| Tool | What it does |
-|---|---|
-| `browse_recordings` | List and filter recordings by date, title, folder |
-| `get_recording` | Full detail for one recording; opt in to transcript / speakers / summary |
-| `mutate_recording` | Rename, trash, restore, delete, move to folder, rename speaker |
-| `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
-| `process_recording` | Trigger transcription + summarization; block until both complete |
-| `list_folders` | List Plaud folders (id, name, color, icon) |
-| `merge_recordings` | Merge two or more recordings into a single new recording |
-
-## Develop
-
-```
-git clone https://github.com/massive-value/plaud-tools.git
-cd plaud-tools
-pip install -e ".[dev]"
-pytest -q
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow,
-including the `PLAUD_LIVE_READS=1` live-test gate.
-
-## Token & secrets
-
-Plaud JWTs last ~300 days. When the stored token is within 30 days of expiry,
-`plaud-tools` will raise a session-expired error and prompt you to sign in
-again — run `plaud-tools login` to refresh your credentials. Sessions are
-stored in the OS keyring when available, with a mode-`600` fallback at
-`~/.config/plaud-tools/session.json`.
-
-## Docs
-
-- [docs/INSTALL.md](docs/INSTALL.md) — install + AI-client wiring walkthrough
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, testing, PR workflow
-- [SECURITY.md](SECURITY.md) — security policy and vulnerability disclosure
-- [CHANGELOG.md](CHANGELOG.md) — release notes
-- [LICENSE](LICENSE) — LGPL-3.0-or-later

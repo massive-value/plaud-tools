@@ -16,7 +16,7 @@ A PowerShell script at `scripts/install.ps1` in the repo serves as the standard 
 irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
 ```
 
-The script downloads the latest `PlaudTools.zip` from GitHub releases, extracts to `%LOCALAPPDATA%\Programs\PlaudTools\`, sets up PATH, autostart, and PS completions. If an existing install is detected, the script errors and directs the user to the tray updater instead — the script is for onboarding only, not upgrades. The manual zip extraction path is retained for power users and air-gapped machines; INSTALL.md leads with the script and mentions the zip as an advanced option.
+The script downloads the latest `PlaudTools.zip` from GitHub releases, extracts to `%LOCALAPPDATA%\Programs\PlaudTools\`, sets up PATH, autostart, and PS completions. If an existing install is detected, the script errors and directs the user to the tray updater instead — the script is for onboarding only, not upgrades. The manual zip extraction path is retained for power users and air-gapped machines; the README leads with the install script as the flagship path, and `docs/INSTALL-METHODS.md` documents the manual zip plus pip install as alternatives.
 
 The script lives at a stable raw GitHub URL on `main` rather than as a per-release asset, so no CI changes are needed and the URL never rotates.
 

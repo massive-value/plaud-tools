@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README rewritten to lead with the Windows tray bundle install + lifecycle
+  (install → sign in → wire AI clients → restart → updates → uninstall) for
+  non-technical users. Quickstart is GUI-only after the install one-liner;
+  the only CLI command shown in the README is the PowerShell `irm | iex`
+  installer. PyPI and manual-zip install paths moved out of the README into
+  `docs/INSTALL-METHODS.md`.
+- `docs/INSTALL.md` renamed to `docs/INSTALL-METHODS.md` and split into four
+  focused documents:
+  - `docs/INSTALL-METHODS.md` — pip install, manual zip extraction, install
+    from source, shell completions.
+  - `docs/AI-CLIENTS.md` — manual JSON/TOML wiring for Claude Desktop,
+    Claude Code, and Codex across Windows, macOS, and Linux. Source of truth
+    for what the tray wizard writes.
+  - `docs/CLI.md` — curated `plaud-tools` CLI reference grouped by workflow
+    (sign-in, browse, edit, audio, diagnostics).
+  - `docs/TROUBLESHOOTING.md` — ffmpeg setup, region mismatches, antivirus
+    quarantine, PATH issues, session storage location, multi-account.
+- `docs/adr/002-updater-uninstaller-install-script.md` updated to reference
+  the renamed install-methods doc.
+
 ## [0.2.6] - 2026-05-22
 
 Completes the toast-click activation story started in v0.2.4/v0.2.5, and
