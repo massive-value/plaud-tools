@@ -7,17 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-05-21
+
 ### Changed
 
-- `browse_recordings` MCP response is now `{"items": [...], "next_after": int|null}` — `next_after` is `null` when the page is short of `limit` and is the cursor to pass as `after` on the next call otherwise.
-- All 7 MCP tool descriptions tightened to one sentence each; total description token count reduced by ~37%.
+- `browse_recordings` MCP response is now `{"items": [...], "next_after": int|null}` — `next_after` is `null` when the page is short of `limit` and is the cursor to pass as `after` on the next call otherwise. (#30, #51)
+- All 7 MCP tool descriptions tightened to one sentence each; total description token count reduced by ~37%. (#30, #51)
+- README "Token & secrets" now correctly notes that plaud-tools surfaces a session-expired error when the Plaud token lapses and the user must re-run `plaud-tools login`; folder/file-tag semantics on MCP tools are clarified ("Folder ID (from `list_folders`)"). (#40, #50)
 
 ### Fixed
 
-- `_request_json` now passes `body` through the `-302` region-redirect recursive retry, preventing POST/PATCH/DELETE requests from silently dropping their payload on a region mismatch.
+- `_request_json` now passes `body` through the `-302` region-redirect recursive retry, preventing POST/PATCH/DELETE requests from silently dropping their payload on a region mismatch. (#34, #48)
 - Bundled CLI (`plaud-tools.exe`) can now transcode and upload `.wav`/`.m4a`
   files without ffmpeg on PATH. `_find_ffmpeg` falls back to the sibling
-  `../mcp/ffmpeg.exe` when frozen and no ffmpeg is found beside the CLI exe.
+  `../mcp/ffmpeg.exe` when frozen and no ffmpeg is found beside the CLI exe. (#41, #49)
 
 ## [0.1.19] - 2026-05-21
 
