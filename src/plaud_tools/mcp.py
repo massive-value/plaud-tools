@@ -166,7 +166,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         mutation: str,
         new_name: str | None = None,
         folder_id: str | None = None,
-        original_label: str | None = None,
+        clear_folder: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if mutation == "rename":
@@ -183,30 +183,38 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 client.restore_from_trash([recording_id])
                 return _json_result({"ok": True, "recording_id": recording_id, "mutation": "restore"})
 
-            if mutation == "delete":
-                client.delete_recordings([recording_id])
-                return _json_result({"ok": True, "recording_id": recording_id, "mutation": "delete"})
-
             if mutation == "move":
-                actual_folder_id = None if (folder_id is None or folder_id in ("", "-")) else folder_id
+                actual_folder_id = None if (clear_folder or folder_id is None or folder_id in ("", "-")) else folder_id
                 client.set_recording_folder(recording_id, actual_folder_id)
                 return _json_result({"ok": True, "recording_id": recording_id, "folder_id": actual_folder_id})
 
-            if mutation == "rename_speaker":
-                if not original_label or not new_name:
-                    return _json_result(
-                        {"error": "original_label and new_name required for rename_speaker"}, is_error=True
-                    )
-                result = client.rename_speaker(recording_id, original_label, new_name)
-                return _json_result({
-                    "ok": True,
-                    "recording_id": recording_id,
-                    "original_label": original_label,
-                    "new_name": new_name,
-                    "segments_updated": result["segments_updated"],
-                })
-
             return _json_result({"error": f"unknown mutation: {mutation!r}"}, is_error=True)
+
+        return _call(get_client, inner)
+
+    def delete_recording(
+        recording_id: str,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            client.delete_recordings([recording_id])
+            return _json_result({"ok": True, "recording_id": recording_id})
+
+        return _call(get_client, inner)
+
+    def rename_speaker(
+        recording_id: str,
+        original_label: str,
+        new_name: str,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            result = client.rename_speaker(recording_id, original_label, new_name)
+            return _json_result({
+                "ok": True,
+                "recording_id": recording_id,
+                "original_label": original_label,
+                "new_name": new_name,
+                "segments_updated": result["segments_updated"],
+            })
 
         return _call(get_client, inner)
 
@@ -310,6 +318,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "browse_recordings": browse_recordings,
         "get_recording": get_recording,
         "mutate_recording": mutate_recording,
+        "delete_recording": delete_recording,
+        "rename_speaker": rename_speaker,
         "upload_recording": upload_recording,
         "process_recording": process_recording,
         "list_folders": list_folders,

@@ -657,15 +657,6 @@ def test_mcp_mutate_recording_restore():
     assert client.trash_restore_call == ["rec1"]
 
 
-def test_mcp_mutate_recording_delete():
-    client = StubClient()
-    handlers = build_handlers(lambda: client)
-    result = handlers["mutate_recording"]("rec1", "delete")
-    payload = json.loads(result["content"][0]["text"])
-    assert payload == {"ok": True, "recording_id": "rec1", "mutation": "delete"}
-    assert client.delete_call == ["rec1"]
-
-
 def test_mcp_mutate_recording_move():
     client = StubClient()
     handlers = build_handlers(lambda: client)
@@ -675,7 +666,7 @@ def test_mcp_mutate_recording_move():
     assert client.move_call == ("rec1", "tag1")
 
 
-def test_mcp_mutate_recording_move_clears_folder():
+def test_mcp_mutate_recording_move_clears_folder_with_empty_string():
     client = StubClient()
     handlers = build_handlers(lambda: client)
     result = handlers["mutate_recording"]("rec1", "move", folder_id="")
@@ -684,14 +675,56 @@ def test_mcp_mutate_recording_move_clears_folder():
     assert client.move_call == ("rec1", None)
 
 
-def test_mcp_mutate_recording_rename_speaker():
+def test_mcp_mutate_recording_move_clears_folder_with_clear_folder_flag():
     client = StubClient()
     handlers = build_handlers(lambda: client)
-    result = handlers["mutate_recording"]("rec1", "rename_speaker", original_label="Speaker 1", new_name="Alex")
+    result = handlers["mutate_recording"]("rec1", "move", folder_id="tag1", clear_folder=True)
     payload = json.loads(result["content"][0]["text"])
-    assert payload["segments_updated"] == 7
+    assert payload["folder_id"] is None
+    assert client.move_call == ("rec1", None)
+
+
+def test_mcp_mutate_recording_delete_is_unknown_mutation():
+    """delete is no longer a valid mutate_recording action — it moved to delete_recording."""
+    handlers = build_handlers(lambda: StubClient())
+    result = handlers["mutate_recording"]("rec1", "delete")
+    assert result["isError"] is True
+    payload = json.loads(result["content"][0]["text"])
+    assert "unknown mutation" in payload["error"]
+
+
+def test_mcp_delete_recording_calls_client_and_returns_ok():
+    client = StubClient()
+    handlers = build_handlers(lambda: client)
+    result = handlers["delete_recording"]("rec1")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {"ok": True, "recording_id": "rec1"}
+    assert client.delete_call == ["rec1"]
+
+
+def test_mcp_delete_recording_returns_session_error_when_client_missing():
+    handlers = build_handlers(lambda: None)
+    result = handlers["delete_recording"]("rec1")
+    assert result["isError"] is True
+
+
+def test_mcp_rename_speaker_calls_client_and_returns_segments_updated():
+    client = StubClient()
+    handlers = build_handlers(lambda: client)
+    result = handlers["rename_speaker"]("rec1", "Speaker 1", "Alex")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["recording_id"] == "rec1"
     assert payload["original_label"] == "Speaker 1"
+    assert payload["new_name"] == "Alex"
+    assert payload["segments_updated"] == 7
     assert client.rename_speaker_call == ("rec1", "Speaker 1", "Alex")
+
+
+def test_mcp_rename_speaker_returns_session_error_when_client_missing():
+    handlers = build_handlers(lambda: None)
+    result = handlers["rename_speaker"]("rec1", "Speaker 1", "Alex")
+    assert result["isError"] is True
 
 
 def test_mcp_mutate_recording_unknown_mutation():
