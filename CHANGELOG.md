@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-22
+
+A two-bug patch release shipped within an hour of v0.2.2, driven by the very
+first diagnostic ``mcp.log`` / enriched ``session_expired`` payload that
+v0.2.2 captured in real-world use.
+
+### Fixed
+
+- ``SessionStore._load_from_keyring`` swallowed transient
+  ``keyring.get_password`` exceptions and returned ``None``.  The MCP server
+  then treated that ``None`` as ``no_session`` and surfaced a sign-in prompt
+  to the user — even though the very next keyring read returned the same
+  session cleanly (caught in the v0.2.2 diagnostic: ``store_source='keyring'
+  days_until_expiry=299 token_typ='UT'`` immediately after a ``no_session``
+  fire).  Windows Credential Manager has occasional transient failures
+  under load.  ``_get_password_with_retry`` now retries once on exception
+  with a 100 ms backoff before falling back to the file store.  Clean
+  ``None`` payloads (legitimate "no entry exists") still propagate
+  immediately so signed-out states aren't slowed.  Regression coverage in
+  ``tests/test_auth.py``. (#81, partial fix for #80)
+- ``_setup_mcp_logging`` used ``logging.basicConfig`` which is documented
+  as a no-op when the root logger already has handlers.  The frozen
+  plaud-mcp wrote its mcp.log banner fine; the pip-installed plaud-mcp
+  v0.2.2 did not, because something in the pip-launch import chain
+  configured a root handler first.  Attach the rotating file handler
+  directly via ``logging.getLogger().addHandler(handler)``; pre-existing
+  handlers are preserved, not replaced.  Regression coverage in
+  ``tests/test_server.py``. (#81, partial fix for #80)
+
 ## [0.2.2] - 2026-05-22
 
 A bundle-correctness and observability release shaking out three issues that
@@ -576,7 +605,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/massive-value/plaud-tools/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/massive-value/plaud-tools/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/massive-value/plaud-tools/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/massive-value/plaud-tools/compare/v0.1.22...v0.2.0
