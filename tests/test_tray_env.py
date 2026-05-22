@@ -118,6 +118,167 @@ class TestVerifyEnvDevMode:
 
 
 # ---------------------------------------------------------------------------
+# Autostart opt-out — _set_autostart toggle ↔ _verify_env interaction
+# ---------------------------------------------------------------------------
+
+class TestAutostartOptOut:
+    """Pins the auto-heal contract: a user who deliberately disabled autostart
+    via the "Start with Windows" menu must not have it silently re-enabled on
+    the next tray launch.  The marker file written by ``_set_autostart(False)``
+    is what makes the opt-out persistent across launches.
+    """
+
+    def test_verify_env_treats_opt_out_marker_as_autostart_ok(self):
+        with patch("plaud_tools.tray_app._autostart_enabled", return_value=False), \
+             patch("plaud_tools.tray_app._autostart_opted_out", return_value=True):
+            status = _verify_env()
+        assert status.autostart_ok is True, (
+            "Opt-out marker must be treated as a deliberate user choice, not "
+            "a missing setup that the auto-heal pass should fight."
+        )
+        assert status.all_ok is True
+
+    def test_verify_env_missing_when_neither_enabled_nor_opted_out(self):
+        with patch("plaud_tools.tray_app._autostart_enabled", return_value=False), \
+             patch("plaud_tools.tray_app._autostart_opted_out", return_value=False):
+            status = _verify_env()
+        assert status.autostart_ok is False
+        assert "autostart" in status.missing_labels()
+
+    def test_opt_out_marker_path_returns_none_in_dev_mode(self):
+        """Dev/test runs are never frozen, so the marker has no canonical home
+        and ``_autostart_opted_out`` always returns False — auto-heal cannot
+        act on this anyway because it gates on ``sys.frozen``.
+        """
+        from plaud_tools.tray.setup import _autostart_opt_out_marker_path, _autostart_opted_out
+        assert _autostart_opt_out_marker_path() is None
+        assert _autostart_opted_out() is False
+
+    def test_opt_out_marker_round_trip_when_frozen(self, tmp_path, monkeypatch):
+        """In a frozen bundle, _set_autostart(False) drops the marker file and
+        _set_autostart(True) clears it.  Mocks sys.frozen + sys.executable to
+        simulate the bundle layout, and stubs out the winreg side-effects so
+        the test runs cross-platform.
+        """
+        from plaud_tools.tray import setup as setup_mod
+
+        fake_exe = tmp_path / "PlaudTools.exe"
+        fake_exe.write_bytes(b"")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(fake_exe))
+        # The marker side of the toggle is what we care about — winreg side
+        # only matters on Windows and is exercised in other Windows-only tests.
+        if sys.platform == "win32":
+            monkeypatch.setattr("winreg.OpenKey", MagicMock(
+                return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)))
+            monkeypatch.setattr("winreg.SetValueEx", MagicMock())
+            monkeypatch.setattr("winreg.DeleteValue", MagicMock())
+        else:
+            monkeypatch.setattr(setup_mod.sys, "platform", "linux", raising=False)
+
+        marker = setup_mod._autostart_opt_out_marker_path()
+        assert marker is not None
+        assert not marker.exists()
+
+        setup_mod._set_autostart(False)
+        assert marker.exists(), "Disabling autostart must drop the opt-out marker"
+
+        setup_mod._set_autostart(True)
+        assert not marker.exists(), "Re-enabling autostart must clear the opt-out marker"
+
+
+# ---------------------------------------------------------------------------
+# Tray auto-heal — _run_verify_env + _auto_repair_env
+# ---------------------------------------------------------------------------
+
+class TestAutoHealEnv:
+    """The setup-failure banner should be a last resort, not a daily greeting.
+    Auto-heal restores PATH/completions/autostart silently in the frozen bundle
+    context so the banner only surfaces when something genuinely cannot be
+    fixed without user input.
+    """
+
+    def _make_app(self):
+        """Minimal TrayApp stand-in with the attributes _run_verify_env touches."""
+        from plaud_tools.tray.background import _BackgroundMixin
+
+        class _StubApp(_BackgroundMixin):
+            def __init__(self) -> None:
+                self._root = None
+                self._home_win = None
+                self._env_status = None
+
+        return _StubApp()
+
+    def test_auto_repair_no_op_in_dev_mode(self, monkeypatch):
+        """Dev builds never write to the user's PATH / Run key."""
+        monkeypatch.setattr(sys, "frozen", False, raising=False)
+        app = self._make_app()
+        status = EnvStatus(path_ok=False, completions_ok=False, autostart_ok=False)
+
+        with patch("plaud_tools.tray.background._setup_cli_path") as cli, \
+             patch("plaud_tools.tray.background._setup_ps_completions") as compl, \
+             patch("plaud_tools.tray.background._set_autostart") as auto:
+            app._auto_repair_env(status)
+
+        cli.assert_not_called()
+        compl.assert_not_called()
+        auto.assert_not_called()
+
+    def test_auto_repair_restores_all_three_when_frozen(self, monkeypatch):
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        app = self._make_app()
+        status = EnvStatus(path_ok=False, completions_ok=False, autostart_ok=False)
+
+        with patch("plaud_tools.tray.background._setup_cli_path") as cli, \
+             patch("plaud_tools.tray.background._setup_ps_completions") as compl, \
+             patch("plaud_tools.tray.background._set_autostart") as auto:
+            app._auto_repair_env(status)
+
+        cli.assert_called_once()
+        compl.assert_called_once()
+        auto.assert_called_once_with(True)
+
+    def test_auto_repair_skips_what_is_already_ok(self, monkeypatch):
+        """Only the missing slots trigger their respective helper.  In
+        particular, when ``status.autostart_ok`` is True because of an opt-out
+        marker, the auto-heal must not re-register autostart.
+        """
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        app = self._make_app()
+        status = EnvStatus(path_ok=False, completions_ok=True, autostart_ok=True)
+
+        with patch("plaud_tools.tray.background._setup_cli_path") as cli, \
+             patch("plaud_tools.tray.background._setup_ps_completions") as compl, \
+             patch("plaud_tools.tray.background._set_autostart") as auto:
+            app._auto_repair_env(status)
+
+        cli.assert_called_once()
+        compl.assert_not_called()
+        auto.assert_not_called()
+
+    def test_run_verify_env_clears_banner_when_auto_repair_succeeds(self, monkeypatch):
+        """End-to-end: status starts non-ok, auto-repair runs, second verify
+        returns all-ok, and the banner never gets shown.
+        """
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        app = self._make_app()
+
+        missing = EnvStatus(path_ok=False, completions_ok=True, autostart_ok=False)
+        healthy = EnvStatus(path_ok=True, completions_ok=True, autostart_ok=True)
+        verify_results = iter([missing, healthy])
+
+        with patch("plaud_tools.tray.background._verify_env",
+                   side_effect=lambda: next(verify_results)), \
+             patch("plaud_tools.tray.background._setup_cli_path"), \
+             patch("plaud_tools.tray.background._set_autostart"):
+            app._run_verify_env()
+
+        assert app._env_status is healthy
+        assert app._env_status.all_ok is True
+
+
+# ---------------------------------------------------------------------------
 # _check_cli_path — registry-level PATH check (Windows mock)
 # ---------------------------------------------------------------------------
 

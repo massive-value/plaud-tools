@@ -313,7 +313,9 @@ class TestDiagnoseSessionState:
 
         class _StoreFromTmp(SessionStore):
             def __init__(self):
-                super().__init__(path=session_path)
+                # Disable DPAPI so this test pins the file_store fallback
+                # specifically; the JWT typ extraction is what we care about.
+                super().__init__(path=session_path, dpapi_path=None)
                 self._load_keyring_module = lambda: None  # type: ignore[method-assign]
 
         monkeypatch.setattr(mcp_mod, "SessionStore", _StoreFromTmp)

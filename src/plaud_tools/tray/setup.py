@@ -202,6 +202,13 @@ def _unregister_com_activator() -> None:
 
 _AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _AUTOSTART_NAME = APP_NAME
+# Marker file written into the install dir when the user explicitly disables
+# autostart via the "Start with Windows" menu toggle.  Read by _verify_env so
+# the tray's auto-repair pass does NOT silently re-enable autostart for a user
+# who deliberately turned it off.  Lives in the install dir so it survives
+# in-app upgrades (Expand-Archive doesn't delete files absent from the zip)
+# but is wiped by uninstall (the install dir is deleted wholesale).
+_AUTOSTART_OPT_OUT_MARKER = ".autostart_disabled"
 
 
 def _autostart_enabled() -> bool:
@@ -216,6 +223,19 @@ def _autostart_enabled() -> bool:
         return False
 
 
+def _autostart_opt_out_marker_path() -> "Path | None":
+    """Return the autostart opt-out marker path, or None outside a frozen bundle."""
+    if not getattr(sys, "frozen", False) or sys.platform != "win32":
+        return None
+    return Path(sys.executable).parent / _AUTOSTART_OPT_OUT_MARKER
+
+
+def _autostart_opted_out() -> bool:
+    """True if the user has explicitly turned off autostart via the tray toggle."""
+    marker = _autostart_opt_out_marker_path()
+    return marker is not None and marker.exists()
+
+
 def _set_autostart(enable: bool) -> None:
     if sys.platform != "win32":
         return
@@ -228,6 +248,18 @@ def _set_autostart(enable: bool) -> None:
                 winreg.DeleteValue(key, _AUTOSTART_NAME)
             except FileNotFoundError:
                 pass
+    # Sync the opt-out marker so subsequent tray launches respect the user's
+    # explicit choice (or forget the previous opt-out, for enable=True).
+    marker = _autostart_opt_out_marker_path()
+    if marker is not None:
+        try:
+            if enable:
+                marker.unlink(missing_ok=True)
+            else:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch(exist_ok=True)
+        except OSError:
+            logging.warning("Could not sync autostart opt-out marker", exc_info=True)
 
 
 # First-run environment setup (PATH + PowerShell completions)
@@ -434,11 +466,17 @@ def _check_ps_completions() -> bool:
 
 
 def _verify_env() -> "EnvStatus":
-    """Read-only environment check — does not modify PATH, profiles, or registry."""
+    """Read-only environment check — does not modify PATH, profiles, or registry.
+
+    The autostart slot is considered OK both when the registry entry is present
+    AND when the user has explicitly opted out via the "Start with Windows"
+    menu toggle (tracked by ``_autostart_opted_out``).  That way the auto-heal
+    pass in ``_run_verify_env`` doesn't fight the user's deliberate choice.
+    """
     return EnvStatus(
         path_ok=_check_cli_path(),
         completions_ok=_check_ps_completions(),
-        autostart_ok=_autostart_enabled(),
+        autostart_ok=_autostart_enabled() or _autostart_opted_out(),
     )
 
 
@@ -455,7 +493,8 @@ __all__ = [
     "_acquire_instance_lock", "_ACTIVATE_EVENT", "_AUTOSTART_KEY", "_AUTOSTART_NAME",
     "_register_aumid", "_TOAST_AUMID",
     "_COM_ACTIVATOR_CLSID", "_register_com_activator", "_unregister_com_activator",
-    "_autostart_enabled", "_set_autostart", "_install_dir", "_cli_dir",
+    "_autostart_enabled", "_autostart_opted_out", "_autostart_opt_out_marker_path",
+    "_set_autostart", "_install_dir", "_cli_dir",
     "_completions_dir", "_install_completions_dir", "_stale_sourcing_re",
     "_setup_cli_path", "_setup_ps_completions", "EnvStatus", "_check_cli_path",
     "_check_ps_completions", "_verify_env", "_events_path", "APP_NAME", "Path",

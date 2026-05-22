@@ -151,18 +151,32 @@ class _BackgroundMixin:
             connect_all(mcp)
 
     def _run_verify_env(self) -> None:
-        """Background thread: check PATH/completions/autostart without mutating.
+        """Background thread: verify PATH/completions/autostart and auto-heal.
 
-        Stores the result in ``self._env_status`` and nudges the HomeWindow to
-        show the setup-failure banner and "Repair setup" button if anything is
-        missing.
+        Setup can go missing across uninstall/reinstall cycles, in-app upgrades
+        that bypass ``install.ps1`` step 4, or system-level cleanup tools
+        (Task Manager's Startup tab, ``msconfig``, etc.).  Rather than leave
+        the user staring at the yellow setup-failure banner, the tray quietly
+        restores anything it knows how to set without asking.  The autostart
+        slot honors the user's explicit opt-out marker so disabling "Start
+        with Windows" via the menu actually sticks across launches.
+
+        After the auto-heal pass we re-verify and only surface the banner /
+        repair button if something genuinely cannot be fixed automatically
+        (e.g., a non-frozen dev build or a registry write that raised).
         """
         try:
             status = _verify_env()
+            if not status.all_ok:
+                self._auto_repair_env(status)
+                status = _verify_env()
             self._env_status = status
             if not status.all_ok:
                 missing = ", ".join(status.missing_labels())
-                logging.warning("Environment check: missing %s", missing)
+                logging.warning(
+                    "Environment check: missing %s (auto-repair did not resolve)",
+                    missing,
+                )
                 if self._root and self._home_win:
                     def _nudge_home() -> None:
                         if self._home_win:
@@ -171,6 +185,36 @@ class _BackgroundMixin:
                     self._root.after(0, _nudge_home)
         except Exception:
             logging.warning("Environment check failed", exc_info=True)
+
+    def _auto_repair_env(self, status: "EnvStatus") -> None:
+        """Silently restore missing setup entries on tray startup.
+
+        Only runs in the frozen bundle context — the helpers it calls (PATH /
+        completions / autostart) target paths that only make sense for a
+        Windows install at ``%LOCALAPPDATA%\\Programs\\PlaudTools\\``.  Each
+        helper is idempotent, so a partial repair on the previous launch
+        cannot cause duplicate entries.
+        """
+        if not getattr(sys, "frozen", False):
+            return
+        if not status.path_ok:
+            try:
+                _setup_cli_path()
+                logging.info("Auto-repair: added cli dir to user PATH")
+            except Exception:
+                logging.warning("Auto-repair: PATH restore failed", exc_info=True)
+        if not status.completions_ok:
+            try:
+                _setup_ps_completions()
+                logging.info("Auto-repair: restored PowerShell completions sourcing")
+            except Exception:
+                logging.warning("Auto-repair: completions restore failed", exc_info=True)
+        if not status.autostart_ok:
+            try:
+                _set_autostart(True)
+                logging.info("Auto-repair: re-registered autostart in HKCU Run")
+            except Exception:
+                logging.warning("Auto-repair: autostart restore failed", exc_info=True)
 
     def _repair_env(self, on_done: "Callable[[bool, str], None]") -> None:
         """Re-run the mutating setup helpers and report success/failure via callback.

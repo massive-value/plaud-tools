@@ -725,7 +725,10 @@ def test_session_store_falls_back_to_file_when_keyring_unavailable(tmp_path, mon
         raise ImportError(name)
 
     monkeypatch.setattr("plaud_tools.session.importlib.import_module", raise_import_error)
-    store = SessionStore(tmp_path / "session.json")
+    # Explicitly disable DPAPI for this test — we are pinning the plaintext
+    # file-store fallback that fires when *every* OS-protected path is
+    # unavailable.  The DPAPI path has its own dedicated tests.
+    store = SessionStore(tmp_path / "session.json", dpapi_path=None)
     store.save(PlaudSession(access_token="jwt", region="eu", email="user@example.com"))
     session, source = store.load_with_source()
     assert source == "file"

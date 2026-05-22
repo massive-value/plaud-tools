@@ -7,27 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-05-22
+
+The headline change is a **DPAPI shadow-file fallback** that finally closes
+out the recurring `session_expired` events seen by MCP clients on cold-start.
+Two earlier patches (v0.2.3 single-retry, v0.2.6 progressive 3.6 s budget)
+narrowed the window but never eliminated it: the root cause is a
+Windows-side cold-start race inside `vaultcli.dll` / `win32ctypes` where
+`keyring.get_password` returns `None` for hundreds of milliseconds despite
+the credential being present (confirmed in production: the *same* MCP
+process firing `session_expired` reports `days_until_expiry=291`,
+`store_source='keyring'` from a diagnostic call milliseconds later).  Rather
+than continue tuning retries against an undocumented internal state machine,
+v0.2.7 sidesteps the Credential Manager service entirely on the fallback
+path by reading a user-DPAPI-encrypted shadow file written alongside every
+keyring save.
+
+This release also folds in the unreleased post-v0.2.6 work that was sitting
+on `main`: tray Help affordances, login form hardening, one-shot
+plaud-toolkit credential migration, the progressive-backoff retry shape
+itself, and a tray auto-heal pass at startup.
+
+### Added
+
+- **DPAPI shadow-file fallback for session storage (Windows).**
+  `SessionStore` now writes a `%LOCALAPPDATA%\PlaudTools\session.dat` file
+  alongside every `set_password` call.  The file is encrypted via
+  `Crypt32.CryptProtectData` in user scope — same primitive Credential
+  Manager uses internally, but invoked directly so spawned MCP processes
+  have a path to the session that does not depend on the credential
+  service's cold-start settling window.  On load, the retry budget against
+  the keyring is exhausted first (preserving today's healthy-keyring fast
+  path); only if every keyring read still returns `None` does
+  `_load_from_dpapi` decrypt the shadow file.  A telemetry-grade warning
+  fires when the fallback path succeeds so we can see in `mcp.log` /
+  `tray.log` how often the underlying Windows bug is biting users.  The
+  feature is gated to `service_name == "plaud-tools"` and to
+  `sys.platform == "win32"`; tests opt in explicitly via the new
+  `dpapi_path=` constructor parameter or opt out with `dpapi_path=None`.
+  Eight new tests in `tests/test_auth.py`, including a Windows-only live
+  `_dpapi_protect`/`_dpapi_unprotect` roundtrip so the ctypes signature
+  is exercised on `windows-latest` CI instead of only at user runtime.
+- **Tray Help / Visit website button.**  A new menu item (just above
+  Uninstall/Quit) and matching `HomeWindow` button (below "View Logs")
+  both open the GitHub repo via a single `REPO_URL` constant in
+  `tray/app.py`.  `HomeWindow` geometry bumped 420→460 to fit the extra
+  button.
+- **One-shot migration from the predecessor `plaud-toolkit` credential
+  scheme.**  `SessionStore._load_from_legacy_keyring()` +
+  `_migrate_legacy_session()` read the two Windows Credential Manager
+  entries that `plaud-toolkit` (the TypeScript predecessor) wrote
+  (`jwt.plaud-toolkit`/`jwt` and `profile.plaud-toolkit`/`profile`),
+  rewrite them under the canonical `plaud-tools`/`session` JSON shape,
+  and delete the legacy entries.  Returns `source="legacy_keyring"` from
+  `load_with_source()` so MCP diagnostics surface the migration.  Gated
+  to the canonical service name so test fixtures with synthetic service
+  names never touch the user's real vault.  Four regression tests in
+  `tests/test_auth.py`.
+- **Tray auto-heal at startup.**  `_BackgroundMixin._run_verify_env` now
+  silently calls a new `_auto_repair_env` pass when `_verify_env` reports
+  any missing slot (PATH, shell completions, autostart), then re-verifies
+  before deciding whether to surface the yellow setup-failures banner.
+  Restores PATH / completions / autostart in the frozen-bundle context so
+  users no longer have to click "Repair setup" after a state-degrading
+  scenario (in-app upgrades, system cleanup tools, weird Windows resets).
+  Gated on `sys.frozen`.  Respects an explicit user opt-out via a marker
+  file `<install_dir>\.autostart_disabled` written by `_set_autostart
+  (False)` and cleared by `_set_autostart(True)`; the marker lives in the
+  install dir so it survives `Expand-Archive -Force` upgrades but is wiped
+  by uninstall.  `_verify_env` treats `autostart_ok = _autostart_enabled()
+  or _autostart_opted_out()`, so the banner stays hidden when a user has
+  deliberately turned off "Start with Windows".  Eight new tests in
+  `tests/test_tray_env.py` covering opt-out semantics, dev-mode no-op,
+  frozen-mode restore-all, and the banner-stays-hidden invariant.
+
 ### Changed
 
-- README rewritten to lead with the Windows tray bundle install + lifecycle
-  (install → sign in → wire AI clients → restart → updates → uninstall) for
-  non-technical users. Quickstart is GUI-only after the install one-liner;
-  the only CLI command shown in the README is the PowerShell `irm | iex`
-  installer. PyPI and manual-zip install paths moved out of the README into
-  `docs/INSTALL-METHODS.md`.
-- `docs/INSTALL.md` renamed to `docs/INSTALL-METHODS.md` and split into four
-  focused documents:
-  - `docs/INSTALL-METHODS.md` — pip install, manual zip extraction, install
-    from source, shell completions.
+- **Keyring retry — progressive backoff.**  The fixed-count
+  `_KEYRING_RETRY_ATTEMPTS` retry has been replaced with
+  `_KEYRING_RETRY_DELAYS_S = (0.1, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)`
+  (8 attempts, ~3.6 s worst case).  Fixed 100 ms × N hammered the
+  credential service every 100 ms while it was still warming up; the
+  bumped budget wasn't enough on the second observed cold-start
+  (`session_expired` fired at T+500 ms while a diagnose ~50 ms later
+  found `days_until_expiry=291`).  Exception and `None` paths are
+  unified.  `_KEYRING_RETRY_DELAY_S` is retained as the base unit so
+  tests can monkeypatch it to 0 for instant runs — an autouse fixture in
+  `tests/conftest.py` does this for the whole suite (~10 s saved across
+  the few tests that hit the real keyring with synthetic service names).
+  Note: this is no longer the *primary* defense against the cold-start
+  race — DPAPI fallback is — but it still smooths the healthy-keyring
+  path through transient blips.
+- **LoginWindow hardening.**  Explicit empty-email/password validation
+  with an inline message; broad `except Exception` around `auth.login()`
+  so transient/unexpected errors log a full traceback to `tray.log` but
+  show a short friendly message inline.  Closes the "full stack trace
+  shown in the UI on empty-field submit" report.
+- **Startup session-load retry path.**  An earlier attempt added an outer
+  poll loop in `tray/app.py`; that was folded back into the inner
+  `_get_password_with_retry` progressive backoff so there is exactly one
+  retry layer to reason about.  `_load_session()` also single-passes the
+  store now, so the legitimate signed-out case pays one retry budget
+  instead of two.
+- README rewritten to lead with the Windows tray bundle install +
+  lifecycle (install → sign in → wire AI clients → restart → updates →
+  uninstall) for non-technical users. Quickstart is GUI-only after the
+  install one-liner; the only CLI command shown in the README is the
+  PowerShell `irm | iex` installer. PyPI and manual-zip install paths
+  moved out of the README into `docs/INSTALL-METHODS.md`.
+- `docs/INSTALL.md` renamed to `docs/INSTALL-METHODS.md` and split into
+  four focused documents:
+  - `docs/INSTALL-METHODS.md` — pip install, manual zip extraction,
+    install from source, shell completions.
   - `docs/AI-CLIENTS.md` — manual JSON/TOML wiring for Claude Desktop,
-    Claude Code, and Codex across Windows, macOS, and Linux. Source of truth
-    for what the tray wizard writes.
-  - `docs/CLI.md` — curated `plaud-tools` CLI reference grouped by workflow
-    (sign-in, browse, edit, audio, diagnostics).
-  - `docs/TROUBLESHOOTING.md` — ffmpeg setup, region mismatches, antivirus
-    quarantine, PATH issues, session storage location, multi-account.
-- `docs/adr/002-updater-uninstaller-install-script.md` updated to reference
-  the renamed install-methods doc.
+    Claude Code, and Codex across Windows, macOS, and Linux. Source of
+    truth for what the tray wizard writes.
+  - `docs/CLI.md` — curated `plaud-tools` CLI reference grouped by
+    workflow (sign-in, browse, edit, audio, diagnostics).
+  - `docs/TROUBLESHOOTING.md` — ffmpeg setup, region mismatches,
+    antivirus quarantine, PATH issues, session storage location,
+    multi-account.
+- `docs/adr/002-updater-uninstaller-install-script.md` updated to
+  reference the renamed install-methods doc.
+
+### Security
+
+- When DPAPI fallback handles a save (because the keyring backend
+  raised), the plaintext JSON `~/.config/plaud-tools/session.json`
+  fallback no longer fires.  Previously a keyring-write failure on
+  Windows would silently drop the token to plaintext on disk; now the
+  DPAPI-encrypted shadow absorbs the save and the plaintext file stays
+  empty.  Pinned by `test_save_succeeds_when_keyring_fails_but_dpapi_works`.
 
 ## [0.2.6] - 2026-05-22
 
@@ -704,7 +814,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/massive-value/plaud-tools/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/massive-value/plaud-tools/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/massive-value/plaud-tools/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/massive-value/plaud-tools/compare/v0.2.3...v0.2.4

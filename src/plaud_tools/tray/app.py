@@ -54,6 +54,8 @@ from .windows.wizard import WizardWindow
 # Test-hook constant — monkeypatched by tests to a smaller value
 _TEST_CONNECTION_TIMEOUT = 15  # seconds
 
+REPO_URL = "https://github.com/massive-value/plaud-tools"
+
 
 class TrayApp(_BackgroundMixin):
     def __init__(self) -> None:
@@ -74,10 +76,20 @@ class TrayApp(_BackgroundMixin):
     # Session helpers
 
     def _load_session(self) -> None:
+        # One store.load() call covers all three outcomes — valid, expired,
+        # and missing — without paying the full keyring retry budget twice
+        # on the signed-out cold-start path.
+        session = self._store.load()
+        if session is None:
+            self._session = None
+            self._manager.invalidate_cache()
+            return
         try:
             self._session = self._manager.require()
         except PlaudSessionExpiredError:
-            self._session = self._store.load()  # keep for display even if expired
+            # Token is present but expired or malformed; keep it for UI display
+            # (e.g. "Signed in as ... — token expires in N days").
+            self._session = session
 
     def _tray_state(self) -> str:
         if self._session is None:
@@ -132,6 +144,8 @@ class TrayApp(_BackgroundMixin):
         else:
             items.append(pystray.MenuItem("Sign in…", self._open_login))
 
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("Help / Visit website", self._open_repo))
         items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem("Uninstall…", self._open_uninstall))
         items.append(pystray.MenuItem("Quit", self._quit))
@@ -255,6 +269,9 @@ class TrayApp(_BackgroundMixin):
         import webbrowser
         webbrowser.open(url)
 
+    def _open_repo(self) -> None:
+        self._open_url(REPO_URL)
+
     def _open_log_folder(self) -> None:
         log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -319,6 +336,7 @@ class TrayApp(_BackgroundMixin):
             get_update_info=lambda: self._update_info,
             get_env_status=lambda: self._env_status,
             on_open_log_folder=self._open_log_folder,
+            on_open_help=self._open_repo,
         )
 
         # Build tray icon

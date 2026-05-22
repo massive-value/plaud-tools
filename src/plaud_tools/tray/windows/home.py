@@ -24,6 +24,7 @@ class HomeWindow:
         get_update_info: Callable[[], "tuple[str, str, str | None] | None"],
         get_env_status: "Callable[[], EnvStatus | None]",
         on_open_log_folder: Callable[[], None] | None = None,
+        on_open_help: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._on_test_connection = on_test_connection
@@ -37,6 +38,7 @@ class HomeWindow:
         self._get_update_info = get_update_info
         self._get_env_status = get_env_status
         self._on_open_log_folder = on_open_log_folder
+        self._on_open_help = on_open_help
         self._win: tk.Toplevel | None = None
         self._session_var: tk.StringVar | None = None
         self._status_var: tk.StringVar | None = None
@@ -65,7 +67,7 @@ class HomeWindow:
         _set_app_icon(win)
         win.title(APP_NAME)
         win.resizable(False, False)
-        win.geometry("400x420")
+        win.geometry("400x460")
         self._win = win
 
         frame = ttk.Frame(win, padding=20)
@@ -138,7 +140,11 @@ class HomeWindow:
 
         if self._on_open_log_folder is not None:
             ttk.Button(btn_frame, text="View Logs",
-                       command=self._on_open_log_folder).pack(fill="x")
+                       command=self._on_open_log_folder).pack(fill="x", pady=(0, 6))
+
+        if self._on_open_help is not None:
+            ttk.Button(btn_frame, text="Help / Visit website",
+                       command=self._on_open_help).pack(fill="x")
 
         self._status_var = tk.StringVar()
         self._status_label = ttk.Label(frame, textvariable=self._status_var,

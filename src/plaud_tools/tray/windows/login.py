@@ -1,6 +1,7 @@
 """LoginWindow — collects email/password/region and signs in via PlaudAuth."""
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable
@@ -55,16 +56,36 @@ class LoginWindow:
         btn.grid(row=4, column=0, columnspan=2, pady=8)
 
         def do_login() -> None:
+            email = email_var.get().strip()
+            password = password_var.get()
+            if not email and not password:
+                error_var.set("Please enter your email and password.")
+                return
+            if not email:
+                error_var.set("Please enter your email.")
+                return
+            if not password:
+                error_var.set("Please enter your password.")
+                return
             btn.config(state="disabled", text="Signing in…")
             error_var.set("")
             win.update()
             try:
                 auth = PlaudAuth(self._store)
-                auth.login(email_var.get().strip(), password_var.get(), region_var.get())
+                auth.login(email, password, region_var.get())
                 win.destroy()
                 self._on_success()
             except (PlaudApiError, PlaudSessionExpiredError) as exc:
                 error_var.set(str(exc))
+                btn.config(state="normal", text="Sign in")
+            except Exception as exc:
+                # Defensive: anything not already wrapped as a Plaud error
+                # (e.g. network errors that slipped past the transport, JSON
+                # parsing failures, keyring backend bugs) should not surface
+                # to the user as a raw traceback.  Log full details, show a
+                # short friendly message inline.
+                logging.exception("Unexpected error during sign-in")
+                error_var.set(f"Sign-in failed: {exc}")
                 btn.config(state="normal", text="Sign in")
 
         btn.config(command=do_login)
