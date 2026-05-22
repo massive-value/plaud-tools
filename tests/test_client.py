@@ -731,3 +731,121 @@ def test_session_store_falls_back_to_file_when_keyring_unavailable(tmp_path, mon
     assert source == "file"
     assert session.region == "eu"
     assert (tmp_path / "session.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Session cache tests (issue #43)
+# ---------------------------------------------------------------------------
+
+class CountingStore:
+    """A SessionStoreProtocol stub that counts load() calls."""
+
+    def __init__(self, session: PlaudSession) -> None:
+        self._session = session
+        self.load_count = 0
+        self.save_count = 0
+
+    def load(self) -> PlaudSession | None:
+        self.load_count += 1
+        return self._session
+
+    def save(self, session: PlaudSession) -> None:
+        self.save_count += 1
+        self._session = session
+
+
+def make_counting_manager(region="eu") -> tuple[SessionManager, CountingStore]:
+    store = CountingStore(PlaudSession(access_token=make_jwt(), region=region, email="test@example.com"))
+    return SessionManager(store), store
+
+
+def test_session_cache_require_hits_store_only_once_for_repeated_calls(tmp_path):
+    """Multiple require() calls within the same SessionManager should load from
+    the store exactly once — subsequent calls use the in-memory cache."""
+    manager, counting_store = make_counting_manager()
+    manager.require()
+    manager.require()
+    manager.require()
+    assert counting_store.load_count == 1
+
+
+def test_session_cache_multiple_client_requests_hit_store_once(tmp_path):
+    """A PlaudClient that issues multiple HTTP requests should cause store.load()
+    to be called at most once per client lifetime (acceptance criterion)."""
+    manager, counting_store = make_counting_manager()
+    ok_response = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+    transport = StubTransport([ok_response, ok_response, ok_response])
+    client = PlaudClient(manager, transport=transport)
+    client.list_recordings()
+    client.list_recordings()
+    client.list_recordings()
+    assert counting_store.load_count == 1
+
+
+def test_session_cache_invalidate_causes_reload(tmp_path):
+    """invalidate_cache() must discard the cached session so the next require()
+    triggers a fresh store.load()."""
+    manager, counting_store = make_counting_manager()
+    manager.require()
+    assert counting_store.load_count == 1
+    manager.invalidate_cache()
+    manager.require()
+    assert counting_store.load_count == 2
+
+
+def test_session_cache_update_region_updates_cache_and_store(tmp_path):
+    """update_region() should update both the persisted store and the in-memory
+    cache so the next require() returns the new region without a store read."""
+    manager, counting_store = make_counting_manager(region="us")
+    manager.require()
+    initial_load_count = counting_store.load_count
+
+    updated = manager.update_region("eu")
+    assert updated.region == "eu"
+    # Cache now holds the updated session; require() must NOT call store.load() again.
+    session = manager.require()
+    assert session.region == "eu"
+    # store.load() should have been called at most once more during update_region
+    # (to read current token), but NOT again after cache is repopulated.
+    assert counting_store.load_count <= initial_load_count + 1
+
+
+def test_session_cache_region_failover_loads_store_at_most_twice(tmp_path):
+    """-302 region failover triggers update_region which reloads the store once,
+    then the retry uses the cache.  Total store.load() calls: ≤ 2."""
+    manager, counting_store = make_counting_manager(region="us")
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.list_recordings()
+    assert counting_store.load_count <= 2
+
+
+def test_session_cache_expired_session_invalidates_cache(tmp_path):
+    """When require() raises PlaudSessionExpiredError, the cache must be cleared
+    so the caller could theoretically re-authenticate and retry."""
+    from plaud_tools.session import TOKEN_REFRESH_BUFFER_SECONDS
+    import base64
+    import json as _json
+
+    # Build a JWT that is already past the buffer window (expired).
+    expired_payload = {"exp": 1}  # epoch 1 second — definitely expired
+    encoded = base64.urlsafe_b64encode(_json.dumps(expired_payload).encode()).decode().rstrip("=")
+    expired_jwt = f"header.{encoded}.sig"
+
+    counting_store = CountingStore(PlaudSession(access_token=expired_jwt, region="us", email="x@x.com"))
+    manager = SessionManager(counting_store)
+
+    with pytest.raises(PlaudSessionExpiredError):
+        manager.require()
+
+    # Cache must be None — a subsequent require() after re-auth would reload.
+    assert manager._cached_session is None

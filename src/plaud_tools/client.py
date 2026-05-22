@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
-from .errors import PlaudApiError
+from .errors import PlaudApiError, PlaudSessionExpiredError
 from .models import BASE_URLS, BROWSER_USER_AGENT, FileTag, Recording, RecordingDetail, TaskStatus
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
@@ -413,7 +413,12 @@ class PlaudClient:
         strict: bool,
         body: dict[str, Any] | list[Any] | None = None,
     ) -> dict[str, Any]:
-        session = self._session_manager.require()
+        try:
+            session = self._session_manager.require()
+        except PlaudSessionExpiredError:
+            # Cache may be stale — discard it and let the error propagate.
+            self._session_manager.invalidate_cache()
+            raise
         url = f"{BASE_URLS.get(session.region, BASE_URLS['us'])}{path}"
         headers = {
             "Authorization": f"Bearer {session.access_token}",
