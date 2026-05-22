@@ -451,6 +451,84 @@ def _check_for_update() -> tuple[str, str, str | None] | None:
 
 
 # ---------------------------------------------------------------------------
+# Events file path (shared with mcp.py via same convention)
+# ---------------------------------------------------------------------------
+
+def _events_path() -> Path:
+    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    return localappdata / "PlaudTools" / "events.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# Session-expired toast notification
+# ---------------------------------------------------------------------------
+
+def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
+    """Show a Windows toast notifying the user their Plaud session expired.
+
+    Uses the ``winrt`` (winsdk) package when available, then falls back to a
+    hidden PowerShell snippet.  Any failure is logged and silently ignored.
+    The ``on_click`` callback (if provided) is invoked when the toast is
+    activated — note: winrt activation callbacks require WinRT message-loop
+    integration that is not available here, so on_click is only honoured by
+    callers who invoke LoginWindow directly after the toast.
+    """
+    title = APP_NAME
+    message = "Plaud session expired — click the tray icon to sign in again."
+
+    # --- attempt 1: winrt / winsdk ---
+    try:
+        from winrt.windows.ui.notifications import (  # type: ignore[import]
+            ToastNotificationManager,
+            ToastNotification,
+        )
+        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import]
+
+        app_id = "PlaudTools.TrayApp"
+        xml_str = (
+            "<toast>"
+            f"<visual><binding template='ToastGeneric'>"
+            f"<text>{title}</text>"
+            f"<text>{message}</text>"
+            "</binding></visual>"
+            "</toast>"
+        )
+        doc = XmlDocument()
+        doc.load_xml(xml_str)
+        notifier = ToastNotificationManager.create_toast_notifier(app_id)
+        notifier.show(ToastNotification(doc))
+        logging.info("Session-expired toast shown via winrt")
+        return
+    except Exception:
+        logging.debug("winrt toast unavailable, falling back to PowerShell", exc_info=True)
+
+    # --- attempt 2: hidden PowerShell snippet ---
+    if sys.platform != "win32":
+        return
+    try:
+        ps_script = (
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"
+            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
+            "$xml.LoadXml('<toast>"
+            "<visual><binding template=\"ToastGeneric\">"
+            f"<text>{title}</text>"
+            f"<text>{message}</text>"
+            "</binding></visual></toast>')\n"
+            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
+            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"
+            "$notifier.Show($toast)\n"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        logging.info("Session-expired toast dispatched via PowerShell")
+    except Exception:
+        logging.warning("Could not show session-expired toast notification", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # First-run toast notification
 # ---------------------------------------------------------------------------
 
@@ -1530,6 +1608,43 @@ class TrayApp:
                 last_check_wall_time = time.time()
                 interval_seconds = random.uniform(20 * 3600, 28 * 3600)
 
+    def _event_poll_loop(self) -> None:
+        """Poll %LOCALAPPDATA%\\PlaudTools\\events.jsonl every 5 s for tray events.
+
+        Currently handles ``session_expired`` events written by the MCP server.
+        Lines are consumed (the file is truncated) after reading so events are
+        not re-processed on the next poll.
+        """
+        events_path = _events_path()
+        while True:
+            time.sleep(5)
+            try:
+                if not events_path.exists():
+                    continue
+                try:
+                    lines = events_path.read_text(encoding="utf-8").splitlines()
+                    # Truncate — clear processed events
+                    events_path.write_text("", encoding="utf-8")
+                except OSError:
+                    continue
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    if event.get("type") == "session_expired":
+                        logging.info("Tray: session_expired event received from MCP")
+                        _show_session_expired_toast()
+                        # Open the login window on the tkinter thread
+                        if self._root:
+                            self._root.after(0, self._open_login)
+                        break  # one toast per poll cycle is enough
+            except Exception:
+                logging.warning("event poll error", exc_info=True)
+
     def _auto_heal(self) -> None:
         if not self._session:
             return
@@ -1599,6 +1714,7 @@ class TrayApp:
         threading.Thread(target=self._auto_heal, daemon=True).start()
         threading.Thread(target=self._setup_env, daemon=True).start()
         threading.Thread(target=self._watch_activate_event, daemon=True).start()
+        threading.Thread(target=self._event_poll_loop, daemon=True).start()
 
         # Ensure autostart on first run when a session already exists
         if self._session and not _autostart_enabled():

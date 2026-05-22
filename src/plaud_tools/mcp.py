@@ -1,12 +1,52 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Events file (tray watches this for session_expired notifications)
+# ---------------------------------------------------------------------------
+
+def _events_path() -> Path:
+    """Return the path to the tray events file."""
+    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    return localappdata / "PlaudTools" / "events.jsonl"
+
+
+def _write_event(event_type: str, **kwargs: Any) -> None:
+    """Append a structured event to the events file; never raises."""
+    try:
+        path = _events_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"type": event_type, "ts": time.time(), **kwargs}
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception:
+        log.debug("Failed to write event %r", event_type, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Structured error helpers
+# ---------------------------------------------------------------------------
+
+def _classify_api_error(exc: PlaudApiError) -> tuple[str, bool]:
+    """Return (error_code, retryable) for a PlaudApiError."""
+    status = exc.http_status
+    if status == 404:
+        return "not_found", False
+    if status is not None and (status == 429 or status >= 500):
+        return "transient", True
+    return "api_error", False
 
 
 def _json_result(value: Any, is_error: bool = False) -> dict[str, Any]:
@@ -16,20 +56,53 @@ def _json_result(value: Any, is_error: bool = False) -> dict[str, Any]:
     return result
 
 
-def _expired_result(message: str) -> dict[str, Any]:
-    return _json_result({"error": message}, is_error=True)
+def _error_result(
+    message: str,
+    *,
+    error_code: str,
+    retryable: bool,
+    http_status: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "error": message,
+        "error_code": error_code,
+        "retryable": retryable,
+    }
+    if http_status is not None:
+        payload["http_status"] = http_status
+    return _json_result(payload, is_error=True)
 
 
 def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClient], Any]) -> Any:
     client = get_client()
     if client is None:
-        return _expired_result("No Plaud session.")
+        _write_event("session_expired", reason="no_session")
+        return _error_result(
+            "No Plaud session.",
+            error_code="session_expired",
+            retryable=False,
+        )
     try:
         return fn(client)
     except PlaudSessionExpiredError as exc:
-        return _expired_result(str(exc))
-    except (PlaudApiError, ValueError, RuntimeError) as exc:
-        return _json_result({"error": str(exc)}, is_error=True)
+        _write_event("session_expired", reason="token_expired")
+        return _error_result(
+            str(exc),
+            error_code="session_expired",
+            retryable=False,
+        )
+    except PlaudApiError as exc:
+        code, retryable = _classify_api_error(exc)
+        return _error_result(
+            str(exc),
+            error_code=code,
+            retryable=retryable,
+            http_status=exc.http_status,
+        )
+    except ValueError as exc:
+        return _error_result(str(exc), error_code="validation", retryable=False)
+    except RuntimeError as exc:
+        return _error_result(str(exc), error_code="api_error", retryable=False)
 
 
 def _parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> int:
@@ -171,7 +244,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         def inner(client: PlaudClient) -> dict[str, Any]:
             if mutation == "rename":
                 if not new_name:
-                    return _json_result({"error": "new_name required for rename"}, is_error=True)
+                    return _error_result(
+                        "new_name required for rename",
+                        error_code="validation",
+                        retryable=False,
+                    )
                 client.rename_recording(recording_id, new_name)
                 return _json_result({"ok": True, "recording_id": recording_id, "new_name": new_name})
 
@@ -188,7 +265,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 client.set_recording_folder(recording_id, actual_folder_id)
                 return _json_result({"ok": True, "recording_id": recording_id, "folder_id": actual_folder_id})
 
-            return _json_result({"error": f"unknown mutation: {mutation!r}"}, is_error=True)
+            return _error_result(
+                f"unknown mutation: {mutation!r}",
+                error_code="validation",
+                retryable=False,
+            )
 
         return _call(get_client, inner)
 
@@ -230,11 +311,15 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
             path = Path(file_path)
             if not path.exists():
-                return _json_result({"error": f"file not found: {file_path}"}, is_error=True)
+                return _error_result(
+                    f"file not found: {file_path}",
+                    error_code="validation",
+                    retryable=False,
+                )
             try:
                 file_type, needs_transcode = get_file_type(path)
             except ValueError as exc:
-                return _json_result({"error": str(exc)}, is_error=True)
+                return _error_result(str(exc), error_code="validation", retryable=False)
             raw_bytes = path.read_bytes()
             audio_data = transcode_to_mp3(raw_bytes, path.suffix) if needs_transcode else raw_bytes
             rec_title = title or path.stem
@@ -265,9 +350,10 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if wait not in PROCESS_WAIT_MODES:
-                return _json_result(
-                    {"error": "wait must be one of: none, transcript, summary"},
-                    is_error=True,
+                return _error_result(
+                    "wait must be one of: none, transcript, summary",
+                    error_code="validation",
+                    retryable=False,
                 )
             client.transcribe_and_summarize(
                 recording_id,
