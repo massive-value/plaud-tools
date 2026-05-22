@@ -10,6 +10,9 @@ import pytest
 from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
 from plaud_tools.mcp import (
     _classify_api_error,
+    _decode_jwt_header_safe,
+    _diagnose_session_state,
+    _emit_session_expired,
     _error_result,
     _json_result,
     _write_event,
@@ -243,6 +246,95 @@ class TestWriteEvent:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["type"] == "session_expired"
+        # Diagnostic context (issue #78) — every event carries the MCP's view
+        # of session state so the tray log + mcp.log carry enough info to root
+        # cause without needing to reproduce.
+        assert record["reason"] == "token_expired"
+        assert "mcp_pid" in record
+        assert "mcp_version" in record
+        assert "env_token_present" in record
+        assert "store_source" in record
+
+    def test_no_session_event_includes_diagnostic(self, tmp_path, monkeypatch):
+        events_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        handlers = build_handlers(lambda: None)
+        handlers["browse_recordings"]()
+        record = json.loads(events_file.read_text(encoding="utf-8").splitlines()[0])
+        assert record["reason"] == "no_session"
+        assert "mcp_pid" in record
+        assert "mcp_version" in record
+        assert "store_source" in record
+
+
+# ---------------------------------------------------------------------------
+# Session diagnostics (issue #78) — _diagnose_session_state / _emit_session_expired
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseSessionState:
+    """The diagnostic snapshot must include identifying metadata without leaking the token."""
+
+    def test_includes_pid_and_version(self, monkeypatch):
+        monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
+        diag = _diagnose_session_state()
+        assert isinstance(diag["mcp_pid"], int)
+        assert isinstance(diag["mcp_version"], str)
+        assert diag["env_token_present"] is False
+
+    def test_env_token_present_when_set(self, monkeypatch):
+        monkeypatch.setenv("PLAUD_ACCESS_TOKEN", "abc123")
+        diag = _diagnose_session_state()
+        assert diag["env_token_present"] is True
+        # env source populates store_source via the env branch in load_with_source
+        assert diag["store_source"] == "env"
+
+    def test_no_token_bytes_leak(self, monkeypatch):
+        monkeypatch.setenv("PLAUD_ACCESS_TOKEN", "secret-token-do-not-leak")
+        diag = _diagnose_session_state()
+        # Walk all values; none should contain the token bytes.
+        for v in diag.values():
+            assert "secret-token-do-not-leak" not in str(v)
+
+    def test_token_typ_extracted_from_jwt(self, monkeypatch, tmp_path):
+        """When a stored token is a JWT, the typ header claim is surfaced."""
+        import base64 as _b64
+
+        def _b64u(s: str) -> str:
+            return _b64.urlsafe_b64encode(s.encode()).decode().rstrip("=")
+
+        fake_jwt = ".".join([_b64u('{"alg":"HS256","typ":"UT"}'), _b64u('{"exp":9999999999}'), "sig"])
+        from plaud_tools.session import FileSessionStore, PlaudSession, SessionStore
+
+        session_path = tmp_path / "session.json"
+        FileSessionStore(session_path).save(PlaudSession(access_token=fake_jwt, region="us"))
+
+        # Force the diagnostic to use the file store by making keyring unavailable.
+        import plaud_tools.mcp as mcp_mod
+
+        class _StoreFromTmp(SessionStore):
+            def __init__(self):
+                super().__init__(path=session_path)
+                self._load_keyring_module = lambda: None  # type: ignore[method-assign]
+
+        monkeypatch.setattr(mcp_mod, "SessionStore", _StoreFromTmp)
+        monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
+        diag = _diagnose_session_state()
+        assert diag["store_source"] == "file"
+        assert diag["token_typ"] == "UT"
+
+
+class TestDecodeJwtHeaderSafe:
+    def test_returns_empty_for_non_jwt(self):
+        assert _decode_jwt_header_safe("not-a-jwt") == {}
+
+    def test_returns_empty_for_garbage(self):
+        assert _decode_jwt_header_safe("a.b.c") == {}
+
+    def test_decodes_valid_header(self):
+        import base64 as _b64
+        header = _b64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
+        out = _decode_jwt_header_safe(f"{header}.payload.sig")
+        assert out == {"alg": "HS256", "typ": "UT"}
 
 
 # ---------------------------------------------------------------------------

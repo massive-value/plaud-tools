@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from typing import Any, Callable
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .query import filter_recordings, parse_isoish, summarize_recording
+from .session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +36,71 @@ def _write_event(event_type: str, **kwargs: Any) -> None:
             fh.write(json.dumps(record) + "\n")
     except Exception:
         log.debug("Failed to write event %r", event_type, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Session diagnostics — included in session_expired events so we can root-cause
+# spurious logouts without needing to reproduce the failure (issue #78). All
+# fields are safe metadata; token bytes never appear here.
+# ---------------------------------------------------------------------------
+
+def _decode_jwt_header_safe(token: str) -> dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {}
+    header = parts[0] + "=" * (-len(parts[0]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(header.encode("ascii"))
+        obj = json.loads(decoded.decode("utf-8"))
+        return obj if isinstance(obj, dict) else {}
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _diagnose_session_state() -> dict[str, Any]:
+    """Best-effort snapshot of how the MCP currently sees the user session.
+
+    Used to enrich the session_expired event payload so the tray log and on-disk
+    mcp.log carry enough context to distinguish keyring-isolation issues,
+    stale env-var overrides, malformed tokens, and 30-day-buffer trips without
+    needing to reproduce the failure.
+    """
+    # Lazy import to avoid the circular import surfaced by
+    # ``plaud_tools/__init__.py`` re-exporting ``build_handlers`` from this module.
+    from . import __version__ as _app_version
+
+    diag: dict[str, Any] = {
+        "mcp_pid": os.getpid(),
+        "mcp_version": _app_version,
+        "env_token_present": bool(os.getenv("PLAUD_ACCESS_TOKEN")),
+    }
+    try:
+        store = SessionStore()
+        session, source = store.load_with_source()
+        diag["store_source"] = source
+        if session is not None:
+            diag["region"] = session.region
+            diag["email_present"] = bool(session.email)
+            header = _decode_jwt_header_safe(session.access_token)
+            if header:
+                diag["token_typ"] = header.get("typ")
+            try:
+                manager = SessionManager(store)
+                days = manager.days_until_expiry()
+                if days is not None:
+                    diag["days_until_expiry"] = days
+            except Exception as exc:
+                diag["days_decode_error"] = type(exc).__name__
+    except Exception as exc:
+        diag["diagnose_error"] = f"{type(exc).__name__}: {exc}"
+    return diag
+
+
+def _emit_session_expired(reason: str) -> None:
+    """Log + write a session_expired event with full diagnostic context."""
+    diag = _diagnose_session_state()
+    log.warning("MCP firing session_expired reason=%s diag=%s", reason, diag)
+    _write_event("session_expired", reason=reason, **diag)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +144,7 @@ def _error_result(
 def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClient], Any]) -> Any:
     client = get_client()
     if client is None:
-        _write_event("session_expired", reason="no_session")
+        _emit_session_expired("no_session")
         return _error_result(
             "No Plaud session.",
             error_code="session_expired",
@@ -86,7 +153,7 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
     try:
         return fn(client)
     except PlaudSessionExpiredError as exc:
-        _write_event("session_expired", reason="token_expired")
+        _emit_session_expired("token_expired")
         return _error_result(
             str(exc),
             error_code="session_expired",

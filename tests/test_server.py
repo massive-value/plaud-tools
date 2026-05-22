@@ -1,7 +1,9 @@
 """Tests for the MCP server module."""
 from __future__ import annotations
 
-from plaud_tools.server import _TOOLS, _make_server
+import logging
+
+from plaud_tools.server import _TOOLS, _make_server, _mcp_log_path, _setup_mcp_logging
 
 _EXPECTED_TOOL_NAMES = {
     "browse_recordings",
@@ -90,6 +92,40 @@ def test_server_process_recording_wait_schema_defaults_to_transcript():
 def test_server_constructs_without_error():
     server = _make_server()
     assert server is not None
+
+
+def test_mcp_log_path_uses_localappdata(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    p = _mcp_log_path()
+    assert p == tmp_path / "PlaudTools" / "mcp.log"
+
+
+def test_setup_mcp_logging_writes_startup_banner(monkeypatch, tmp_path):
+    """Pin issue #78 fix: the MCP server now leaves an on-disk audit trail."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    # Strip any pre-existing root handlers so basicConfig actually installs ours.
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    for h in saved_handlers:
+        root.removeHandler(h)
+    try:
+        _setup_mcp_logging()
+        # Force the rotating handler to flush so the assertion sees the banner.
+        for h in root.handlers:
+            h.flush()
+        log_path = tmp_path / "PlaudTools" / "mcp.log"
+        assert log_path.exists(), f"expected {log_path} to be created"
+        contents = log_path.read_text(encoding="utf-8")
+        assert "plaud-mcp" in contents
+        assert "starting" in contents
+        assert "pid=" in contents
+    finally:
+        for h in root.handlers[:]:
+            root.removeHandler(h)
+        for h in saved_handlers:
+            root.addHandler(h)
+        root.setLevel(saved_level)
 
 
 def test_make_server_constructs_one_session_manager(monkeypatch):

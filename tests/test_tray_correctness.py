@@ -86,6 +86,47 @@ def test_setup_logging_creates_log_file_in_localappdata(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Session-expired event diagnostic formatting (issue #78)
+# ---------------------------------------------------------------------------
+
+
+def test_format_session_expired_diag_strips_type_and_ts():
+    from plaud_tools.tray.background import _format_session_expired_diag
+
+    out = _format_session_expired_diag({
+        "type": "session_expired",
+        "ts": 1779462640.5,
+        "reason": "no_session",
+        "store_source": "missing",
+        "mcp_pid": 1234,
+    })
+    assert "type" not in out
+    assert "ts" not in out
+    assert "reason='no_session'" in out
+    assert "store_source='missing'" in out
+    assert "mcp_pid=1234" in out
+
+
+def test_format_session_expired_diag_stable_ordering():
+    """Keys are sorted so log lines are diff-friendly across runs."""
+    from plaud_tools.tray.background import _format_session_expired_diag
+
+    out = _format_session_expired_diag({
+        "type": "session_expired",
+        "ts": 1.0,
+        "zebra": 1,
+        "alpha": 2,
+    })
+    assert out.index("alpha=") < out.index("zebra=")
+
+
+def test_format_session_expired_diag_empty_when_no_diag():
+    from plaud_tools.tray.background import _format_session_expired_diag
+
+    assert _format_session_expired_diag({"type": "session_expired", "ts": 0.0}) == ""
+
+
+# ---------------------------------------------------------------------------
 # 2. Test-connection timeout
 # ---------------------------------------------------------------------------
 
