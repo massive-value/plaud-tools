@@ -12,6 +12,7 @@ import pytest
 # We import from tray_app directly; conftest.py already stubs pystray / PIL.
 # ---------------------------------------------------------------------------
 from plaud_tools.tray_app import (
+    APP_NAME,
     EnvStatus,
     _check_cli_path,
     _check_ps_completions,
@@ -230,6 +231,37 @@ class TestInstallPs1:
     def test_sets_up_autostart(self, script_text: str):
         assert "CurrentVersion\\Run" in script_text or "CurrentVersion/Run" in script_text
         assert "PlaudTools" in script_text
+
+    def test_autostart_name_matches_python_app_name(self, script_text: str):
+        """install.ps1's HKCU Run value name MUST match _AUTOSTART_NAME (= APP_NAME).
+
+        Regression for the install.ps1 / Python mismatch where the script wrote
+        'PlaudTools' (no space) but the tray read 'Plaud Tools' (with space),
+        making _autostart_enabled() always report missing autostart after a
+        fresh install.  We pin the script to use APP_NAME verbatim in a quoted
+        form so a future rename in Python is caught by CI.
+        """
+        # The script should reference the exact APP_NAME literal in a quoted
+        # form (single- or double-quoted) on the Set-ItemProperty / -Name path.
+        single_quoted = f"'{APP_NAME}'"
+        double_quoted = f'"{APP_NAME}"'
+        assert single_quoted in script_text or double_quoted in script_text, (
+            f"install.ps1 must reference the Python APP_NAME ({APP_NAME!r}) as a "
+            f"quoted literal for the HKCU\\...\\Run value name.  Found neither "
+            f"{single_quoted!r} nor {double_quoted!r} in the script."
+        )
+
+    def test_autostart_cleans_up_legacy_name(self, script_text: str):
+        """install.ps1 must remove the stale 'PlaudTools' (no-space) Run value.
+
+        Older revisions of the script wrote the wrong name; users who upgraded
+        through the buggy version have two Run entries.  The script must strip
+        the legacy one on every run so they get auto-cleaned the next time
+        they reinstall.
+        """
+        assert "Remove-ItemProperty" in script_text
+        # And the target of that Remove-ItemProperty must be the legacy name.
+        assert "'PlaudTools'" in script_text
 
     def test_regex_anchored_to_install_dir(self, script_text: str):
         """The stale-sourcing pattern in install.ps1 must reference $completionsDir / $escapedDir."""
