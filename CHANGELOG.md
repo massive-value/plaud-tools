@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP `process_recording` now accepts a `wait` mode: `none` returns
+  immediately after the transcribe/summarize request is accepted, `transcript`
+  waits only for transcript readiness, and `summary` preserves the previous
+  blocking behavior.
+
+### Changed
+
+- MCP `process_recording` now defaults to `wait="transcript"` so MCP clients do
+  not block on long-running summary generation unless they explicitly request it.
+
 ### Fixed
 
 - `_request_json` now passes `body` through the `-302` region-redirect recursive retry, preventing POST/PATCH/DELETE requests from silently dropping their payload on a region mismatch.

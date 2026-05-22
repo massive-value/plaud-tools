@@ -87,6 +87,9 @@ def _summarize_detail(detail: Any) -> dict[str, Any]:
     }
 
 
+PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
+
+
 def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Callable[..., dict[str, Any]]]:
     def browse_recordings(
         limit: int = 50,
@@ -244,8 +247,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         language: str | None = None,
         diarization: bool | None = None,
         llm: str | None = None,
+        wait: str = "transcript",
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
+            if wait not in PROCESS_WAIT_MODES:
+                return _json_result(
+                    {"error": "wait must be one of: none, transcript, summary"},
+                    is_error=True,
+                )
             client.transcribe_and_summarize(
                 recording_id,
                 template_type=template_type,
@@ -253,8 +262,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 diarization=diarization,
                 llm=llm,
             )
+            if wait == "none":
+                return _json_result({
+                    "recording_id": recording_id,
+                    "accepted": True,
+                })
             client.wait_for_transcription(recording_id)
-            client.wait_for_summary(recording_id)
+            if wait == "summary":
+                client.wait_for_summary(recording_id)
             detail = client.get_recording(recording_id)
             return _json_result({
                 "ok": True,

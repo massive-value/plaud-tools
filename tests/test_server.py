@@ -48,6 +48,13 @@ def test_server_process_recording_requires_recording_id():
     assert "recording_id" in tool.inputSchema["required"]
 
 
+def test_server_process_recording_wait_schema_defaults_to_transcript():
+    tool = next(t for t in _TOOLS if t.name == "process_recording")
+    wait_schema = tool.inputSchema["properties"]["wait"]
+    assert wait_schema["enum"] == ["none", "transcript", "summary"]
+    assert wait_schema["default"] == "transcript"
+
+
 def test_server_constructs_without_error():
     server = _make_server()
     assert server is not None
