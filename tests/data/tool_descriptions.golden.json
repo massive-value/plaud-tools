@@ -62,11 +62,15 @@
     "name": "get_recording"
   },
   {
-    "description": "Apply a state change to a recording: rename, trash, restore, delete, move, or rename_speaker.",
+    "description": "Apply a reversible state change to a recording: rename, trash, restore, or move.",
     "inputSchema": {
       "properties": {
+        "clear_folder": {
+          "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",
+          "type": "boolean"
+        },
         "folder_id": {
-          "description": "Folder ID (from `list_folders`); required for move; use '-' to clear",
+          "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",
           "type": "string"
         },
         "mutation": {
@@ -74,18 +78,12 @@
             "rename",
             "trash",
             "restore",
-            "delete",
-            "move",
-            "rename_speaker"
+            "move"
           ],
           "type": "string"
         },
         "new_name": {
-          "description": "Required for rename and rename_speaker",
-          "type": "string"
-        },
-        "original_label": {
-          "description": "Required for rename_speaker: existing speaker label",
+          "description": "Required for rename",
           "type": "string"
         },
         "recording_id": {
@@ -99,6 +97,46 @@
       "type": "object"
     },
     "name": "mutate_recording"
+  },
+  {
+    "description": "Permanently and irreversibly delete a recording.",
+    "inputSchema": {
+      "properties": {
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id"
+      ],
+      "type": "object"
+    },
+    "name": "delete_recording"
+  },
+  {
+    "description": "Rename a speaker label across all transcript segments for a recording.",
+    "inputSchema": {
+      "properties": {
+        "new_name": {
+          "description": "Replacement speaker name",
+          "type": "string"
+        },
+        "original_label": {
+          "description": "Existing speaker label to replace",
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "original_label",
+        "new_name"
+      ],
+      "type": "object"
+    },
+    "name": "rename_speaker"
   },
   {
     "description": "Upload a local audio file to Plaud.",
