@@ -118,8 +118,10 @@ class TestHomeWindowWelcomeBanner:
             on_open_wizard=MagicMock(),
             on_sign_out=MagicMock(),
             on_open_uninstall=MagicMock(),
+            on_repair_setup=None,
             get_session_label=lambda: "Signed in as test@example.com.",
             get_update_info=lambda: None,
+            get_env_status=lambda: None,
         )
         return hw
 
