@@ -48,7 +48,14 @@ def _setup_mcp_logging() -> None:
         encoding="utf-8",
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    # Don't use logging.basicConfig — it is a no-op when the root logger
+    # already has handlers. Observed in the v0.2.2 follow-up: the
+    # pip-installed plaud-mcp never wrote its startup banner because some
+    # earlier import in the pip-launch path had already configured a root
+    # handler. Attach directly so we are immune to import-order surprises.
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
     logging.info(
         "plaud-mcp %s starting pid=%d localappdata=%s",
         __version__, os.getpid(), os.environ.get("LOCALAPPDATA"),

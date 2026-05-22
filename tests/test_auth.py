@@ -63,6 +63,101 @@ def test_login_raises_clean_error_on_http_failure(tmp_path):
         auth.login("user@example.com", "pw", "us")
 
 
+def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch):
+    """Pin the v0.2.2-follow-up retry: a transient keyring exception must not
+    cause a spurious logout when the second read succeeds.
+
+    Real-world trigger from issue #78: Windows Credential Manager occasionally
+    raises under load. The MCP would treat the resulting ``None`` as
+    "user is logged out" and pop a sign-in prompt, even though the very next
+    call returned the session cleanly.
+    """
+    import logging
+
+    from plaud_tools.session import PlaudSession, SessionStore
+
+    payload = json.dumps({"access_token": "header.payload.sig", "region": "us", "email": "u@example.com"})
+    call_count = {"n": 0}
+
+    class FlakeyKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("transient credential manager hiccup")
+            return payload
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: FlakeyKeyring if name == "keyring" else __import__(name),
+    )
+    # Don't let the retry delay slow the suite down.
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-retry")
+
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+        session = store.load()
+
+    assert session is not None, "Expected retry to recover the session"
+    assert session.email == "u@example.com"
+    assert call_count["n"] == 2, f"Expected exactly 2 keyring reads (1 failure + 1 success), got {call_count['n']}"
+    assert any("retrying" in r.message for r in caplog.records), (
+        "Expected a warning about retrying; got: " + ", ".join(r.message for r in caplog.records)
+    )
+
+
+def test_load_does_not_retry_on_clean_none(tmp_path, monkeypatch):
+    """A clean ``None`` from keyring is the legitimate 'no entry exists' path
+    and must not trigger a retry — that would slow every actually-signed-out
+    state by the retry delay.
+    """
+    from plaud_tools.session import SessionStore
+
+    call_count = {"n": 0}
+
+    class EmptyKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            call_count["n"] += 1
+            return None  # legitimate "no entry"
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: EmptyKeyring if name == "keyring" else __import__(name),
+    )
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-no-retry")
+    assert store.load() is None
+    assert call_count["n"] == 1, f"Expected exactly 1 keyring read for clean None, got {call_count['n']}"
+
+
+def test_load_retry_gives_up_after_two_consecutive_failures(tmp_path, caplog, monkeypatch):
+    """If both attempts raise, surface the failure (return None, fall back to file)."""
+    import logging
+
+    from plaud_tools.session import SessionStore
+
+    call_count = {"n": 0}
+
+    class BrokenKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            call_count["n"] += 1
+            raise RuntimeError("persistent failure")
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: BrokenKeyring if name == "keyring" else __import__(name),
+    )
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-broken")
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+        assert store.load() is None
+    assert call_count["n"] == 2
+
+
 def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
     """Pin the keyring-failure log line.
 
