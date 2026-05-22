@@ -196,6 +196,12 @@ def _set_autostart(enable: bool) -> None:
 # First-run environment setup (PATH + PowerShell completions)
 # ---------------------------------------------------------------------------
 
+def _install_dir() -> Path:
+    """Return the canonical install directory (%LOCALAPPDATA%\\Programs\\PlaudTools)."""
+    localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(localappdata) / "Programs" / "PlaudTools"
+
+
 def _cli_dir() -> Path | None:
     """Return the CLI directory inside the frozen bundle, or None in dev mode."""
     if not getattr(sys, "frozen", False) or sys.platform != "win32":
@@ -217,6 +223,29 @@ def _completions_dir() -> Path | None:
         if (c / "plaud-tools.ps1").exists():
             return c
     return None
+
+
+def _install_completions_dir() -> Path:
+    """Return the expected completions path inside the canonical install dir."""
+    return _install_dir() / "completions"
+
+
+def _stale_sourcing_re() -> "re.Pattern[str]":
+    """Regex that matches only sourcing lines that point at the PlaudTools install dir.
+
+    Anchored to the canonical install path so unrelated user scripts that happen
+    to live in a directory called ``completions`` are never touched.
+    """
+    import re
+    # Escape backslashes for use inside a regex; the install dir may contain
+    # only standard ASCII path characters so a simple re.escape is safe.
+    install_completions = str(_install_completions_dir())
+    escaped = re.escape(install_completions)
+    # Allow either forward or back slashes as the trailing separator.
+    return re.compile(
+        r'^\. "' + escaped.replace(re.escape("\\"), r"[/\\]") + r'[/\\]plaud[^"]*\.ps1"',
+        re.IGNORECASE,
+    )
 
 
 def _setup_cli_path() -> None:
@@ -258,9 +287,11 @@ def _setup_cli_path() -> None:
 def _setup_ps_completions() -> None:
     """Source plaud-tools.ps1 from the user's PowerShell profiles (idempotent).
 
-    Also removes any stale sourcing lines left by older builds that used plaud.ps1.
+    Also removes any stale sourcing lines left by older builds that pointed at
+    the same install directory (e.g. plaud.ps1 renamed to plaud-tools.ps1).
+    Only lines pointing at the canonical PlaudTools install directory are removed;
+    unrelated user scripts in other completions folders are not touched.
     """
-    import re
     completions = _completions_dir()
     if completions is None:
         return
@@ -268,8 +299,7 @@ def _setup_ps_completions() -> None:
     if not ps1.exists():
         return
     source_line = f'. "{ps1}"'
-    # Pattern matches any previous ". <...completions\plaud*.ps1>" sourcing lines
-    stale_re = re.compile(r'^\. ".*[/\\]completions[/\\]plaud[^"]*\.ps1"', re.IGNORECASE)
+    stale_re = _stale_sourcing_re()
     user_docs = Path.home() / "Documents"
     profiles = [
         user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
@@ -294,6 +324,87 @@ def _setup_ps_completions() -> None:
             logging.info("Added plaud-tools completions to %s", profile)
         except OSError:
             logging.warning("Could not update PowerShell profile %s", profile, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Environment verification (read-only; used by the tray at startup)
+# ---------------------------------------------------------------------------
+
+class EnvStatus:
+    """Result of a read-only environment check performed at tray startup."""
+
+    def __init__(
+        self,
+        path_ok: bool,
+        completions_ok: bool,
+        autostart_ok: bool,
+    ) -> None:
+        self.path_ok = path_ok
+        self.completions_ok = completions_ok
+        self.autostart_ok = autostart_ok
+
+    @property
+    def all_ok(self) -> bool:
+        return self.path_ok and self.completions_ok and self.autostart_ok
+
+    def missing_labels(self) -> list[str]:
+        out: list[str] = []
+        if not self.path_ok:
+            out.append("PATH")
+        if not self.completions_ok:
+            out.append("shell completions")
+        if not self.autostart_ok:
+            out.append("autostart")
+        return out
+
+
+def _check_cli_path() -> bool:
+    """Return True if the bundled cli/ directory is already on the user PATH."""
+    if sys.platform != "win32":
+        return True
+    cli = _cli_dir()
+    if cli is None:
+        return True  # not a frozen bundle — nothing to verify
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            current, _ = winreg.QueryValueEx(key, "Path")
+        parts = [p.strip() for p in current.split(";") if p.strip()]
+        return any(Path(p) == cli for p in parts)
+    except OSError:
+        return False
+
+
+def _check_ps_completions() -> bool:
+    """Return True if a plaud-tools.ps1 sourcing line is present in at least one profile."""
+    completions = _completions_dir()
+    if completions is None:
+        return True  # not a frozen bundle — nothing to verify
+    ps1 = completions / "plaud-tools.ps1"
+    if not ps1.exists():
+        return True  # completions script not present; nothing to verify
+    source_line = f'. "{ps1}"'
+    user_docs = Path.home() / "Documents"
+    profiles = [
+        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+    ]
+    for profile in profiles:
+        try:
+            if profile.exists() and source_line in profile.read_text(encoding="utf-8-sig"):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _verify_env() -> EnvStatus:
+    """Read-only environment check — does not modify PATH, profiles, or registry."""
+    return EnvStatus(
+        path_ok=_check_cli_path(),
+        completions_ok=_check_ps_completions(),
+        autostart_ok=_autostart_enabled(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,9 +446,12 @@ def _remove_cli_path() -> None:
 
 
 def _remove_ps_completions() -> None:
-    """Remove plaud-tools sourcing lines from the user's PowerShell profiles."""
-    import re
-    stale_re = re.compile(r'^\. ".*[/\\]completions[/\\]plaud[^"]*\.ps1"', re.IGNORECASE)
+    """Remove plaud-tools sourcing lines from the user's PowerShell profiles.
+
+    Only lines that point at the canonical PlaudTools install directory are removed;
+    unrelated user scripts in other completions folders are not touched.
+    """
+    stale_re = _stale_sourcing_re()
     user_docs = Path.home() / "Documents"
     profiles = [
         user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
@@ -1181,8 +1295,10 @@ class HomeWindow:
         on_open_wizard: Callable[[], None],
         on_sign_out: Callable[[], None],
         on_open_uninstall: Callable[[], None],
+        on_repair_setup: "Callable[[Callable[[bool, str], None]], None] | None",
         get_session_label: Callable[[], str],
         get_update_info: Callable[[], "tuple[str, str, str | None] | None"],
+        get_env_status: "Callable[[], EnvStatus | None]",
         on_open_log_folder: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
@@ -1192,8 +1308,10 @@ class HomeWindow:
         self._on_open_wizard = on_open_wizard
         self._on_sign_out = on_sign_out
         self._on_open_uninstall = on_open_uninstall
+        self._on_repair_setup = on_repair_setup
         self._get_session_label = get_session_label
         self._get_update_info = get_update_info
+        self._get_env_status = get_env_status
         self._on_open_log_folder = on_open_log_folder
         self._win: tk.Toplevel | None = None
         self._session_var: tk.StringVar | None = None
@@ -1201,6 +1319,7 @@ class HomeWindow:
         self._status_label: ttk.Label | None = None
         self._test_btn: ttk.Button | None = None
         self._update_btn: ttk.Button | None = None
+        self._repair_btn: ttk.Button | None = None
         self._welcome_banner_armed: bool = False
         self._welcome_banner: tk.Frame | None = None
 
@@ -1210,6 +1329,7 @@ class HomeWindow:
             self._win.focus_force()
             self._refresh_session()
             self._refresh_update_btn()
+            self._refresh_repair_btn()
             return
 
         win = tk.Toplevel(self._root)
@@ -1260,6 +1380,11 @@ class HomeWindow:
                                        command=self._handle_check_update)
         self._update_btn.pack(fill="x", pady=(0, 6))
         self._refresh_update_btn()
+
+        # Repair setup button — shown only when _verify_env detects missing entries
+        self._repair_btn = ttk.Button(btn_frame, text="Repair setup",
+                                       command=self._handle_repair_setup)
+        self._refresh_repair_btn()
 
         if self._on_open_log_folder is not None:
             ttk.Button(btn_frame, text="View Logs",
@@ -1328,6 +1453,17 @@ class HomeWindow:
                 command=self._handle_check_update,
             )
 
+    def _refresh_repair_btn(self) -> None:
+        if self._repair_btn is None:
+            return
+        status = self._get_env_status()
+        if status is not None and not status.all_ok and self._on_repair_setup is not None:
+            missing = ", ".join(status.missing_labels())
+            self._repair_btn.configure(text=f"Repair setup ({missing})", state="normal")
+            self._repair_btn.pack(fill="x", pady=(0, 6))
+        else:
+            self._repair_btn.pack_forget()
+
     def _set_status(self, msg: str, ok: bool = True) -> None:
         if self._status_var is None or self._status_label is None:
             return
@@ -1373,6 +1509,21 @@ class HomeWindow:
 
         self._on_check_for_update(_done)
 
+    def _handle_repair_setup(self) -> None:
+        if self._repair_btn is None or self._on_repair_setup is None:
+            return
+        self._repair_btn.configure(state="disabled", text="Repairing…")
+        if self._status_var is not None:
+            self._status_var.set("")
+
+        def _done(ok: bool, msg: str) -> None:
+            self._set_status(msg, ok)
+            self._refresh_repair_btn()
+            if self._win and self._win.winfo_exists():
+                self._win.after(5000, lambda: self._status_var.set("") if self._status_var else None)
+
+        self._on_repair_setup(_done)
+
     def _handle_sign_out(self) -> None:
         self._on_sign_out()
         if self._win and self._win.winfo_exists():
@@ -1394,6 +1545,7 @@ class TrayApp:
         self._icon: pystray.Icon | None = None
         self._root: tk.Tk | None = None
         self._update_info: tuple[str, str, str | None] | None = None
+        self._env_status: EnvStatus | None = None
         self._login_win: LoginWindow | None = None
         self._wizard_win: WizardWindow | None = None
         self._home_win: HomeWindow | None = None
@@ -1690,9 +1842,43 @@ class TrayApp:
         if any(s == "stale" for s in statuses.values()):
             connect_all(mcp)
 
-    def _setup_env(self) -> None:
-        _setup_cli_path()
-        _setup_ps_completions()
+    def _run_verify_env(self) -> None:
+        """Background thread: check PATH/completions/autostart without mutating.
+
+        Stores the result in ``self._env_status`` and nudges the HomeWindow to
+        show the "Repair setup" button if anything is missing.
+        """
+        try:
+            status = _verify_env()
+            self._env_status = status
+            if not status.all_ok:
+                missing = ", ".join(status.missing_labels())
+                logging.warning("Environment check: missing %s", missing)
+                if self._root and self._home_win:
+                    self._root.after(0, self._home_win._refresh_repair_btn)
+        except Exception:
+            logging.warning("Environment check failed", exc_info=True)
+
+    def _repair_env(self, on_done: "Callable[[bool, str], None]") -> None:
+        """Re-run the mutating setup helpers and report success/failure via callback.
+
+        Runs in a background thread so the UI stays responsive.
+        """
+        def _work() -> None:
+            try:
+                _setup_cli_path()
+                _setup_ps_completions()
+                if not _autostart_enabled():
+                    _set_autostart(True)
+                # Re-verify so the button hides itself on success
+                self._env_status = _verify_env()
+                if self._root:
+                    self._root.after(0, lambda: on_done(True, "Setup repaired successfully."))
+            except Exception as exc:
+                logging.warning("Repair setup failed", exc_info=True)
+                if self._root:
+                    self._root.after(0, lambda: on_done(False, f"Repair failed: {exc}"))
+        threading.Thread(target=_work, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Entry
@@ -1731,8 +1917,10 @@ class TrayApp:
             on_open_wizard=self._open_wizard,
             on_sign_out=self._sign_out,
             on_open_uninstall=self._open_uninstall,
+            on_repair_setup=self._repair_env,
             get_session_label=self._session_label,
             get_update_info=lambda: self._update_info,
+            get_env_status=lambda: self._env_status,
             on_open_log_folder=self._open_log_folder,
         )
 
@@ -1749,13 +1937,11 @@ class TrayApp:
         # Background threads
         threading.Thread(target=self._update_poll_loop, daemon=True).start()
         threading.Thread(target=self._auto_heal, daemon=True).start()
-        threading.Thread(target=self._setup_env, daemon=True).start()
+        # Verify (not mutate) env — shows "Repair setup" button if anything is missing.
+        # Actual setup is performed by install.ps1 at install time.
+        threading.Thread(target=self._run_verify_env, daemon=True).start()
         threading.Thread(target=self._watch_activate_event, daemon=True).start()
         threading.Thread(target=self._event_poll_loop, daemon=True).start()
-
-        # Ensure autostart on first run when a session already exists
-        if self._session and not _autostart_enabled():
-            _set_autostart(True)
 
         # Always surface the appropriate window on launch.
         if self._session:
