@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-22
+
+Completes the toast-click activation story started in v0.2.4/v0.2.5, and
+hardens the keyring read path against a second class of transient Windows
+Credential Manager failure.
+
+### Added
+
+- Clicking a PlaudTools toast notification now opens the tray's home or login
+  window directly.  A new ``INotificationActivationCallback`` COM server
+  (``comtypes``) is registered at tray startup under
+  ``HKCU\Software\Classes\CLSID\{DC6F6422-E7ED-4F4E-BBDE-8332A399DBD5}\LocalServer32``
+  pointing at ``PlaudTools.exe --com-activate``.  When the user clicks a
+  toast, Windows launches that process, ``Activate()`` signals the named
+  Win32 event ``Global\PlaudToolsActivate``, and the running tray's
+  ``_watch_activate_event`` thread opens the home or login window as
+  appropriate.  Closes #83.
+- ``HKCU\Software\Classes\AppUserModelId\PlaudTools.TrayApp`` now includes a
+  ``CustomActivator`` value wiring every PlaudTools toast to the COM activator
+  above.  The CLSID keys are removed on uninstall.
+- ``comtypes>=1.4`` added to the ``tray`` optional-dependency group and to the
+  PyInstaller hidden-imports list.
+
+### Changed
+
+- Update-available notification switched from ``pystray.icon.notify()``
+  (``Shell_NotifyIcon`` balloon) back to the WinRT/PowerShell
+  ``CreateToastNotifier`` path so that ``CustomActivator`` is honoured on
+  click.
+- Toast messages updated: "click here to sign in again" / "click here to
+  install" instead of directing users to the tray menu.
+
+### Fixed
+
+- ``SessionStore._get_password_with_retry`` now retries once on a transient
+  ``None`` result in addition to exceptions.  Observed in production
+  (post-v0.2.5): ``keyring.get_password`` returned ``None`` while the entry
+  existed; a diagnostic call 50 ms later returned the same session with 299
+  days remaining.  Two consecutive ``None`` results are still treated as a
+  genuine absent entry; the retry adds at most 100 ms to the signed-out path.
+
 ## [0.2.5] - 2026-05-22
 
 Fixes the update notification introduced in v0.2.4, which was silently dropped
@@ -641,7 +682,10 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/massive-value/plaud-tools/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/massive-value/plaud-tools/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/massive-value/plaud-tools/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/massive-value/plaud-tools/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/massive-value/plaud-tools/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/massive-value/plaud-tools/compare/v0.2.0...v0.2.1
