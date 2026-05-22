@@ -252,42 +252,27 @@ class TestWriteEvent:
 class TestTraySessionExpiredToast:
     """Verify that the tray event poll loop calls _show_session_expired_toast."""
 
-    def test_show_session_expired_toast_winrt_path(self):
-        """If winrt is importable, CreateToastNotifier is used."""
-        import sys
+    def test_show_session_expired_toast_winrt_path(self, monkeypatch):
+        """If winrt is importable, CreateToastNotifier is used.
+
+        After the module-level winrt detection refactor, tests patch the cached
+        winrt names on the toasts module directly.
+        """
+        from plaud_tools.tray import toasts
 
         mock_notifier = MagicMock()
         mock_manager = MagicMock()
         mock_manager.create_toast_notifier.return_value = mock_notifier
-        mock_doc = MagicMock()
-        mock_xml_doc_cls = MagicMock(return_value=mock_doc)
-        mock_toast_cls = MagicMock()
-        mock_toast_notif = MagicMock()
-        mock_toast_cls.return_value = mock_toast_notif
+        mock_xml_doc_cls = MagicMock(return_value=MagicMock())
+        mock_toast_cls = MagicMock(return_value=MagicMock())
 
-        winrt_notifications_mod = MagicMock()
-        winrt_notifications_mod.ToastNotificationManager = mock_manager
-        winrt_notifications_mod.ToastNotification = mock_toast_cls
+        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", True)
+        monkeypatch.setattr(toasts, "_WINRT_TNM", mock_manager)
+        monkeypatch.setattr(toasts, "_WINRT_TN", mock_toast_cls)
+        monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
 
-        winrt_dom_mod = MagicMock()
-        winrt_dom_mod.XmlDocument = mock_xml_doc_cls
-
-        fake_winrt = MagicMock()
-
-        with patch.dict(
-            sys.modules,
-            {
-                "winrt": fake_winrt,
-                "winrt.windows": MagicMock(),
-                "winrt.windows.ui": MagicMock(),
-                "winrt.windows.ui.notifications": winrt_notifications_mod,
-                "winrt.windows.data": MagicMock(),
-                "winrt.windows.data.xml": MagicMock(),
-                "winrt.windows.data.xml.dom": winrt_dom_mod,
-            },
-        ):
-            import plaud_tools.tray_app as tray_app
-            tray_app._show_session_expired_toast()
+        import plaud_tools.tray_app as tray_app
+        tray_app._show_session_expired_toast()
 
         mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
         mock_notifier.show.assert_called_once()
@@ -298,19 +283,19 @@ class TestTraySessionExpiredToast:
         if sys.platform != "win32":
             pytest.skip("PowerShell fallback is Windows-only")
 
+        from plaud_tools.tray import toasts
+        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
+
         spawned: list[tuple] = []
 
         def fake_popen(args, **kwargs):
             spawned.append(tuple(args))
             return MagicMock()
 
-        monkeypatch.setattr("plaud_tools.tray_app.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", fake_popen)
 
-        with patch.dict(sys.modules, {"winrt": None}):
-            import importlib
-            import plaud_tools.tray_app as tray_app
-            importlib.reload(tray_app)
-            tray_app._show_session_expired_toast()
+        import plaud_tools.tray_app as tray_app
+        tray_app._show_session_expired_toast()
 
         assert any("powershell" in a[0].lower() for a in spawned)
 
@@ -320,15 +305,17 @@ class TestTraySessionExpiredToast:
         if sys.platform != "win32":
             pytest.skip("PowerShell fallback is Windows-only")
 
+        from plaud_tools.tray import toasts
+        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
+
         def boom(*a, **kw):
             raise OSError("no powershell")
 
-        monkeypatch.setattr("plaud_tools.tray_app.subprocess.Popen", boom)
+        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", boom)
 
-        with patch.dict(sys.modules, {"winrt": None}):
-            import plaud_tools.tray_app as tray_app
-            # Should not raise
-            tray_app._show_session_expired_toast()
+        import plaud_tools.tray_app as tray_app
+        # Should not raise
+        tray_app._show_session_expired_toast()
 
     def test_event_poll_loop_calls_toast_on_session_expired(self, tmp_path, monkeypatch):
         """_event_poll_loop reads events.jsonl, fires toast, and opens LoginWindow."""

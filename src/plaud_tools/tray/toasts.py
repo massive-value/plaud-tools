@@ -1,8 +1,15 @@
 """Windows toast helpers (first-run + session-expired).
 
-Each helper tries the modern ``winrt`` / ``winsdk`` package first, then falls
-back to a hidden PowerShell snippet.  Any failure is logged and silently
-ignored — toasts are a nicety, not a hard dependency.
+The frozen bundle ships without the ``winrt`` package, so every shipped
+install uses the PowerShell fallback. When ``winrt`` is importable (dev
+environments where a contributor has installed ``winrt-runtime``) the
+in-process path is used instead — slightly faster and avoids spawning a
+hidden PowerShell process per notification.
+
+``winrt`` availability is detected **once** at module load time. Earlier
+versions attempted the import per call and logged the ImportError traceback
+at DEBUG level, which produced multi-line tracebacks in ``tray.log`` for
+every toast on bundles without ``winrt``.
 """
 from __future__ import annotations
 
@@ -14,26 +21,39 @@ from typing import Callable
 from .setup import APP_NAME
 
 
-def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
-    """Show a Windows toast notifying the user their Plaud session expired.
+# ---------------------------------------------------------------------------
+# One-shot winrt detection
+# ---------------------------------------------------------------------------
 
-    The ``on_click`` callback (if provided) is invoked when the toast is
-    activated — note: winrt activation callbacks require WinRT message-loop
-    integration that is not available here, so on_click is only honoured by
-    callers who invoke LoginWindow directly after the toast.
+try:
+    from winrt.windows.ui.notifications import (  # type: ignore[import]
+        ToastNotificationManager as _WINRT_TNM,
+        ToastNotification as _WINRT_TN,
+    )
+    from winrt.windows.data.xml.dom import XmlDocument as _WINRT_XML  # type: ignore[import]
+    _WINRT_AVAILABLE = True
+except Exception:
+    _WINRT_TNM = None  # type: ignore[assignment]
+    _WINRT_TN = None  # type: ignore[assignment]
+    _WINRT_XML = None  # type: ignore[assignment]
+    _WINRT_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _show_winrt_toast(title: str, message: str, info_log: str) -> bool:
+    """Try the in-process winrt path. Return True on success.
+
+    Returns False (and silently bails) when ``winrt`` is not importable. If
+    ``winrt`` IS importable but blew up at runtime, that's anomalous and is
+    logged as a warning before returning False so the caller can fall back.
     """
-    title = APP_NAME
-    message = "Plaud session expired — click the tray icon to sign in again."
-
-    # --- attempt 1: winrt / winsdk ---
+    if not _WINRT_AVAILABLE:
+        return False
     try:
-        from winrt.windows.ui.notifications import (  # type: ignore[import]
-            ToastNotificationManager,
-            ToastNotification,
-        )
-        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import]
-
-        app_id = "PlaudTools.TrayApp"
         xml_str = (
             "<toast>"
             f"<visual><binding template='ToastGeneric'>"
@@ -42,16 +62,18 @@ def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
             "</binding></visual>"
             "</toast>"
         )
-        doc = XmlDocument()
+        doc = _WINRT_XML()  # type: ignore[misc]
         doc.load_xml(xml_str)
-        notifier = ToastNotificationManager.create_toast_notifier(app_id)
-        notifier.show(ToastNotification(doc))
-        logging.info("Session-expired toast shown via winrt")
-        return
+        notifier = _WINRT_TNM.create_toast_notifier("PlaudTools.TrayApp")  # type: ignore[union-attr]
+        notifier.show(_WINRT_TN(doc))  # type: ignore[misc]
+        logging.info(info_log)
+        return True
     except Exception:
-        logging.debug("winrt toast unavailable, falling back to PowerShell", exc_info=True)
+        logging.warning("winrt toast attempt failed; falling back to PowerShell", exc_info=True)
+        return False
 
-    # --- attempt 2: hidden PowerShell snippet ---
+
+def _show_powershell_toast(title: str, message: str, info_log: str) -> None:
     if sys.platform != "win32":
         return
     try:
@@ -72,73 +94,40 @@ def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-        logging.info("Session-expired toast dispatched via PowerShell")
+        logging.info(info_log)
     except Exception:
-        logging.warning("Could not show session-expired toast notification", exc_info=True)
+        logging.warning("Could not show toast notification", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
+    """Show a Windows toast notifying the user their Plaud session expired.
+
+    The ``on_click`` callback is currently unused — winrt activation callbacks
+    require WinRT message-loop integration that is not available here. The
+    parameter is retained for callers that pass it positionally.
+    """
+    title = APP_NAME
+    message = "Plaud session expired — click the tray icon to sign in again."
+    if _show_winrt_toast(title, message, "Session-expired toast shown via winrt"):
+        return
+    _show_powershell_toast(title, message, "Session-expired toast dispatched via PowerShell")
 
 
 def _show_install_toast() -> None:
-    """Show a Windows 11 toast notification explaining the tray icon.
-
-    Any failure is logged and silently ignored so it never blocks the tray
-    from starting.
-    """
+    """Show a Windows 11 toast notification explaining the tray icon."""
     title = APP_NAME
     message = (
         "PlaudTools is now running in your system tray — "
         "click the icon to sign in."
     )
-
-    # --- attempt 1: winrt / winsdk ---
-    try:
-        from winrt.windows.ui.notifications import (  # type: ignore[import]
-            ToastNotificationManager,
-            ToastNotification,
-        )
-        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import]
-
-        app_id = "PlaudTools.TrayApp"
-        xml_str = (
-            "<toast>"
-            f"<visual><binding template='ToastGeneric'>"
-            f"<text>{title}</text>"
-            f"<text>{message}</text>"
-            "</binding></visual>"
-            "</toast>"
-        )
-        doc = XmlDocument()
-        doc.load_xml(xml_str)
-        notifier = ToastNotificationManager.create_toast_notifier(app_id)
-        notifier.show(ToastNotification(doc))
-        logging.info("First-run toast shown via winrt")
+    if _show_winrt_toast(title, message, "First-run toast shown via winrt"):
         return
-    except Exception:
-        logging.debug("winrt toast unavailable, falling back to PowerShell", exc_info=True)
-
-    # --- attempt 2: hidden PowerShell snippet ---
-    if sys.platform != "win32":
-        return
-    try:
-        ps_script = (
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"
-            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
-            "$xml.LoadXml('<toast>"
-            "<visual><binding template=\"ToastGeneric\">"
-            f"<text>{title}</text>"
-            f"<text>{message}</text>"
-            "</binding></visual></toast>')\n"
-            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
-            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"
-            "$notifier.Show($toast)\n"
-        )
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-        logging.info("First-run toast dispatched via PowerShell")
-    except Exception:
-        logging.warning("Could not show first-run toast notification", exc_info=True)
+    _show_powershell_toast(title, message, "First-run toast dispatched via PowerShell")
 
 
 __all__ = ["_show_session_expired_toast", "_show_install_toast"]

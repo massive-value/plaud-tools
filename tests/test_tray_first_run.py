@@ -14,41 +14,28 @@ from unittest.mock import MagicMock, patch, call
 class TestShowInstallToast:
     """Unit tests for _show_install_toast() — the sentinel-driven toast helper."""
 
-    def test_winrt_path_called_when_available(self):
-        """If winrt is importable, CreateToastNotifier is used and we return early."""
+    def test_winrt_path_called_when_available(self, monkeypatch):
+        """If winrt is importable, CreateToastNotifier is used and we return early.
+
+        After the module-level winrt detection refactor, tests patch the cached
+        winrt names on the toasts module directly rather than mucking with
+        sys.modules — more honest, and immune to import-order surprises.
+        """
+        from plaud_tools.tray import toasts
+
         mock_notifier = MagicMock()
         mock_manager = MagicMock()
         mock_manager.create_toast_notifier.return_value = mock_notifier
-        mock_doc = MagicMock()
-        mock_xml_doc_cls = MagicMock(return_value=mock_doc)
-        mock_toast_cls = MagicMock()
-        mock_toast_notif = MagicMock()
-        mock_toast_cls.return_value = mock_toast_notif
+        mock_xml_doc_cls = MagicMock(return_value=MagicMock())
+        mock_toast_cls = MagicMock(return_value=MagicMock())
 
-        winrt_notifications_mod = MagicMock()
-        winrt_notifications_mod.ToastNotificationManager = mock_manager
-        winrt_notifications_mod.ToastNotification = mock_toast_cls
+        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", True)
+        monkeypatch.setattr(toasts, "_WINRT_TNM", mock_manager)
+        monkeypatch.setattr(toasts, "_WINRT_TN", mock_toast_cls)
+        monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
 
-        winrt_dom_mod = MagicMock()
-        winrt_dom_mod.XmlDocument = mock_xml_doc_cls
-
-        fake_winrt = MagicMock()
-
-        with patch.dict(
-            sys.modules,
-            {
-                "winrt": fake_winrt,
-                "winrt.windows": MagicMock(),
-                "winrt.windows.ui": MagicMock(),
-                "winrt.windows.ui.notifications": winrt_notifications_mod,
-                "winrt.windows.data": MagicMock(),
-                "winrt.windows.data.xml": MagicMock(),
-                "winrt.windows.data.xml.dom": winrt_dom_mod,
-            },
-        ):
-            from plaud_tools import tray_app
-            # Re-run the function so it picks up our mocked imports
-            tray_app._show_install_toast()
+        from plaud_tools import tray_app
+        tray_app._show_install_toast()
 
         mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
         mock_notifier.show.assert_called_once()
@@ -58,20 +45,19 @@ class TestShowInstallToast:
         if sys.platform != "win32":
             return  # PowerShell fallback is Windows-only; skip on other platforms
 
+        from plaud_tools.tray import toasts
+        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
+
         spawned: list[tuple] = []
 
         def fake_popen(args, **kwargs):
             spawned.append(tuple(args))
             return MagicMock()
 
-        monkeypatch.setattr("plaud_tools.tray_app.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", fake_popen)
 
-        # Ensure winrt import fails
-        with patch.dict(sys.modules, {"winrt": None}):
-            import importlib
-            import plaud_tools.tray_app as tray_app
-            importlib.reload(tray_app)
-            tray_app._show_install_toast()
+        from plaud_tools import tray_app
+        tray_app._show_install_toast()
 
         assert any("powershell" in args[0].lower() for args in spawned)
 
@@ -80,15 +66,17 @@ class TestShowInstallToast:
         if sys.platform != "win32":
             return
 
+        from plaud_tools.tray import toasts
+        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
+
         def boom(*a, **kw):
             raise OSError("no powershell")
 
-        monkeypatch.setattr("plaud_tools.tray_app.subprocess.Popen", boom)
+        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", boom)
 
-        with patch.dict(sys.modules, {"winrt": None}):
-            import plaud_tools.tray_app as tray_app
-            # Should not raise
-            tray_app._show_install_toast()
+        from plaud_tools import tray_app
+        # Should not raise
+        tray_app._show_install_toast()
 
 
 # ---------------------------------------------------------------------------
