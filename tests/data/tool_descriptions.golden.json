@@ -1,0 +1,201 @@
+[
+  {
+    "description": "Page through Plaud recordings with optional filters.",
+    "inputSchema": {
+      "properties": {
+        "after": {
+          "default": 0,
+          "description": "Cursor from next_after of a previous response",
+          "type": "integer"
+        },
+        "folder": {
+          "description": "Folder ID (from `list_folders`); pass empty string for unfiled recordings",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Max results per page",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Title substring filter",
+          "type": "string"
+        },
+        "since": {
+          "description": "ISO 8601 start-date filter",
+          "type": "string"
+        },
+        "until": {
+          "description": "ISO 8601 end-date filter",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "browse_recordings"
+  },
+  {
+    "description": "Fetch full detail for one recording.",
+    "inputSchema": {
+      "properties": {
+        "include": {
+          "description": "Large fields to include: transcript, speakers, summary",
+          "items": {
+            "enum": [
+              "transcript",
+              "speakers",
+              "summary"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_recording"
+  },
+  {
+    "description": "Apply a state change to a recording: rename, trash, restore, delete, move, or rename_speaker.",
+    "inputSchema": {
+      "properties": {
+        "folder_id": {
+          "description": "Folder ID (from `list_folders`); required for move; use '-' to clear",
+          "type": "string"
+        },
+        "mutation": {
+          "enum": [
+            "rename",
+            "trash",
+            "restore",
+            "delete",
+            "move",
+            "rename_speaker"
+          ],
+          "type": "string"
+        },
+        "new_name": {
+          "description": "Required for rename and rename_speaker",
+          "type": "string"
+        },
+        "original_label": {
+          "description": "Required for rename_speaker: existing speaker label",
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "mutation"
+      ],
+      "type": "object"
+    },
+    "name": "mutate_recording"
+  },
+  {
+    "description": "Upload a local audio file to Plaud.",
+    "inputSchema": {
+      "properties": {
+        "file_path": {
+          "description": "Absolute path to the audio file",
+          "type": "string"
+        },
+        "folder_id": {
+          "description": "Folder ID (from `list_folders`) to assign after upload",
+          "type": "string"
+        },
+        "start_time": {
+          "description": "Millisecond epoch integer or ISO 8601 string; defaults to now",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "timezone_offset": {
+          "description": "UTC offset in hours; defaults to local system offset",
+          "type": "number"
+        },
+        "title": {
+          "description": "Recording title; defaults to file stem",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "type": "object"
+    },
+    "name": "upload_recording"
+  },
+  {
+    "description": "List Plaud folders, returning id, name, color, and icon for each.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_folders"
+  },
+  {
+    "description": "Trigger transcription and summarization for a recording, blocking until both jobs complete.",
+    "inputSchema": {
+      "properties": {
+        "diarization": {
+          "description": "Enable speaker diarization",
+          "type": "boolean"
+        },
+        "language": {
+          "description": "BCP-47 primary subtag (e.g. 'en', 'zh'); use 'auto' to detect",
+          "type": "string"
+        },
+        "llm": {
+          "description": "LLM identifier for summarization",
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        },
+        "template_type": {
+          "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id"
+      ],
+      "type": "object"
+    },
+    "name": "process_recording"
+  },
+  {
+    "description": "Merge two or more recordings into a single new recording, blocking until the merge job completes.",
+    "inputSchema": {
+      "properties": {
+        "recording_ids": {
+          "description": "IDs to merge in order (minimum 2)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "Title for the merged recording",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_ids",
+        "title"
+      ],
+      "type": "object"
+    },
+    "name": "merge_recordings"
+  }
+]

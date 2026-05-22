@@ -24,6 +24,17 @@ pytest -q
 
 The default suite is offline and runs in a few seconds.
 
+### Regenerating the MCP golden fixture
+
+`tests/data/tool_descriptions.golden.json` is a snapshot of every MCP tool's
+name, description, and `inputSchema`.  If you intentionally change any tool
+definition in `server.py`, regenerate it and commit the updated fixture
+alongside your code change:
+
+```
+PLAUD_GOLDEN_REGEN=1 pytest tests/test_mcp_golden.py
+```
+
 Live tests that hit the real Plaud API are gated behind the
 `PLAUD_LIVE_READS=1` environment variable and must only be run against a
 **sacrificial Plaud account** — never your real one. The live suite renames,
