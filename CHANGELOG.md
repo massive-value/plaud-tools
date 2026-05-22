@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-22
+
+A small follow-up release covering two install/session correctness fixes
+that landed after v0.2.0.
+
+### Fixed
+
+- `install.ps1` was writing the HKCU autostart registry value under the
+  name `PlaudTools` (no space), while the tray reads/writes under
+  `_AUTOSTART_NAME = APP_NAME = "Plaud Tools"` (with a space).  Every
+  fresh install left the tray reporting "missing autostart" in
+  HomeWindow's setup-failures banner, and clicking Repair wrote a
+  *second* Run entry under the correct name — so users ended up with
+  both keys firing on login.  install.ps1 now writes the correct name
+  and also strips the legacy `PlaudTools` value on every run so users
+  who upgraded through the buggy script get auto-cleaned the next time
+  they reinstall.  Regression coverage in
+  `tests/test_tray_env.py` pins both behaviors against the Python
+  `APP_NAME` constant. (#73)
+- MCP server constructed a fresh `SessionManager(store)` on every tool
+  call from inside `get_client`, defeating the in-memory keyring cache
+  added in v0.1.22 (#43) and forcing the 30-day buffer check to
+  re-validate from cold state every call.  `_make_server` now builds
+  one `SessionManager` per process and reuses it across all
+  `get_client` invocations.  Regression coverage in
+  `tests/test_server.py` pins the singleton. (#74)
+
+### Added
+
+- `SessionStore._save_to_keyring`, `_load_from_keyring`, and
+  `_load_keyring_module` now log a `WARNING` with `exc_info` on every
+  silent-fallback path.  The prior bare `except Exception: return False`
+  made "saved keyring OK but session is gone next launch" symptoms
+  impossible to diagnose from `tray.log`.  We still fall back to the
+  file store on failure — just no longer in silence.  Regression
+  coverage in `tests/test_auth.py`. (#74)
+
 ## [0.2.0] - 2026-05-22
 
 The v0.2.0 milestone consolidates the bundle/install/MCP-stability cycle. The
@@ -492,7 +529,12 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/massive-value/plaud-tools/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/massive-value/plaud-tools/compare/v0.1.22...v0.2.0
+[0.1.22]: https://github.com/massive-value/plaud-tools/compare/v0.1.21...v0.1.22
+[0.1.21]: https://github.com/massive-value/plaud-tools/compare/v0.1.20...v0.1.21
+[0.1.20]: https://github.com/massive-value/plaud-tools/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/massive-value/plaud-tools/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/massive-value/plaud-tools/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/massive-value/plaud-tools/compare/v0.1.16...v0.1.17
