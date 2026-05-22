@@ -602,6 +602,58 @@ def test_transcode_raises_when_ffmpeg_not_found(monkeypatch):
         transcode_to_mp3(b"x", ".wav")
 
 
+def test_find_ffmpeg_frozen_sibling(tmp_path, monkeypatch):
+    """Frozen mode: ffmpeg.exe beside the exe is found first (MCP path)."""
+    from plaud_tools.transcode import _find_ffmpeg
+
+    exe_dir = tmp_path / "mcp"
+    exe_dir.mkdir()
+    ffmpeg_exe = exe_dir / "ffmpeg.exe"
+    ffmpeg_exe.write_bytes(b"")
+    fake_exe = exe_dir / "plaud-mcp.exe"
+
+    monkeypatch.delenv("FFMPEG_BIN", raising=False)
+    monkeypatch.setattr("plaud_tools.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_exe)})())
+    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: None)
+
+    assert _find_ffmpeg() == str(ffmpeg_exe)
+
+
+def test_find_ffmpeg_frozen_cli_falls_back_to_mcp_sibling(tmp_path, monkeypatch):
+    """Frozen CLI mode: no ffmpeg beside the CLI exe, resolves ../mcp/ffmpeg.exe."""
+    from plaud_tools.transcode import _find_ffmpeg
+
+    # Lay out PlaudTools/cli/ and PlaudTools/mcp/ under tmp_path
+    cli_dir = tmp_path / "cli"
+    cli_dir.mkdir()
+    mcp_dir = tmp_path / "mcp"
+    mcp_dir.mkdir()
+    ffmpeg_exe = mcp_dir / "ffmpeg.exe"
+    ffmpeg_exe.write_bytes(b"")
+    fake_cli_exe = cli_dir / "plaud-tools.exe"
+
+    monkeypatch.delenv("FFMPEG_BIN", raising=False)
+    monkeypatch.setattr("plaud_tools.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_cli_exe)})())
+    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: None)
+
+    assert _find_ffmpeg() == str(ffmpeg_exe)
+
+
+def test_find_ffmpeg_frozen_no_bundle_falls_back_to_path(tmp_path, monkeypatch):
+    """Frozen mode: no bundled ffmpeg at all → falls back to shutil.which."""
+    from plaud_tools.transcode import _find_ffmpeg
+
+    cli_dir = tmp_path / "cli"
+    cli_dir.mkdir()
+    fake_cli_exe = cli_dir / "plaud-tools.exe"
+
+    monkeypatch.delenv("FFMPEG_BIN", raising=False)
+    monkeypatch.setattr("plaud_tools.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_cli_exe)})())
+    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: "/usr/bin/ffmpeg")
+
+    assert _find_ffmpeg() == "/usr/bin/ffmpeg"
+
+
 def test_transcode_cleans_up_temp_files(tmp_path, monkeypatch):
     """Temp input and output files must be removed even when ffmpeg fails."""
     import tempfile as tempfile_mod

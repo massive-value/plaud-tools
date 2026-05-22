@@ -49,11 +49,17 @@ def _find_ffmpeg() -> str:
         return env_path
     # When frozen by PyInstaller, look for ffmpeg.exe next to the executable
     # before falling back to PATH. The Electron tray build places ffmpeg.exe
-    # alongside plaud-mcp.exe in the same resources subdirectory.
+    # alongside plaud-mcp.exe in PlaudTools\mcp\. The CLI exe lives in the
+    # sibling PlaudTools\cli\ directory. When the sibling-lookup fails (CLI
+    # caller), also check ../mcp/ffmpeg.exe so both exe surfaces share the
+    # single bundled ffmpeg without duplicating the ~70 MB binary.
     if getattr(sys, "frozen", False):
         sibling = Path(sys.executable).parent / "ffmpeg.exe"
         if sibling.exists():
             return str(sibling)
+        mcp_sibling = Path(sys.executable).parent.parent / "mcp" / "ffmpeg.exe"
+        if mcp_sibling.exists():
+            return str(mcp_sibling)
     found = shutil.which("ffmpeg")
     if found:
         return found
