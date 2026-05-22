@@ -29,6 +29,16 @@ from .toasts import _show_session_expired_toast
 from .updater import _check_for_update
 
 
+def _format_session_expired_diag(event: dict) -> str:
+    """Format the diagnostic fields of a session_expired event for log output.
+
+    Strips ``type`` and ``ts`` (already in the log timestamp / message prefix);
+    sorts the rest for stable output. See issue #78.
+    """
+    diag_keys = sorted(k for k in event if k not in {"type", "ts"})
+    return " ".join(f"{k}={event[k]!r}" for k in diag_keys)
+
+
 class _BackgroundMixin:
     """Background-thread helpers for TrayApp.  No __init__ — relies on TrayApp's."""
 
@@ -107,7 +117,15 @@ class _BackgroundMixin:
                     except Exception:
                         continue
                     if event.get("type") == "session_expired":
-                        logging.info("Tray: session_expired event received from MCP")
+                        # Log every diagnostic field from the event payload so
+                        # tray.log carries the same context as mcp.log (issue
+                        # #78). MCP enriches the payload with reason,
+                        # store_source, env_token_present, mcp_pid, mcp_version;
+                        # older MCP builds may omit them.
+                        logging.warning(
+                            "Tray: session_expired event received from MCP %s",
+                            _format_session_expired_diag(event),
+                        )
                         _show_session_expired_toast()
                         # Open the login window on the tkinter thread
                         if self._root:
@@ -168,4 +186,4 @@ class _BackgroundMixin:
         threading.Thread(target=_work, daemon=True).start()
 
 
-__all__ = ["_BackgroundMixin"]
+__all__ = ["_BackgroundMixin", "_format_session_expired_diag"]

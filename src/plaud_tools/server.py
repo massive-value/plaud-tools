@@ -4,7 +4,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import logging.handlers
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import mcp.server.stdio
@@ -16,6 +20,39 @@ from . import __version__
 from .client import PlaudClient
 from .mcp import build_handlers
 from .session import SessionManager, SessionStore
+
+
+def _mcp_log_path() -> Path:
+    """Return ``%LOCALAPPDATA%\\PlaudTools\\mcp.log`` (matches the tray log dir)."""
+    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    return localappdata / "PlaudTools" / "mcp.log"
+
+
+def _setup_mcp_logging() -> None:
+    """Configure rotating file logging for the MCP server.
+
+    Without this, every ``logging`` call in the MCP code path goes nowhere
+    (the MCP server has no console; Claude Desktop captures stderr but Codex
+    does not, and neither persists across sessions). Issue #78 traced spurious
+    session_expired events to this observability gap.
+    """
+    path = _mcp_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    handler = logging.handlers.RotatingFileHandler(
+        str(path),
+        maxBytes=1_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    logging.info(
+        "plaud-mcp %s starting pid=%d localappdata=%s",
+        __version__, os.getpid(), os.environ.get("LOCALAPPDATA"),
+    )
 
 _TOOLS: list[types.Tool] = [
     types.Tool(
@@ -291,10 +328,12 @@ def main() -> None:
         version=f"%(prog)s {__version__}",
     )
     parser.parse_args()
+    _setup_mcp_logging()
     try:
         asyncio.run(_run())
     except KeyboardInterrupt:
         pass
     except Exception as exc:  # noqa: BLE001
+        logging.exception("plaud-mcp crashed")
         print(f"plaud-mcp: error: {exc}", file=sys.stderr)
         sys.exit(1)
