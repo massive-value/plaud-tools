@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previous blanket `Stop-Process -Name plaud-mcp -Force` and fixed
   `Start-Sleep -Seconds 2` race. `docs/adr/003-mcp-process-lifecycle.md`
   documents the tray↔MCP lifecycle contract. (#22)
+- MCP `process_recording` now accepts a `wait` mode: `none` returns
+  immediately after the transcribe/summarize request is accepted, `transcript`
+  waits only for transcript readiness, and `summary` preserves the previous
+  blocking behavior. (#31)
+
+### Changed
+
+- MCP `process_recording` now defaults to `wait="transcript"` so MCP clients do
+  not block on long-running summary generation unless they explicitly request it. (#31)
 
 ### Fixed
 

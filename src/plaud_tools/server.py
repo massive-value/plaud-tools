@@ -139,11 +139,22 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="process_recording",
-        description="Trigger transcription and summarization for a recording, blocking until both jobs complete.",
+        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",
         inputSchema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "wait": {
+                    "type": "string",
+                    "enum": ["none", "transcript", "summary"],
+                    "default": "transcript",
+                    "description": (
+                        "How long to block after the transcribe/summarize request is accepted: "
+                        "'none' returns immediately with {recording_id, accepted}, "
+                        "'transcript' waits only for transcript readiness, and "
+                        "'summary' waits for both transcript and summary."
+                    ),
+                },
                 "template_type": {
                     "type": "string",
                     "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",

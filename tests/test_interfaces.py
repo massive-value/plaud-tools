@@ -847,7 +847,50 @@ def test_mcp_process_recording_triggers_and_polls():
     assert payload["recording_id"] == "rec1"
     assert client.transcribe_call == "rec1"
     assert client.wait_call == "rec1"
+    assert client.summary_wait_call is None
+
+
+def test_mcp_process_recording_wait_none_returns_accepted_without_polling():
+    client = MutateStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", wait="none")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {"recording_id": "rec1", "accepted": True}
+    assert client.transcribe_call == "rec1"
+    assert client.wait_call is None
+    assert client.summary_wait_call is None
+
+
+def test_mcp_process_recording_wait_transcript_does_not_wait_for_summary():
+    client = MutateStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", wait="transcript")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["recording_id"] == "rec1"
+    assert client.transcribe_call == "rec1"
+    assert client.wait_call == "rec1"
+    assert client.summary_wait_call is None
+
+
+def test_mcp_process_recording_wait_summary_preserves_old_blocking_behavior():
+    client = MutateStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", wait="summary")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["recording_id"] == "rec1"
+    assert client.transcribe_call == "rec1"
+    assert client.wait_call == "rec1"
     assert client.summary_wait_call == "rec1"
+
+
+def test_mcp_process_recording_rejects_unknown_wait_mode():
+    handlers = build_handlers(lambda: MutateStub())
+    result = handlers["process_recording"]("rec1", wait="forever")
+    assert result["isError"] is True
+    payload = json.loads(result["content"][0]["text"])
+    assert "wait must be one of" in payload["error"]
 
 
 def test_mcp_merge_recordings_returns_summary():
