@@ -30,6 +30,7 @@ from .auth import PlaudAuth
 from . import __version__ as APP_VERSION
 from .client import PlaudClient
 from .errors import PlaudApiError, PlaudSessionExpiredError
+from .mcp_lifecycle import mcp_shutdown_ps1_snippet
 from .session import PlaudSession, SessionManager, SessionStore
 
 APP_NAME = "Plaud Tools"
@@ -394,13 +395,13 @@ def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> No
         for name in ("PlaudTools", "Plaud"):
             log_dir = Path(localappdata) / name
             log_lines += f"Remove-Item -Path '{log_dir}' -Recurse -Force -ErrorAction SilentlyContinue\n"
+    shutdown_snippet = mcp_shutdown_ps1_snippet(str(install_dir))
     ps_content = (
         f"$trayPid = {tray_pid}\n"
         "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
         "    Start-Sleep -Seconds 1\n"
         "}\n"
-        "Stop-Process -Name plaud-mcp -Force -ErrorAction SilentlyContinue\n"
-        "Start-Sleep -Seconds 1\n"
+        + shutdown_snippet +
         f"Remove-Item -Path '{install_dir}' -Recurse -Force -ErrorAction SilentlyContinue\n"
         + log_lines +
         "Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n"
@@ -830,13 +831,13 @@ class UpdateDialog:
             update_info = self._app._update_info
             new_version = update_info[0] if update_info else "unknown"
 
+            shutdown_snippet = mcp_shutdown_ps1_snippet(str(install_dir))
             ps_content = (
                 f"$trayPid = {tray_pid}\n"
                 "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
                 "    Start-Sleep -Seconds 1\n"
                 "}\n"
-                "Stop-Process -Name plaud-mcp -Force -ErrorAction SilentlyContinue\n"
-                "Start-Sleep -Seconds 2\n"
+                + shutdown_snippet +
                 "$ProgressPreference = 'SilentlyContinue'\n"
                 f"Expand-Archive -Path '{zip_path}' -DestinationPath '{extract_dir}' -Force\n"
                 f"Remove-Item -Path '{zip_path}' -ErrorAction SilentlyContinue\n"
@@ -1333,9 +1334,13 @@ class TrayApp:
         _set_autostart(not _autostart_enabled())
 
     def _quit(self) -> None:
+        # Destroy the tkinter root on the tk main thread.  When mainloop()
+        # returns, _run() calls icon.stop() from the main thread — safe.
+        # Do NOT call icon.stop() here: if _quit() is invoked from the tk
+        # main thread (e.g. via root.after()), calling icon.stop()
+        # synchronously can deadlock because pystray's backend thread may be
+        # waiting to schedule a callback back onto the tk thread.
         self._tk(lambda: self._root.destroy() if self._root else None)
-        if self._icon:
-            self._icon.stop()
 
     def _open_url(self, url: str) -> None:
         import webbrowser

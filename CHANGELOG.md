@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp_lifecycle.py` — scoped, graceful MCP child shutdown helper.
+  `shutdown_mcp_children(install_dir)` kills only `plaud-mcp` processes
+  whose executable path is inside the given install directory, attempts a
+  graceful signal first (CTRL_BREAK on Windows, SIGTERM on POSIX), then
+  polls until the process exits before force-killing after a configurable
+  grace period (default 3 s). `mcp_shutdown_ps1_snippet(install_dir)` emits
+  the equivalent PowerShell block for use in detached PS1 helpers. Both the
+  update and uninstall PS1 generators now embed this snippet, replacing the
+  previous blanket `Stop-Process -Name plaud-mcp -Force` and fixed
+  `Start-Sleep -Seconds 2` race. `docs/adr/003-mcp-process-lifecycle.md`
+  documents the tray↔MCP lifecycle contract. (#22)
+
+### Fixed
+
+- `TrayApp._quit()` no longer calls `icon.stop()` synchronously on the
+  tkinter main thread. Calling `icon.stop()` from within a pystray menu
+  callback (pystray thread) could deadlock if pystray was waiting to post
+  back to the tk thread. `_quit()` now only schedules `root.destroy()` via
+  `_tk()`; `_run()` calls `icon.stop()` after `root.mainloop()` returns. (#22)
+
 ## [0.1.20] - 2026-05-21
 
 ### Changed
