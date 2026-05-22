@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-22
+
+A bundle-correctness and observability release shaking out three issues that
+surfaced during the v0.2.1 in-app upgrade flow.
+
+### Fixed
+
+- In-app updater would silently abort and leave the user stranded with no tray
+  running when `Expand-Archive` hit a locked DLL (Claude Desktop respawning
+  `plaud-mcp.exe` mid-extraction is the common trigger).  `update.ps1` now
+  retries the scoped MCP kill with respawn detection (`MaxAttempts=8`,
+  `StableMs=500`), writes a structured failure sentinel to `%TEMP%` on any
+  abort, restarts the tray from a `finally` block so the user is never left
+  without a tray, and surfaces the failure as a tkinter `messagebox.showerror`
+  on next launch — pointing at the transcript log that the rewritten script
+  now keeps in `%TEMP%\plaud_update_<TrayPid>.log`.  The dispatcher path is
+  cleaned up via an explicit `-DispatcherPath` parameter rather than the
+  self-deleting `Remove-Item $MyInvocation.MyCommand.Path` line that was
+  itself a hazard.  Regression coverage in `tests/test_ps1_templates.py`. (#76, closes #75)
+- `tray/toasts.py` was attempting to import `winrt` on every toast call and
+  catching the `ModuleNotFoundError` at DEBUG level, which produced a
+  multi-line traceback in `tray.log` for every notification on the shipped
+  bundle (which doesn't ship `winrt`).  Detection now happens once at module
+  load via `_WINRT_AVAILABLE`; the per-call helpers `_show_winrt_toast` and
+  `_show_powershell_toast` are silent on the expected "not installed" path
+  and only log when an installed `winrt` blows up at runtime.  Regression
+  coverage in `tests/test_tray_first_run.py` and `tests/test_mcp_error_codes.py`. (#77)
+
+### Added
+
+- MCP server now writes a rotating log to `%LOCALAPPDATA%\PlaudTools\mcp.log`
+  (mirrors the tray log path).  Without this, every `logging.*` call inside
+  the MCP code path went nowhere unless the parent client captured stderr —
+  Claude Desktop did, Codex did not, and neither persisted across sessions,
+  which made the recurring "session expired" toast in #78 impossible to
+  diagnose.  `_setup_mcp_logging` is wired into `server.main()` after argparse
+  so `--version` stays side-effect-free. (#79, partial fix for #78)
+- `session_expired` events in `events.jsonl` and the corresponding MCP/tray
+  log lines now carry safe diagnostic metadata: `store_source` (env / keyring
+  / file / missing), `env_token_present`, `mcp_pid`, `mcp_version`, plus
+  `region`, `token_typ`, and `days_until_expiry` when a session is loadable.
+  Token bytes never appear.  The tray log line changes from "session_expired
+  event received from MCP" to one that includes all keys, sorted for stable
+  diff-able output via the extracted `_format_session_expired_diag` helper.
+  Regression coverage in `tests/test_mcp_error_codes.py` and
+  `tests/test_tray_correctness.py`. (#79, partial fix for #78)
+
 ## [0.2.1] - 2026-05-22
 
 A small follow-up release covering two install/session correctness fixes
@@ -529,7 +576,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/massive-value/plaud-tools/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/massive-value/plaud-tools/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/massive-value/plaud-tools/compare/v0.1.22...v0.2.0
 [0.1.22]: https://github.com/massive-value/plaud-tools/compare/v0.1.21...v0.1.22
