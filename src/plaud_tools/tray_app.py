@@ -940,6 +940,19 @@ class UninstallDialog:
         self._root = root
         self._win: tk.Toplevel | None = None
 
+    # ------------------------------------------------------------------
+    # Public helper — pure predicate, easy to unit-test
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def ai_client_warning_visible(delete_installdir: bool, disconnect_clients: bool) -> bool:
+        """Return True when the AI-client warning should be shown.
+
+        The dangerous combination is: install dir will be deleted but AI client
+        configs will NOT be cleaned up — clients will have dangling paths.
+        """
+        return delete_installdir and not disconnect_clients
+
     def show(self) -> None:
         if self._win and self._win.winfo_exists():
             self._win.lift()
@@ -985,15 +998,55 @@ class UninstallDialog:
         for var, label in items:
             ttk.Checkbutton(checks_frame, text=label, variable=var).pack(anchor="w", pady=2)
 
+        # --- AI-client warning label (orange, hidden until needed) ---
+        warning_var = tk.StringVar()
+        warning_label = ttk.Label(
+            frame,
+            textvariable=warning_var,
+            foreground="#c05000",
+            wraplength=380,
+            justify="left",
+        )
+        warning_label.pack(anchor="w", pady=(6, 0))
+
+        def _update_warning(*_args: object) -> None:
+            if self.ai_client_warning_visible(var_installdir.get(), var_clients.get()):
+                warning_var.set(
+                    "⚠ AI clients will still point at the deleted install directory. "
+                    "Restart Claude Desktop / Claude Code / Codex after uninstalling to clear the error."
+                )
+            else:
+                warning_var.set("")
+
+        var_installdir.trace_add("write", _update_warning)
+        var_clients.trace_add("write", _update_warning)
+        # Seed the initial state (install dir checked, clients checked → no warning).
+        _update_warning()
+
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=12)
 
         btn_row = ttk.Frame(frame)
         btn_row.pack(fill="x")
 
-        ttk.Button(btn_row, text="Cancel", command=win.destroy).pack(side="left")
+        cancel_btn = ttk.Button(btn_row, text="Cancel", command=win.destroy)
+        cancel_btn.pack(side="left")
+
+        def _set_buttons_in_flight(in_flight: bool) -> None:
+            """Disable/re-enable both action buttons while uninstall runs."""
+            state = "disabled" if in_flight else "normal"
+            cancel_btn.config(state=state)
+            uninstall_btn.config(
+                state=state,
+                text="Uninstalling…" if in_flight else "Uninstall",
+            )
 
         def do_uninstall() -> None:
             from tkinter import messagebox
+
+            # Disable buttons immediately so a second click cannot spawn a
+            # second helper process racing to delete the install directory.
+            _set_buttons_in_flight(True)
+            win.update()
 
             # Execute simple removals first.
             if var_clients.get():
@@ -1045,7 +1098,8 @@ class UninstallDialog:
                     parent=self._root,
                 )
 
-        ttk.Button(btn_row, text="Uninstall", command=do_uninstall).pack(side="right")
+        uninstall_btn = ttk.Button(btn_row, text="Uninstall", command=do_uninstall)
+        uninstall_btn.pack(side="right")
 
         win.lift()
         win.focus_force()
