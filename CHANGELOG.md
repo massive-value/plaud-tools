@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-05-21
+
 ### Added
 
 - `mcp_lifecycle.py` — scoped, graceful MCP child shutdown helper.
@@ -20,10 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previous blanket `Stop-Process -Name plaud-mcp -Force` and fixed
   `Start-Sleep -Seconds 2` race. `docs/adr/003-mcp-process-lifecycle.md`
   documents the tray↔MCP lifecycle contract. (#22)
-- MCP `process_recording` now accepts a `wait` mode: `none` returns
-  immediately after the transcribe/summarize request is accepted, `transcript`
-  waits only for transcript readiness, and `summary` preserves the previous
-  blocking behavior. (#31)
+- MCP `process_recording` accepts a `wait` mode: `none` returns immediately
+  after the transcribe/summarize request is accepted, `transcript` waits only
+  for transcript readiness, and `summary` preserves the previous blocking
+  behavior. Thanks to first-time contributor @Baijack-star. (#31)
 - First-run welcome: on first launch after `install.ps1`, a Windows toast
   notification appears explaining where the tray icon lives.  `HomeWindow`
   also shows a one-time blue banner directing the user to "Configure AI
@@ -31,22 +33,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `plaud_just_installed.txt` sentinel is consumed immediately so neither
   surface repeats on subsequent launches.  Falls back gracefully when the
   toast API is unavailable. (#27)
-- `plaud-tools doctor` — self-diagnosis command that prints a JSON document
-  covering version, frozen/pip install mode, executable paths, session status
-  (token masked), AI client MCP wiring, and the tray log path. (#45)
+- `plaud-tools doctor` — self-diagnosis CLI subcommand that prints a JSON
+  document covering version, frozen/pip install mode, executable paths,
+  session status (token masked), AI client MCP wiring, and the tray log
+  path. (#45)
+- MCP: `delete_recording` and `rename_speaker` are now top-level tools,
+  separated from the generic `mutate_recording`. (#32)
+- `PlaudApiError` now carries `http_status`, `plaud_code`, `plaud_msg`, and
+  `raw_body` attributes when the API returns a structured error. Transport
+  layer captures the error body before raising. (#42)
 
 ### Changed
 
-- MCP `process_recording` now defaults to `wait="transcript"` so MCP clients do
-  not block on long-running summary generation unless they explicitly request it. (#31)
+- MCP `process_recording` now defaults to `wait="transcript"` so MCP clients
+  do not block on long-running summary generation unless they explicitly
+  request it. (#31)
+- MCP `mutate_recording` enum is narrowed to `rename`, `trash`, `restore`,
+  `move`; gains a `clear_folder: bool` flag that replaces the
+  `folder_id="-"` sentinel. (#32)
+- PyInstaller UPX compression disabled for `plaud-mcp.spec` and `plaud.spec`,
+  matching the tray spec. (#26)
 
 ### Fixed
 
 - `TrayApp._quit()` no longer calls `icon.stop()` synchronously on the
-  tkinter main thread. Calling `icon.stop()` from within a pystray menu
-  callback (pystray thread) could deadlock if pystray was waiting to post
-  back to the tk thread. `_quit()` now only schedules `root.destroy()` via
-  `_tk()`; `_run()` calls `icon.stop()` after `root.mainloop()` returns. (#22)
+  tkinter main thread; the deadlock-prone path is replaced with a scheduled
+  `root.destroy()` and a post-mainloop `icon.stop()`. (#22)
 
 ## [0.1.20] - 2026-05-21
 
