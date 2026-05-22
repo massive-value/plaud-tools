@@ -30,7 +30,7 @@ from .auth import PlaudAuth
 from . import __version__ as APP_VERSION
 from .client import PlaudClient
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .mcp_lifecycle import mcp_shutdown_ps1_snippet
+from .ps1_templates import render_uninstall_ps1, render_update_ps1
 from .session import PlaudSession, SessionManager, SessionStore
 
 APP_NAME = "Plaud Tools"
@@ -385,26 +385,19 @@ def _delete_log_files() -> None:
 
 
 def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> None:
-    """Write a hidden PS1 helper to %TEMP% that deletes the install dir after the tray exits."""
+    """Write a hidden PS1 dispatcher to %TEMP% that invokes the bundled uninstall.ps1."""
     import subprocess
     import tempfile
     tray_pid = os.getpid()
-    localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    log_lines = ""
+    log_dirs: list[str] = []
     if delete_logs:
+        localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         for name in ("PlaudTools", "Plaud"):
-            log_dir = Path(localappdata) / name
-            log_lines += f"Remove-Item -Path '{log_dir}' -Recurse -Force -ErrorAction SilentlyContinue\n"
-    shutdown_snippet = mcp_shutdown_ps1_snippet(str(install_dir))
-    ps_content = (
-        f"$trayPid = {tray_pid}\n"
-        "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
-        "    Start-Sleep -Seconds 1\n"
-        "}\n"
-        + shutdown_snippet +
-        f"Remove-Item -Path '{install_dir}' -Recurse -Force -ErrorAction SilentlyContinue\n"
-        + log_lines +
-        "Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n"
+            log_dirs.append(str(Path(localappdata) / name))
+    ps_content = render_uninstall_ps1(
+        tray_pid=tray_pid,
+        install_dir=str(install_dir),
+        log_dirs=log_dirs if log_dirs else None,
     )
     ps_path = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.ps1"
     ps_path.write_text(ps_content, encoding="utf-8")
@@ -831,18 +824,11 @@ class UpdateDialog:
             update_info = self._app._update_info
             new_version = update_info[0] if update_info else "unknown"
 
-            shutdown_snippet = mcp_shutdown_ps1_snippet(str(install_dir))
-            ps_content = (
-                f"$trayPid = {tray_pid}\n"
-                "while (Get-Process -Id $trayPid -ErrorAction SilentlyContinue) {\n"
-                "    Start-Sleep -Seconds 1\n"
-                "}\n"
-                + shutdown_snippet +
-                "$ProgressPreference = 'SilentlyContinue'\n"
-                f"Expand-Archive -Path '{zip_path}' -DestinationPath '{extract_dir}' -Force\n"
-                f"Remove-Item -Path '{zip_path}' -ErrorAction SilentlyContinue\n"
-                f"Start-Process '{install_dir}\\PlaudTools.exe'\n"
-                "Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue\n"
+            ps_content = render_update_ps1(
+                tray_pid=tray_pid,
+                install_dir=str(install_dir),
+                zip_path=str(zip_path),
+                extract_dir=str(extract_dir),
             )
             ps_path.write_text(ps_content, encoding="utf-8")
             sentinel.write_text(new_version, encoding="utf-8")
