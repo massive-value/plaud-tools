@@ -20,21 +20,18 @@ from .session import SessionManager, SessionStore
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="browse_recordings",
-        description=(
-            "List and search Plaud recordings with optional filters. "
-            "Returns a curated summary for each match."
-        ),
+        description="Page through Plaud recordings with optional filters.",
         inputSchema={
             "type": "object",
             "properties": {
                 "limit": {
                     "type": "integer",
                     "default": 50,
-                    "description": "Max results to return",
+                    "description": "Max results per page",
                 },
                 "since": {
                     "type": "string",
-                    "description": "ISO 8601 start-date filter (e.g. 2025-01-01)",
+                    "description": "ISO 8601 start-date filter",
                 },
                 "until": {
                     "type": "string",
@@ -46,22 +43,19 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder": {
                     "type": "string",
-                    "description": "The `id` returned by `list_folders`. Pass empty string to filter to unfiled recordings.",
+                    "description": "Folder ID (from `list_folders`); pass empty string for unfiled recordings",
                 },
                 "after": {
                     "type": "integer",
                     "default": 0,
-                    "description": "Pagination offset (number of results to skip)",
+                    "description": "Cursor from next_after of a previous response",
                 },
             },
         },
     ),
     types.Tool(
         name="get_recording",
-        description=(
-            "Fetch full detail for one recording. "
-            "Pass `include` to opt in to large fields: transcript, speakers, summary."
-        ),
+        description="Fetch full detail for one recording.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -72,7 +66,7 @@ _TOOLS: list[types.Tool] = [
                         "type": "string",
                         "enum": ["transcript", "speakers", "summary"],
                     },
-                    "description": "Extra fields to include in the response",
+                    "description": "Large fields to include: transcript, speakers, summary",
                 },
             },
             "required": ["recording_id"],
@@ -80,10 +74,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description=(
-            "Apply a state change to a recording: rename, trash, restore, delete, "
-            "move to a folder, or rename a speaker in the transcript."
-        ),
+        description="Apply a state change to a recording: rename, trash, restore, delete, move, or rename_speaker.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -98,11 +89,11 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "The `id` returned by `list_folders`. Required for move. Pass '-' to clear the folder assignment.",
+                    "description": "Folder ID (from `list_folders`); required for move; use '-' to clear",
                 },
                 "original_label": {
                     "type": "string",
-                    "description": "Required for rename_speaker — the existing speaker label to replace",
+                    "description": "Required for rename_speaker: existing speaker label",
                 },
             },
             "required": ["recording_id", "mutation"],
@@ -110,10 +101,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="upload_recording",
-        description=(
-            "Upload a local audio file to Plaud. "
-            "Non-native formats (e.g. WAV, FLAC) are transcoded to MP3 via ffmpeg."
-        ),
+        description="Upload a local audio file to Plaud.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -123,19 +111,19 @@ _TOOLS: list[types.Tool] = [
                 },
                 "title": {
                     "type": "string",
-                    "description": "Recording title; defaults to the file stem",
+                    "description": "Recording title; defaults to file stem",
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "The `id` returned by `list_folders`. Folder to assign the recording to after upload.",
+                    "description": "Folder ID (from `list_folders`) to assign after upload",
                 },
                 "start_time": {
                     "type": ["integer", "string"],
-                    "description": "Recording timestamp: millisecond epoch integer (e.g. 1735732800000) or ISO 8601 string (e.g. '2026-01-01T10:00:00'). Defaults to now.",
+                    "description": "Millisecond epoch integer or ISO 8601 string; defaults to now",
                 },
                 "timezone_offset": {
                     "type": "number",
-                    "description": "UTC offset in hours (e.g. -7.0 for MDT). Defaults to local system offset.",
+                    "description": "UTC offset in hours; defaults to local system offset",
                 },
             },
             "required": ["file_path"],
@@ -143,10 +131,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="list_folders",
-        description=(
-            "List Plaud folders (file tags). Returns id, name, color, and icon for each folder. "
-            "Use the returned id when filtering browse_recordings by folder or moving a recording with mutate_recording."
-        ),
+        description="List Plaud folders, returning id, name, color, and icon for each.",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -154,21 +139,18 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="process_recording",
-        description=(
-            "Trigger transcription and summarization for a recording, "
-            "then block until both the transcript and summary jobs complete."
-        ),
+        description="Trigger transcription and summarization for a recording, blocking until both jobs complete.",
         inputSchema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
                 "template_type": {
                     "type": "string",
-                    "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING'). Defaults to AUTO-SELECT.",
+                    "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
                 },
                 "language": {
                     "type": "string",
-                    "description": "Transcript language as BCP-47 primary subtag (e.g. 'en', 'zh'). Use 'auto' for auto-detect.",
+                    "description": "BCP-47 primary subtag (e.g. 'en', 'zh'); use 'auto' to detect",
                 },
                 "diarization": {
                     "type": "boolean",
@@ -184,18 +166,14 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="merge_recordings",
-        description=(
-            "Merge two or more recordings into a single new recording. "
-            "Blocks until the merge job completes and returns the merged recording summary. "
-            "Note: Plaud assigns the earliest source recording's timestamp to the merged artifact."
-        ),
+        description="Merge two or more recordings into a single new recording, blocking until the merge job completes.",
         inputSchema={
             "type": "object",
             "properties": {
                 "recording_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "IDs of recordings to merge, in the desired order (minimum 2)",
+                    "description": "IDs to merge in order (minimum 2)",
                 },
                 "title": {
                     "type": "string",

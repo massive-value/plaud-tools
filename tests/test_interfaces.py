@@ -452,8 +452,10 @@ def test_mcp_browse_recordings_returns_curated_list():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["browse_recordings"](limit=2)
     payload = json.loads(result["content"][0]["text"])
-    assert len(payload) == 1
-    item = payload[0]
+    assert "items" in payload
+    assert "next_after" in payload
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
     assert item["id"] == "r1"
     assert item["title"] == "meeting"
     assert item["duration_minutes"] == 10
@@ -468,7 +470,7 @@ def test_mcp_browse_recordings_filters_by_since_and_folder():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["browse_recordings"](since="2025-04-01T00:00:00Z", folder="tag1")
     payload = json.loads(result["content"][0]["text"])
-    assert [item["id"] for item in payload] == ["r1"]
+    assert [item["id"] for item in payload["items"]] == ["r1"]
 
 
 def test_mcp_browse_recordings_date_only_until_includes_full_day():
@@ -477,7 +479,7 @@ def test_mcp_browse_recordings_date_only_until_includes_full_day():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["browse_recordings"](until="2025-04-30")
     payload = json.loads(result["content"][0]["text"])
-    ids = [item["id"] for item in payload]
+    ids = [item["id"] for item in payload["items"]]
     assert "r1" in ids
 
 
@@ -493,6 +495,78 @@ def test_mcp_browse_recordings_returns_session_error_when_client_missing():
     handlers = build_handlers(lambda: None)
     result = handlers["browse_recordings"]()
     assert result["isError"] is True
+
+
+def test_mcp_browse_recordings_next_after_null_when_short_page():
+    """next_after is null when the page is shorter than limit (no more results)."""
+    handlers = build_handlers(lambda: StubClient())
+    # StubClient with filters returns 1 item; limit=10 means short page → next_after=null
+    result = handlers["browse_recordings"](limit=10, folder="tag1")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["next_after"] is None
+
+
+def test_mcp_browse_recordings_next_after_set_when_full_page():
+    """next_after equals after + len(items) when a full page is returned."""
+
+    class ManyRecordingsClient(StubClient):
+        def list_recordings(self, query=None):
+            # Return enough items to fill a limit=1 page when filtered by folder
+            from plaud_tools.models import Recording
+            return [
+                Recording(
+                    id=f"r{i}",
+                    filename=f"rec {i}",
+                    start_time=1_746_000_000_000 - i * 1000,
+                    duration=600_000,
+                    is_trans=True,
+                    filetag_id_list=["tag1"],
+                )
+                for i in range(5)
+            ]
+
+    handlers = build_handlers(lambda: ManyRecordingsClient())
+    result = handlers["browse_recordings"](limit=2, folder="tag1")
+    payload = json.loads(result["content"][0]["text"])
+    assert len(payload["items"]) == 2
+    assert payload["next_after"] == 2  # after=0 + len=2
+
+
+def test_mcp_browse_recordings_pagination_cursor_advances():
+    """Passing next_after as after returns the next page."""
+
+    class ManyRecordingsClient(StubClient):
+        def list_recordings(self, query=None):
+            from plaud_tools.models import Recording
+            return [
+                Recording(
+                    id=f"r{i}",
+                    filename=f"rec {i}",
+                    start_time=1_746_000_000_000 - i * 1000,
+                    duration=600_000,
+                    is_trans=True,
+                    filetag_id_list=["tag1"],
+                )
+                for i in range(5)
+            ]
+
+    handlers = build_handlers(lambda: ManyRecordingsClient())
+    # Page 1
+    result1 = handlers["browse_recordings"](limit=2, folder="tag1")
+    page1 = json.loads(result1["content"][0]["text"])
+    assert page1["next_after"] == 2
+
+    # Page 2
+    result2 = handlers["browse_recordings"](limit=2, folder="tag1", after=page1["next_after"])
+    page2 = json.loads(result2["content"][0]["text"])
+    assert len(page2["items"]) == 2
+    assert page2["next_after"] == 4
+
+    # Page 3 (last, short page)
+    result3 = handlers["browse_recordings"](limit=2, folder="tag1", after=page2["next_after"])
+    page3 = json.loads(result3["content"][0]["text"])
+    assert len(page3["items"]) == 1
+    assert page3["next_after"] is None
 
 
 def test_mcp_get_recording_default_excludes_transcript_and_summary():
