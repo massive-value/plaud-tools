@@ -110,6 +110,7 @@ def _acquire_instance_lock() -> bool:
     if sys.platform != "win32":
         return True
     import ctypes
+    # "Global\" prefix is required so the named mutex is visible across user sessions (e.g. UAC elevation).
     _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         # Signal the running instance to surface its window, then exit.

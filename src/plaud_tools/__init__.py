@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from .auth import PlaudAuth
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .mcp import build_handlers, build_read_handlers
+from .mcp import build_handlers
 from .session import FileSessionStore, PlaudSession, SessionManager, SessionStore
 
 try:
@@ -23,5 +23,4 @@ __all__ = [
     "SessionStore",
     "__version__",
     "build_handlers",
-    "build_read_handlers",
 ]

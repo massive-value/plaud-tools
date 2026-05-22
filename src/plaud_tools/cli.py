@@ -10,8 +10,9 @@ from typing import Sequence
 
 from . import __version__
 from .auth import PlaudAuth
-from .client import PlaudClient, PlaudRecordingQuery, summarize_recording_for_cli
+from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
+from .query import filter_recordings, parse_isoish, summarize_recording
 from .session import PlaudSession, SessionManager, SessionStore
 
 
@@ -140,34 +141,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _parse_isoish(value: str, flag: str, *, end_of_day: bool = False) -> int:
-    try:
-        normalized = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if end_of_day and "T" not in value:
-            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return int(dt.timestamp() * 1000)
-    except ValueError as exc:
-        raise ValueError(f"Invalid {flag} value: {value}") from exc
-
-
-def _filter_recordings(recordings, *, since_ms, until_ms, query, folder_id, unfiled):
-    filtered = list(recordings)
-    if since_ms is not None:
-        filtered = [item for item in filtered if item.start_time >= since_ms]
-    if until_ms is not None:
-        filtered = [item for item in filtered if item.start_time <= until_ms]
-    if query:
-        query_lower = query.lower()
-        filtered = [item for item in filtered if query_lower in item.filename.lower()]
-    if unfiled:
-        filtered = [item for item in filtered if not item.filetag_id_list]
-    elif folder_id is not None:
-        filtered = [item for item in filtered if folder_id in item.filetag_id_list]
-    filtered.sort(key=lambda item: item.start_time, reverse=True)
-    return filtered
-
-
 def _mask_token(token: str) -> str:
     if len(token) <= 12:
         return token
@@ -253,7 +226,6 @@ def run_cli(
                 " upgrade command, not this one."
             )
         sys.exit(result.returncode)
-        return ""  # unreachable; satisfies return-type checker
 
     if args.command == "doctor":
         from .doctor import run_doctor_json
@@ -264,11 +236,11 @@ def run_cli(
 
     if args.command == "list":
         has_filters = bool(args.since or args.until or args.query or args.folder_id or args.unfiled)
-        since_ms = _parse_isoish(args.since, "--since") if args.since else None
-        until_ms = _parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
+        since_ms = parse_isoish(args.since, "--since") if args.since else None
+        until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
         if has_filters:
             recordings = client.list_recordings()
-            recordings = _filter_recordings(
+            recordings = filter_recordings(
                 recordings,
                 since_ms=since_ms,
                 until_ms=until_ms,
@@ -281,12 +253,12 @@ def run_cli(
             recordings = client.list_recordings(
                 PlaudRecordingQuery(limit=args.limit, is_trash=0, sort_by="start_time", is_desc=True)
             )
-        return json.dumps([summarize_recording_for_cli(r) for r in recordings], indent=2)
+        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
     if args.command == "search":
-        since_ms = _parse_isoish(args.since, "--since") if args.since else None
-        until_ms = _parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
+        since_ms = parse_isoish(args.since, "--since") if args.since else None
+        until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
         recordings = client.list_recordings()
-        recordings = _filter_recordings(
+        recordings = filter_recordings(
             recordings,
             since_ms=since_ms,
             until_ms=until_ms,
@@ -295,7 +267,7 @@ def run_cli(
             unfiled=False,
         )
         recordings = recordings[: args.limit]
-        return json.dumps([summarize_recording_for_cli(r) for r in recordings], indent=2)
+        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
     if args.command == "detail":
         detail = client.get_recording(args.recording_id, include_transcript=args.include_transcript)
         return json.dumps(
@@ -359,7 +331,7 @@ def run_cli(
             client.move_to_trash([args.recording_id])
             return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "trash"}, indent=2)
         recordings = client.list_trash()
-        return json.dumps([summarize_recording_for_cli(r) for r in recordings], indent=2)
+        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
     if args.command == "restore":
         client.restore_from_trash([args.recording_id])
         return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "restore"}, indent=2)
@@ -409,7 +381,7 @@ def run_cli(
         if args.start_time is not None:
             raw_st = str(args.start_time)
             if "-" in raw_st or "T" in raw_st:
-                start_ms = _parse_isoish(raw_st, "--start-time")
+                start_ms = parse_isoish(raw_st, "--start-time")
             else:
                 try:
                     start_ms = int(raw_st)
@@ -477,12 +449,14 @@ def run_cli(
         raw = client.dump_raw_detail(args.recording_id)
         return json.dumps(raw, indent=2)
 
+    if args.command == "transcript":
+        return client.fetch_transcript(args.recording_id)
+
     if args.command == "ping":
-        client = client or _build_runtime_client(store)
         client.get_user_info()
         return json.dumps({"ok": True}, indent=2)
 
-    return client.fetch_transcript(args.recording_id)
+    raise AssertionError(f"unhandled CLI command: {args.command}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
