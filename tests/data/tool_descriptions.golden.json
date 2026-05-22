@@ -144,7 +144,7 @@
     "name": "list_folders"
   },
   {
-    "description": "Trigger transcription and summarization for a recording, blocking until both jobs complete.",
+    "description": "Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",
     "inputSchema": {
       "properties": {
         "diarization": {
@@ -164,6 +164,16 @@
         },
         "template_type": {
           "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
+          "type": "string"
+        },
+        "wait": {
+          "default": "transcript",
+          "description": "How long to block after the transcribe/summarize request is accepted: 'none' returns immediately with {recording_id, accepted}, 'transcript' waits only for transcript readiness, and 'summary' waits for both transcript and summary.",
+          "enum": [
+            "none",
+            "transcript",
+            "summary"
+          ],
           "type": "string"
         }
       },
