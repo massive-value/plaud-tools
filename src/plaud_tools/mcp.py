@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
+from .query import filter_recordings, parse_isoish, summarize_recording
 
 log = logging.getLogger(__name__)
 
@@ -105,44 +106,6 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
         return _error_result(str(exc), error_code="api_error", retryable=False)
 
 
-def _parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> int:
-    try:
-        normalized = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if end_of_day and "T" not in value:
-            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return int(dt.timestamp() * 1000)
-    except ValueError as exc:
-        raise ValueError(f"Invalid {field_name} value: {value}") from exc
-
-
-def _filter_recordings(items: list[Any], *, since_ms, until_ms, query, folder_id):
-    filtered = list(items)
-    if since_ms is not None:
-        filtered = [item for item in filtered if item.start_time >= since_ms]
-    if until_ms is not None:
-        filtered = [item for item in filtered if item.start_time <= until_ms]
-    if query:
-        query_lower = query.lower()
-        filtered = [item for item in filtered if query_lower in item.filename.lower()]
-    if folder_id is None:
-        return filtered
-    if folder_id == "":
-        return [item for item in filtered if not item.filetag_id_list]
-    return [item for item in filtered if folder_id in item.filetag_id_list]
-
-
-def _summarize_recording(item: Any) -> dict[str, Any]:
-    return {
-        "id": item.id,
-        "title": item.filename,
-        "date": datetime.fromtimestamp(item.start_time / 1000).isoformat()[:16],
-        "duration_minutes": round(item.duration / 60000),
-        "has_transcript": item.is_trans,
-        "folder_id": item.filetag_id_list[0] if item.filetag_id_list else None,
-    }
-
-
 def _summarize_detail(detail: Any) -> dict[str, Any]:
     extra = detail.extra_data or {}
     return {
@@ -173,19 +136,18 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         after: int = 0,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
-            since_ms = _parse_isoish(since, "since") if since else None
-            until_ms = _parse_isoish(until, "until", end_of_day=True) if until else None
+            since_ms = parse_isoish(since, "since") if since else None
+            until_ms = parse_isoish(until, "until", end_of_day=True) if until else None
             has_filters = any(value is not None for value in (since, until, query, folder))
             if has_filters:
                 all_items = client.list_recordings()
-                all_items = _filter_recordings(
+                all_items = filter_recordings(
                     all_items,
                     since_ms=since_ms,
                     until_ms=until_ms,
                     query=query,
                     folder_id=folder,
                 )
-                all_items = sorted(all_items, key=lambda item: item.start_time, reverse=True)
                 page = all_items[after:after + limit]
                 has_more = len(all_items) > after + limit
             else:
@@ -201,7 +163,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 has_more = len(page) == limit
             next_after = after + len(page) if has_more else None
             return _json_result({
-                "items": [_summarize_recording(item) for item in page],
+                "items": [summarize_recording(item) for item in page],
                 "next_after": next_after,
             })
 
@@ -329,7 +291,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             rec_title = title or path.stem
             start_ms: int | None = None
             if isinstance(start_time, str):
-                start_ms = _parse_isoish(start_time, "start_time")
+                start_ms = parse_isoish(start_time, "start_time")
             elif isinstance(start_time, int):
                 start_ms = start_time
             recording = client.upload_recording(audio_data, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset)
@@ -416,7 +378,3 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "merge_recordings": merge_recordings,
     }
 
-
-# Keep old name as alias during transition
-def build_read_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Callable[..., dict[str, Any]]]:
-    return build_handlers(get_client)

@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .models import BASE_URLS, BROWSER_USER_AGENT, FileTag, Recording, RecordingDetail, TaskStatus
+from .query import summarize_recording as _summarize_recording_impl
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
 
@@ -333,10 +334,11 @@ class PlaudClient:
             template_type = "AUTO-SELECT"
         if language and "-" in language:
             language = language.split("-")[0]
+        utcoffset = datetime.now().astimezone().utcoffset()
         info = json.dumps(
             {
                 "language": language or "auto",
-                "timezone": -datetime.now().astimezone().utcoffset().total_seconds() / 3600 if datetime.now().astimezone().utcoffset() is not None else 0,
+                "timezone": -utcoffset.total_seconds() / 3600 if utcoffset is not None else 0,
                 "diarization": 0 if diarization is False else 1,
                 "llm": llm or "auto",
             }
@@ -588,16 +590,7 @@ class PlaudClient:
             parts.append(f"{speaker}: {content}" if speaker else content)
         return "\n\n".join(parts)
 
-    def _fetch_transcript(self, raw: dict[str, Any]) -> str:
-        return self._format_transcript_from_segments(self._fetch_transcript_segments(raw))
-
 
 def summarize_recording_for_cli(recording: Recording) -> dict[str, Any]:
-    return {
-        "id": recording.id,
-        "title": recording.filename,
-        "date": datetime.fromtimestamp(recording.start_time / 1000).isoformat()[:16],
-        "duration_minutes": round(recording.duration / 60000),
-        "has_transcript": recording.is_trans,
-        "folder_id": recording.filetag_id_list[0] if recording.filetag_id_list else None,
-    }
+    """Re-export shim — canonical implementation lives in query.summarize_recording."""
+    return _summarize_recording_impl(recording)
