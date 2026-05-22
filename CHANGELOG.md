@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP `process_recording` now defaults to `wait="transcript"` so MCP clients do
   not block on long-running summary generation unless they explicitly request it. (#31)
 
+- First-run welcome: on first launch after `install.ps1`, a Windows toast
+  notification appears explaining where the tray icon lives.  `HomeWindow`
+  also shows a one-time blue banner directing the user to "Configure AI
+  Agents…"; the banner is dismissed when that button is clicked.  The
+  `plaud_just_installed.txt` sentinel is consumed immediately so neither
+  surface repeats on subsequent launches.  Falls back gracefully when the
+  toast API is unavailable.
+
 ### Fixed
 
 - `TrayApp._quit()` no longer calls `icon.stop()` synchronously on the

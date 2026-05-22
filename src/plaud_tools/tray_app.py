@@ -451,6 +451,75 @@ def _check_for_update() -> tuple[str, str, str | None] | None:
 
 
 # ---------------------------------------------------------------------------
+# First-run toast notification
+# ---------------------------------------------------------------------------
+
+def _show_install_toast() -> None:
+    """Show a Windows 11 toast notification explaining the tray icon.
+
+    Uses the ``winrt`` (winsdk) package when available, then falls back to a
+    hidden PowerShell snippet.  Any failure is logged and silently ignored so
+    it never blocks the tray from starting.
+    """
+    title = APP_NAME
+    message = (
+        "PlaudTools is now running in your system tray — "
+        "click the icon to sign in."
+    )
+
+    # --- attempt 1: winrt / winsdk ---
+    try:
+        from winrt.windows.ui.notifications import (  # type: ignore[import]
+            ToastNotificationManager,
+            ToastNotification,
+        )
+        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import]
+
+        app_id = "PlaudTools.TrayApp"
+        xml_str = (
+            "<toast>"
+            f"<visual><binding template='ToastGeneric'>"
+            f"<text>{title}</text>"
+            f"<text>{message}</text>"
+            "</binding></visual>"
+            "</toast>"
+        )
+        doc = XmlDocument()
+        doc.load_xml(xml_str)
+        notifier = ToastNotificationManager.create_toast_notifier(app_id)
+        notifier.show(ToastNotification(doc))
+        logging.info("First-run toast shown via winrt")
+        return
+    except Exception:
+        logging.debug("winrt toast unavailable, falling back to PowerShell", exc_info=True)
+
+    # --- attempt 2: hidden PowerShell snippet ---
+    if sys.platform != "win32":
+        return
+    try:
+        ps_script = (
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"
+            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
+            "$xml.LoadXml('<toast>"
+            "<visual><binding template=\"ToastGeneric\">"
+            f"<text>{title}</text>"
+            f"<text>{message}</text>"
+            "</binding></visual></toast>')\n"
+            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
+            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"
+            "$notifier.Show($toast)\n"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        logging.info("First-run toast dispatched via PowerShell")
+    except Exception:
+        logging.warning("Could not show first-run toast notification", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Login window
 # ---------------------------------------------------------------------------
 
@@ -1015,6 +1084,8 @@ class HomeWindow:
         self._status_label: ttk.Label | None = None
         self._test_btn: ttk.Button | None = None
         self._update_btn: ttk.Button | None = None
+        self._welcome_banner_armed: bool = False
+        self._welcome_banner: tk.Frame | None = None
 
     def show(self) -> None:
         if self._win and self._win.winfo_exists():
@@ -1034,6 +1105,23 @@ class HomeWindow:
         frame = ttk.Frame(win, padding=20)
         frame.pack(fill="both", expand=True)
 
+        # Welcome banner — shown once after first install, dismissed on
+        # "Configure AI Agents…" click.
+        self._welcome_banner = None
+        if self._welcome_banner_armed:
+            banner = tk.Frame(frame, background="#1d4ed8", padx=10, pady=8)
+            banner.pack(fill="x", pady=(0, 10))
+            tk.Label(
+                banner,
+                text="Welcome to PlaudTools — connect your AI client below.",
+                background="#1d4ed8",
+                foreground="white",
+                font=("Segoe UI", 9),
+                wraplength=340,
+                justify="left",
+            ).pack(anchor="w")
+            self._welcome_banner = banner
+
         self._session_var = tk.StringVar()
         ttk.Label(frame, textvariable=self._session_var,
                   font=("", 10, "bold"), wraplength=360).pack(anchor="w")
@@ -1045,7 +1133,7 @@ class HomeWindow:
         btn_frame.pack(fill="x")
 
         ttk.Button(btn_frame, text="Configure AI Agents…",
-                   command=self._on_open_wizard).pack(fill="x", pady=(0, 6))
+                   command=self._handle_open_wizard).pack(fill="x", pady=(0, 6))
 
         self._test_btn = ttk.Button(btn_frame, text="Test Connection",
                                      command=self._handle_test)
@@ -1080,6 +1168,23 @@ class HomeWindow:
 
         win.lift()
         win.focus_force()
+
+    def arm_welcome_banner(self) -> None:
+        """Mark the next open() call as a first-run welcome.  No-op if the
+        window is already open (the banner would have been shown already)."""
+        self._welcome_banner_armed = True
+
+    def _handle_open_wizard(self) -> None:
+        """Open the AI-client wizard and dismiss the welcome banner on first click."""
+        if self._welcome_banner_armed:
+            self._welcome_banner_armed = False
+            if self._welcome_banner is not None:
+                try:
+                    self._welcome_banner.destroy()
+                except Exception:
+                    pass
+                self._welcome_banner = None
+        self._on_open_wizard()
 
     def _refresh_session(self) -> None:
         if self._session_var is not None:
@@ -1512,15 +1617,19 @@ class TrayApp:
             except Exception:
                 logging.warning("Could not read update sentinel", exc_info=True)
 
-        # If launched by install.ps1, open HomeWindow (existing creds path —
-        # the no-session path is already handled by the login window block above).
+        # If launched by install.ps1, show a Windows toast notification and
+        # wire the HomeWindow welcome banner.  The sentinel is consumed here
+        # (before the mainloop) so it is only shown once regardless of which
+        # surface is seen first.
         install_sentinel = Path(tempfile.gettempdir()) / "plaud_just_installed.txt"
         if install_sentinel.exists():
             try:
                 install_sentinel.unlink(missing_ok=True)
             except Exception:
-                pass
+                logging.warning("Could not delete install sentinel", exc_info=True)
+            _show_install_toast()
             if self._session and self._home_win:
+                self._home_win.arm_welcome_banner()
                 root.after(500, self._home_win.show)
 
         root.mainloop()
