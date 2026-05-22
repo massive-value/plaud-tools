@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
 import random
 import subprocess
@@ -41,14 +42,22 @@ GITHUB_REPO = "massive-value/plaud-tools"
 # Logging (writes to %LOCALAPPDATA%\PlaudTools\tray.log in frozen builds)
 # ---------------------------------------------------------------------------
 
+_TEST_CONNECTION_TIMEOUT = 15  # seconds
+
+
 def _setup_logging() -> None:
     log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
     log_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(log_dir / "tray.log"),
-        level=logging.DEBUG,
-        format="%(asctime)s %(levelname)s %(message)s",
+    handler = logging.handlers.RotatingFileHandler(
+        str(log_dir / "tray.log"),
+        maxBytes=1_000_000,
+        backupCount=3,
         encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.basicConfig(
+        level=logging.DEBUG,
+        handlers=[handler],
     )
     # Also capture unhandled tkinter callback exceptions
     def _tk_error(exc, val, tb):  # type: ignore[override]
@@ -1531,16 +1540,35 @@ class TrayApp:
         threading.Thread(target=_worker, daemon=True).start()
 
     def _test_connection(self, on_done: Callable[[bool, str], None]) -> None:
-        """Run get_user_info on a worker thread and deliver result on the tkinter thread."""
+        """Run get_user_info on a worker thread and deliver result on the tkinter thread.
+
+        If the Plaud API does not respond within _TEST_CONNECTION_TIMEOUT seconds,
+        on_done is called with a timeout error message.
+        """
+        result_holder: list[tuple[bool, str]] = []
+        done_event = threading.Event()
+
         def _worker() -> None:
             try:
                 PlaudClient(self._manager).get_user_info()
-                ok, msg = True, "Successfully connected to Plaud."
+                result_holder.append((True, "Successfully connected to Plaud."))
             except Exception as exc:
-                ok, msg = False, str(exc)
+                result_holder.append((False, str(exc)))
+            done_event.set()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+        def _wait_and_deliver() -> None:
+            finished = done_event.wait(timeout=_TEST_CONNECTION_TIMEOUT)
+            if finished and result_holder:
+                ok, msg = result_holder[0]
+            else:
+                ok, msg = False, "Plaud connection timed out."
             if self._root:
                 self._root.after(0, lambda: on_done(ok, msg))
-        threading.Thread(target=_worker, daemon=True).start()
+
+        threading.Thread(target=_wait_and_deliver, daemon=True).start()
 
     def _session_label(self) -> str:
         if self._session is None:
