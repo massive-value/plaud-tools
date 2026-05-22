@@ -227,6 +227,22 @@ Add a `plaud` entry to `~/.claude.json` (user-level) or `.claude.json` in your p
 
 ## Troubleshooting
 
+### Broken or partial install (repair)
+
+If the tray fails to start, files were quarantined by antivirus, or the install directory is in an inconsistent state, re-run the installer with `-Repair`:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1))) -Repair
+```
+
+`-Repair` shuts down any running PlaudTools and plaud-mcp processes, wipes the existing install directory, and reinstalls from the latest release. Use `-Force` for the same effect — `-Repair` is an alias intended to make support conversations clearer.
+
+If you are already on the latest version but want a clean reinstall anyway, `-Force` bypasses the "already up to date" guard:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1))) -Force
+```
+
 ### Session expired
 
 ```

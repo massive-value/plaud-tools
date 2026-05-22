@@ -43,6 +43,48 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 
+# Probe the zip and return the correct extraction destination.
+#
+# Known shapes:
+#   A) Single top-level directory (e.g. PlaudTools\...): extract to parent of
+#      $InstallDir so files land at Programs\PlaudTools\ not Programs\PlaudTools\PlaudTools\.
+#   B) Files at root of zip (flat layout): extract directly to $InstallDir.
+#
+# Returns the extraction destination path as a string.
+function Get-ZipExtractDestination {
+    param([string]$ZipPath, [string]$InstallDir)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        # Collect distinct top-level names (first path segment of every non-empty entry).
+        $topLevel = @{}
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName.TrimStart('/', '\')
+            if (-not $name) { continue }
+            $seg = ($name -split '[/\\]')[0]
+            if ($seg) { $topLevel[$seg] = 1 }
+        }
+
+        $roots = @($topLevel.Keys)
+
+        if ($roots.Count -eq 1) {
+            # Shape A: single top-level folder.  Verify it is a directory (has children).
+            $prefix = $roots[0] + '/'
+            $hasChildren = $zip.Entries | Where-Object { $_.FullName -ne $prefix -and $_.FullName.StartsWith($prefix) }
+            if ($hasChildren) {
+                # Extract to parent — the folder inside the zip becomes $InstallDir.
+                return (Split-Path $InstallDir -Parent)
+            }
+        }
+
+        # Shape B (flat, or unknown multi-root): extract directly into $InstallDir.
+        return $InstallDir
+    } finally {
+        $zip.Dispose()
+    }
+}
+
 # Wait for the tray process to exit.
 while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
     Start-Sleep -Seconds 1
@@ -68,7 +110,16 @@ if ($mcpProcs) {
     }
 }
 
+# Probe the zip layout so we extract to the right destination regardless of
+# whether the zip has a top-level PlaudTools\ folder (shape A) or ships
+# files at the root (shape B).  This overrides the $ExtractDir passed by the
+# caller so the in-app update path is as robust as the install.ps1 path.
+$ExtractDir = Get-ZipExtractDestination -ZipPath $ZipPath -InstallDir $InstallDir
+
 # Extract the update archive.
+if (-not (Test-Path $ExtractDir)) {
+    New-Item -ItemType Directory -Path $ExtractDir | Out-Null
+}
 $ProgressPreference = 'SilentlyContinue'
 Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
 Remove-Item -Path $ZipPath -ErrorAction SilentlyContinue

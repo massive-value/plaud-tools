@@ -28,6 +28,7 @@ __all__ = [
     "enumerate_mcp_processes",
     "shutdown_mcp_children",
     "mcp_shutdown_ps1_snippet",
+    "zip_layout_probe_ps1_snippet",
 ]
 
 logger = logging.getLogger(__name__)
@@ -269,5 +270,63 @@ def mcp_shutdown_ps1_snippet(install_dir: str, grace_seconds: int = 3) -> str:
         f"    while (($mcpProcs | Where-Object {{ !$_.HasExited }}) -and (Get-Date) -lt $exitDeadline) {{\n"
         f"        Start-Sleep -Milliseconds 100\n"
         f"    }}\n"
+        f"}}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# PowerShell snippet: zip layout probe for PS1 generators
+# ---------------------------------------------------------------------------
+
+def zip_layout_probe_ps1_snippet(zip_var: str, install_dir_var: str, dest_var: str) -> str:
+    """Return a PowerShell code block that probes a zip's layout and sets *dest_var*.
+
+    Known shapes:
+      A) Single top-level directory (e.g. ``PlaudTools\\...``): sets *dest_var*
+         to the **parent** of the install dir so files land at
+         ``Programs\\PlaudTools\\`` not ``Programs\\PlaudTools\\PlaudTools\\``.
+      B) Files at root of zip (flat layout): sets *dest_var* to the install dir
+         itself.
+
+    Parameters
+    ----------
+    zip_var:
+        Name of the PS variable (without ``$``) holding the zip file path.
+    install_dir_var:
+        Name of the PS variable (without ``$``) holding the install directory.
+    dest_var:
+        Name of the PS variable (without ``$``) to assign the destination to.
+
+    The returned string is ready to be embedded verbatim in a PS1 file.
+    """
+    return (
+        f"# Probe zip layout: shape A (top-level folder) → extract to parent;\n"
+        f"# shape B (flat/multi-root) → extract directly to install dir.\n"
+        f"Add-Type -AssemblyName System.IO.Compression.FileSystem\n"
+        f"$_zip = [System.IO.Compression.ZipFile]::OpenRead(${zip_var})\n"
+        f"try {{\n"
+        f"    $_topLevel = @{{}}\n"
+        f"    foreach ($_e in $_zip.Entries) {{\n"
+        f"        $_name = $_e.FullName.TrimStart('/', '\\')\n"
+        f"        if (-not $_name) {{ continue }}\n"
+        f"        $_seg = ($_name -split '[/\\\\]')[0]\n"
+        f"        if ($_seg) {{ $_topLevel[$_seg] = 1 }}\n"
+        f"    }}\n"
+        f"    $_roots = @($_topLevel.Keys)\n"
+        f"    if ($_roots.Count -eq 1) {{\n"
+        f"        $_prefix = $_roots[0] + '/'\n"
+        f"        $_hasChildren = $_zip.Entries | Where-Object {{\n"
+        f"            $_.FullName -ne $_prefix -and $_.FullName.StartsWith($_prefix)\n"
+        f"        }}\n"
+        f"        if ($_hasChildren) {{\n"
+        f"            ${dest_var} = Split-Path ${install_dir_var} -Parent\n"
+        f"        }} else {{\n"
+        f"            ${dest_var} = ${install_dir_var}\n"
+        f"        }}\n"
+        f"    }} else {{\n"
+        f"        ${dest_var} = ${install_dir_var}\n"
+        f"    }}\n"
+        f"}} finally {{\n"
+        f"    $_zip.Dispose()\n"
         f"}}\n"
     )
