@@ -335,6 +335,12 @@ try {
     Write-Host "Location: $installDir"
     Write-Host 'Open a new terminal for PATH changes to take effect.'
 
+    if ($Force) {
+        Write-Host ''
+        Write-Host 'NOTE: The MCP server was replaced. Restart any coding agents (Claude Code,' -ForegroundColor Cyan
+        Write-Host 'Cursor, Copilot, etc.) so they pick up the new plaud-mcp process.' -ForegroundColor Cyan
+    }
+
 } catch {
     Write-Host ''
     Write-Host "Installation failed: $_" -ForegroundColor Red
