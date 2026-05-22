@@ -39,6 +39,7 @@ from .setup import (
     _assets_path,
     _autostart_enabled,
     _register_aumid,
+    _register_com_activator,
     _set_app_icon,
     _set_autostart,
     _setup_logging,
@@ -289,6 +290,7 @@ class TrayApp(_BackgroundMixin):
 
     def _run(self) -> None:
         _register_aumid()
+        _register_com_activator()
         self._load_session()
         self._icons = _load_icons()
         logging.debug("icons loaded from %s", _assets_path())
@@ -409,6 +411,10 @@ class TrayApp(_BackgroundMixin):
 
 
 def main() -> None:
+    if "--com-activate" in sys.argv:
+        from .com_activation import run_com_activator
+        run_com_activator()
+        return
     if not _acquire_instance_lock():
         return
     if sys.platform == "win32":

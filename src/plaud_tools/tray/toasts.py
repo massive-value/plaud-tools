@@ -107,12 +107,12 @@ def _show_powershell_toast(title: str, message: str, info_log: str) -> None:
 def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
     """Show a Windows toast notifying the user their Plaud session expired.
 
-    The ``on_click`` callback is currently unused — winrt activation callbacks
-    require WinRT message-loop integration that is not available here. The
-    parameter is retained for callers that pass it positionally.
+    Clicking the toast invokes the COM activator (issue #83), which signals
+    _ACTIVATE_EVENT so the running tray opens the login window.  The
+    ``on_click`` parameter is retained for callers that pass it positionally.
     """
     title = APP_NAME
-    message = "Plaud session expired — click the tray icon to sign in again."
+    message = "Plaud session expired — click here to sign in again."
     if _show_winrt_toast(title, message, "Session-expired toast shown via winrt"):
         return
     _show_powershell_toast(title, message, "Session-expired toast dispatched via PowerShell")
@@ -133,7 +133,7 @@ def _show_install_toast() -> None:
 def _show_update_available_toast(version: str) -> None:
     """Show a Windows toast notifying the user that a new version is available."""
     title = f"{APP_NAME} — Update Available"
-    message = f"v{version} is ready — open the tray menu to install."
+    message = f"v{version} is ready — click here to install."
     if _show_winrt_toast(title, message, f"Update-available toast shown via winrt (v{version})"):
         return
     _show_powershell_toast(title, message, f"Update-available toast dispatched via PowerShell (v{version})")

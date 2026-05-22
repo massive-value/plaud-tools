@@ -127,9 +127,18 @@ def _acquire_instance_lock() -> bool:
 # Windows silently drops toasts from an AUMID that isn't registered under
 # HKCU\Software\Classes\AppUserModelId\{AUMID}.  This key must exist before
 # the first call to CreateToastNotifier — we write it once at startup.
+#
+# CustomActivator wires up COM click-activation so that clicking any toast
+# shown under this AUMID invokes _COM_ACTIVATOR_CLSID (issue #83).
 
 _TOAST_AUMID = "PlaudTools.TrayApp"
 _TOAST_AUMID_KEY = rf"Software\Classes\AppUserModelId\{_TOAST_AUMID}"
+
+# Imported here to avoid circular imports when com_activation.py uses setup.py.
+# The actual GUID lives in com_activation.py; we duplicate only the string so
+# setup.py has no dependency on comtypes at module load time.
+_COM_ACTIVATOR_CLSID = "{DC6F6422-E7ED-4F4E-BBDE-8332A399DBD5}"
+_COM_ACTIVATOR_KEY = rf"Software\Classes\CLSID\{_COM_ACTIVATOR_CLSID}"
 
 
 def _register_aumid() -> None:
@@ -140,12 +149,53 @@ def _register_aumid() -> None:
         import winreg
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _TOAST_AUMID_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
+            winreg.SetValueEx(key, "CustomActivator", 0, winreg.REG_SZ, _COM_ACTIVATOR_CLSID)
         ico = _assets_path() / "icon.ico"
         if ico.exists():
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _TOAST_AUMID_KEY, 0, winreg.KEY_SET_VALUE) as key:
                 winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(ico))
     except OSError:
         logging.warning("Could not register toast AUMID", exc_info=True)
+
+
+def _register_com_activator() -> None:
+    """Register the COM LocalServer32 activator CLSID (idempotent).
+
+    Writes:
+      HKCU\\Software\\Classes\\CLSID\\{CLSID}          (default = friendly name)
+      HKCU\\Software\\Classes\\CLSID\\{CLSID}\\LocalServer32  (default = exe --com-activate)
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+        exe = str(Path(sys.executable))
+        cmd = f'"{exe}" --com-activate'
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _COM_ACTIVATOR_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Plaud Tools Notification Activator")
+        localserver_key = _COM_ACTIVATOR_KEY + r"\LocalServer32"
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, localserver_key, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
+        logging.info("Registered COM activator %s → %s", _COM_ACTIVATOR_CLSID, cmd)
+    except OSError:
+        logging.warning("Could not register COM activator", exc_info=True)
+
+
+def _unregister_com_activator() -> None:
+    """Remove the COM activator CLSID registry keys (inverse of _register_com_activator)."""
+    if sys.platform != "win32":
+        return
+    import winreg
+    for subkey in (
+        _COM_ACTIVATOR_KEY + r"\LocalServer32",
+        _COM_ACTIVATOR_KEY,
+    ):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logging.warning("Could not remove COM activator key %s", subkey, exc_info=True)
 
 
 # Autostart (Windows registry)
@@ -404,6 +454,7 @@ __all__ = [
     "_setup_logging", "_mcp_exe", "_assets_path", "_set_app_icon", "_apply_theme",
     "_acquire_instance_lock", "_ACTIVATE_EVENT", "_AUTOSTART_KEY", "_AUTOSTART_NAME",
     "_register_aumid", "_TOAST_AUMID",
+    "_COM_ACTIVATOR_CLSID", "_register_com_activator", "_unregister_com_activator",
     "_autostart_enabled", "_set_autostart", "_install_dir", "_cli_dir",
     "_completions_dir", "_install_completions_dir", "_stale_sourcing_re",
     "_setup_cli_path", "_setup_ps_completions", "EnvStatus", "_check_cli_path",
