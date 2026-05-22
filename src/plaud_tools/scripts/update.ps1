@@ -3,26 +3,40 @@
     In-app update helper for Plaud Tools.
 
 .DESCRIPTION
-    Waits for the tray process to exit, shuts down scoped plaud-mcp processes,
-    extracts the update zip, restarts the tray, and cleans up.
+    Waits for the tray process to exit, shuts down scoped plaud-mcp processes
+    (retrying against external supervisors like Claude Desktop that respawn
+    them), extracts the update zip into the install directory, and restarts
+    the tray.
+
+    All output is captured to a transcript log at
+    $env:TEMP\plaud_update_<TrayPid>.log so failed runs are diagnosable.
+
+    On unrecoverable failure (plaud-mcp keeps respawning, locked files in the
+    install dir, etc.) the script writes a JSON sentinel at
+    $env:TEMP\plaud_update_failed.txt containing the reason and the log path.
+    The tray reads this on next launch and surfaces the failure to the user.
+
+    The tray is restarted in a `finally` block, so the user is never stranded
+    without a tray icon — even when the update itself fails.
 
 .PARAMETER TrayPid
     PID of the running PlaudTools.exe (tray app) to wait for.
 
 .PARAMETER InstallDir
-    Absolute path to the PlaudTools install directory (e.g. C:\Programs\PlaudTools).
+    Absolute path to the PlaudTools install directory.
 
 .PARAMETER ZipPath
     Absolute path to the downloaded PlaudTools.zip update archive.
 
 .PARAMETER ExtractDir
-    Directory to extract the zip into (typically the parent of InstallDir so the
-    top-level PlaudTools\ folder inside the zip lands correctly).
+    Hint for the extraction directory. Overridden at runtime based on the zip
+    layout, but accepted as a backstop for callers that still pass it.
 
-.PARAMETER SentinelPath
-    Optional path to a sentinel file written by the tray before it exits that
-    contains the new version string.  The script does not create this file; it
-    is already written by the Python side before Popen is called.
+.PARAMETER DispatcherPath
+    Optional path to the %TEMP% dispatcher PS1 that invoked this script. Deleted
+    after a successful run so %TEMP% does not accumulate stale .ps1 files. The
+    bundled update.ps1 itself is NEVER deleted — earlier versions self-deleted
+    it, which broke subsequent in-app updates.
 #>
 param(
     [Parameter(Mandatory)]
@@ -37,27 +51,65 @@ param(
     [Parameter(Mandatory)]
     [string]$ExtractDir,
 
+    [string]$DispatcherPath = "",
+
     [string]$SentinelPath = ""
 )
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 
+# ---------------------------------------------------------------------------
+# Diagnostics — transcript log + structured failure sentinel
+# ---------------------------------------------------------------------------
+
+$logPath        = Join-Path $env:TEMP "plaud_update_$TrayPid.log"
+$failSentinel   = Join-Path $env:TEMP "plaud_update_failed.txt"
+$successSentinel = Join-Path $env:TEMP "plaud_just_updated.txt"
+
+# Wipe any stale failure sentinel from a previous run so we never surface an
+# old failure on top of a successful update.
+Remove-Item $failSentinel -ErrorAction SilentlyContinue
+
+try {
+    Start-Transcript -Path $logPath -Force | Out-Null
+} catch {
+    # Transcript is best-effort; continue without it.
+}
+
+function Write-FailureSentinel {
+    param([string]$Reason)
+    try {
+        $payload = [ordered]@{
+            reason   = $Reason
+            log      = $logPath
+            time     = (Get-Date).ToString('o')
+            tray_pid = $TrayPid
+        } | ConvertTo-Json -Compress
+        Set-Content -Path $failSentinel -Value $payload -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # Best effort — the reason is still in the transcript log.
+    }
+    # A failed update must not leave the success sentinel behind, otherwise the
+    # restarted (still-old) tray would falsely announce a successful upgrade.
+    Remove-Item $successSentinel -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
 # Probe the zip and return the correct extraction destination.
 #
-# Known shapes:
-#   A) Single top-level directory (e.g. PlaudTools\...): extract to parent of
-#      $InstallDir so files land at Programs\PlaudTools\ not Programs\PlaudTools\PlaudTools\.
-#   B) Files at root of zip (flat layout): extract directly to $InstallDir.
-#
-# Returns the extraction destination path as a string.
+#   A) Single top-level directory (PlaudTools\...): extract to parent of
+#      $InstallDir so files land at Programs\PlaudTools\ not
+#      Programs\PlaudTools\PlaudTools\.
+#   B) Flat layout (files at root of zip): extract directly to $InstallDir.
+# ---------------------------------------------------------------------------
+
 function Get-ZipExtractDestination {
     param([string]$ZipPath, [string]$InstallDir)
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
     try {
-        # Collect distinct top-level names (first path segment of every non-empty entry).
         $topLevel = @{}
         foreach ($entry in $zip.Entries) {
             $name = $entry.FullName.TrimStart('/', '\')
@@ -65,70 +117,161 @@ function Get-ZipExtractDestination {
             $seg = ($name -split '[/\\]')[0]
             if ($seg) { $topLevel[$seg] = 1 }
         }
-
         $roots = @($topLevel.Keys)
-
         if ($roots.Count -eq 1) {
-            # Shape A: single top-level folder.  Verify it is a directory (has children).
             $prefix = $roots[0] + '/'
-            $hasChildren = $zip.Entries | Where-Object { $_.FullName -ne $prefix -and $_.FullName.StartsWith($prefix) }
+            $hasChildren = $zip.Entries | Where-Object {
+                $_.FullName -ne $prefix -and $_.FullName.StartsWith($prefix)
+            }
             if ($hasChildren) {
-                # Extract to parent — the folder inside the zip becomes $InstallDir.
                 return (Split-Path $InstallDir -Parent)
             }
         }
-
-        # Shape B (flat, or unknown multi-root): extract directly into $InstallDir.
         return $InstallDir
     } finally {
         $zip.Dispose()
     }
 }
 
-# Wait for the tray process to exit.
-while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
-    Start-Sleep -Seconds 1
-}
+# ---------------------------------------------------------------------------
+# Stop every plaud-mcp.exe whose Path is under $InstallDir, and confirm it
+# stays dead. Returns $true when no scoped plaud-mcp has been alive for
+# $StableMs milliseconds. Returns $false if a supervisor keeps respawning it
+# after $MaxAttempts attempts.
+#
+# This is the bug the v0.2.0 → 0.2.1 update path hit: when Claude Desktop
+# launches plaud-mcp, killing the process just causes Claude to relaunch it
+# almost immediately, and the respawned exe keeps mcp\_internal\*.dll locked,
+# causing Expand-Archive to throw and the script to bail.
+# ---------------------------------------------------------------------------
 
-# Shut down plaud-mcp processes scoped to the install directory.
-$installDir = $InstallDir.TrimEnd('\').TrimEnd('/')
-$mcpProcs = Get-Process -Name 'plaud-mcp' -ErrorAction SilentlyContinue | Where-Object {
-    $_.Path -and $_.Path.ToLower().StartsWith($installDir.ToLower())
-}
-if ($mcpProcs) {
-    foreach ($p in $mcpProcs) { $p.CloseMainWindow() | Out-Null }
-    $deadline = (Get-Date).AddSeconds(3)
-    while ($mcpProcs | Where-Object { !$_.HasExited }) {
-        if ((Get-Date) -gt $deadline) { break }
-        Start-Sleep -Milliseconds 100
+function Stop-PlaudMcpScoped {
+    param(
+        [string]$InstallDir,
+        [int]$MaxAttempts = 8,
+        [int]$StableMs = 500
+    )
+
+    $scope = $InstallDir.TrimEnd('\').TrimEnd('/').ToLower()
+
+    $findProcs = {
+        Get-Process -Name 'plaud-mcp' -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.ToLower().StartsWith($scope)
+        }
     }
-    $mcpProcs | Where-Object { !$_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
-    # Poll until fully exited
-    $exitDeadline = (Get-Date).AddSeconds(2)
-    while (($mcpProcs | Where-Object { !$_.HasExited }) -and (Get-Date) -lt $exitDeadline) {
-        Start-Sleep -Milliseconds 100
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $procs = & $findProcs
+        if (-not $procs) {
+            # Nothing alive — wait $StableMs to make sure nobody respawns it.
+            Start-Sleep -Milliseconds $StableMs
+            if (-not (& $findProcs)) {
+                Write-Host "plaud-mcp confirmed stopped (attempt $attempt)"
+                return $true
+            }
+            continue
+        }
+
+        Write-Host "Attempt $attempt`: killing $($procs.Count) plaud-mcp process(es)"
+        foreach ($p in $procs) {
+            try { $p.CloseMainWindow() | Out-Null } catch {}
+        }
+        Start-Sleep -Milliseconds 150
+        $procs = & $findProcs
+        if ($procs) {
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    return $false
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+try {
+    Write-Host "Plaud Tools updater starting at $(Get-Date -Format 'o')"
+    Write-Host "  TrayPid        = $TrayPid"
+    Write-Host "  InstallDir     = $InstallDir"
+    Write-Host "  ZipPath        = $ZipPath"
+    Write-Host "  ExtractDir     = $ExtractDir (hint; may be overridden)"
+    Write-Host "  DispatcherPath = $DispatcherPath"
+
+    # 1. Wait for the tray to exit.
+    while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
+        Start-Sleep -Seconds 1
+    }
+    Write-Host "Tray PID $TrayPid has exited"
+
+    # 2. Make sure scoped plaud-mcp is dead AND stays dead long enough to
+    #    extract over its locked DLLs.
+    if (-not (Stop-PlaudMcpScoped -InstallDir $InstallDir)) {
+        $msg = "plaud-mcp.exe keeps respawning under $InstallDir. Close Claude Desktop (or any other MCP client that has Plaud Tools registered) and run the update again."
+        Write-Host "FAIL: $msg"
+        Write-FailureSentinel -Reason $msg
+        throw $msg
+    }
+
+    # 3. Probe the zip layout and pick the right destination. This overrides
+    #    the $ExtractDir hint from the caller so the in-app update path is as
+    #    robust as the install.ps1 path.
+    $destination = Get-ZipExtractDestination -ZipPath $ZipPath -InstallDir $InstallDir
+    Write-Host "Extracting to $destination"
+
+    if (-not (Test-Path $destination)) {
+        New-Item -ItemType Directory -Path $destination | Out-Null
+    }
+
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+        Expand-Archive -Path $ZipPath -DestinationPath $destination -Force -ErrorAction Stop
+    } catch {
+        $msg = "Could not extract update zip: $($_.Exception.Message)"
+        Write-Host "FAIL: $msg"
+        Write-FailureSentinel -Reason $msg
+        throw
+    }
+    Write-Host "Extraction complete"
+
+    # 4. Cleanup: remove the zip and the %TEMP% dispatcher. The bundled
+    #    update.ps1 (this very script) is NOT deleted — earlier versions
+    #    self-deleted via $MyInvocation.MyCommand.Path, which broke subsequent
+    #    in-app updates because the script vanished after the first successful
+    #    upgrade.
+    Remove-Item $ZipPath -ErrorAction SilentlyContinue
+    if ($DispatcherPath -and (Test-Path $DispatcherPath)) {
+        Remove-Item $DispatcherPath -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "Update succeeded"
+}
+catch {
+    Write-Host "Updater aborted: $_"
+    # Backstop: if the failure path that threw did not already write a
+    # sentinel (e.g. an unexpected exception from Get-ZipExtractDestination or
+    # the wait loop), record one here so the tray can still surface the
+    # failure on the next launch.
+    if (-not (Test-Path $failSentinel)) {
+        Write-FailureSentinel -Reason "Updater aborted: $($_.Exception.Message)"
     }
 }
+finally {
+    # 5. Always restart the tray so the user is not stranded after a failed
+    #    update. If the new tray bundle is in place, we get the new version;
+    #    if extraction failed, we get the old one back — better than nothing.
+    $trayExe = Join-Path $InstallDir 'PlaudTools.exe'
+    if (Test-Path $trayExe) {
+        try {
+            Start-Process $trayExe -ErrorAction Stop
+            Write-Host "Tray restarted from $trayExe"
+        } catch {
+            Write-Host "Could not restart tray: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Host "Tray exe missing at $trayExe — cannot restart"
+    }
 
-# Probe the zip layout so we extract to the right destination regardless of
-# whether the zip has a top-level PlaudTools\ folder (shape A) or ships
-# files at the root (shape B).  This overrides the $ExtractDir passed by the
-# caller so the in-app update path is as robust as the install.ps1 path.
-$ExtractDir = Get-ZipExtractDestination -ZipPath $ZipPath -InstallDir $InstallDir
-
-# Extract the update archive.
-if (-not (Test-Path $ExtractDir)) {
-    New-Item -ItemType Directory -Path $ExtractDir | Out-Null
+    try { Stop-Transcript | Out-Null } catch {}
 }
-$ProgressPreference = 'SilentlyContinue'
-Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-Remove-Item -Path $ZipPath -ErrorAction SilentlyContinue
-
-# Restart the tray.
-$trayExe = Join-Path $InstallDir 'PlaudTools.exe'
-if (Test-Path $trayExe) {
-    Start-Process $trayExe
-}
-
-# Self-destruct.
-Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue

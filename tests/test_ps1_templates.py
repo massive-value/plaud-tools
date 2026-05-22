@@ -97,9 +97,71 @@ def test_update_ps1_starts_tray_after_update():
     assert "PlaudTools.exe" in content
 
 
-def test_update_ps1_self_destructs():
+def test_update_ps1_does_not_self_delete():
+    """update.ps1 must NOT delete itself.
+
+    Earlier versions ended with ``Remove-Item $MyInvocation.MyCommand.Path``,
+    which deleted the bundled update.ps1 from the install dir on every run.
+    After the first successful in-app update the script was gone, so any
+    subsequent in-app update silently failed because the dispatcher could not
+    find update.ps1 to invoke. The %TEMP% dispatcher is cleaned up via the
+    -DispatcherPath parameter instead.
+    """
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
-    assert "Remove-Item $MyInvocation.MyCommand.Path" in content
+    # Strip the comment-based historical reference so we only check actual code.
+    code_only = "\n".join(
+        line for line in content.splitlines()
+        if not line.lstrip().startswith("#") and "$MyInvocation" not in line.split("#", 1)[-1]
+    )
+    assert "Remove-Item $MyInvocation.MyCommand.Path" not in code_only
+    assert "Remove-Item $PSCommandPath" not in code_only
+
+
+def test_update_ps1_has_transcript_logging():
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "Start-Transcript" in content
+    assert "plaud_update_" in content  # log filename pattern
+
+
+def test_update_ps1_writes_failure_sentinel_on_error():
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "plaud_update_failed.txt" in content
+    assert "Write-FailureSentinel" in content
+
+
+def test_update_ps1_clears_success_sentinel_on_failure():
+    """A failed update must not leave plaud_just_updated.txt behind, otherwise
+    the restarted old tray would falsely announce a successful upgrade.
+    """
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "plaud_just_updated.txt" in content
+
+
+def test_update_ps1_retries_mcp_kill():
+    """Kill loop must retry against external supervisors (Claude Desktop)
+    that respawn plaud-mcp after Stop-Process.
+    """
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "Stop-PlaudMcpScoped" in content
+    # MaxAttempts parameter must exist with a value > 1
+    assert "MaxAttempts" in content
+
+
+def test_update_ps1_restarts_tray_in_finally():
+    """The tray must restart even when the update body throws, so the user
+    is never stranded without a tray icon.
+    """
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "finally" in content
+    # Restart call lives inside the finally block.
+    finally_block = content.split("finally", 1)[1]
+    assert "Start-Process" in finally_block
+    assert "PlaudTools.exe" in finally_block
+
+
+def test_update_ps1_accepts_dispatcher_path_param():
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "DispatcherPath" in content
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +312,39 @@ def test_render_update_ps1_uses_call_operator():
     )
     # Must use & 'path' invocation style
     assert result.lstrip().startswith("&")
+
+
+def test_render_update_ps1_omits_dispatcher_path_when_not_provided():
+    result = render_update_ps1(
+        tray_pid=1,
+        install_dir=r"C:\Programs\PlaudTools",
+        zip_path=r"C:\Temp\update.zip",
+        extract_dir=r"C:\Programs",
+    )
+    assert "-DispatcherPath" not in result
+
+
+def test_render_update_ps1_includes_dispatcher_path_when_provided():
+    result = render_update_ps1(
+        tray_pid=1,
+        install_dir=r"C:\Programs\PlaudTools",
+        zip_path=r"C:\Temp\update.zip",
+        extract_dir=r"C:\Programs",
+        dispatcher_path=r"C:\Temp\plaud_update_1.ps1",
+    )
+    assert "-DispatcherPath" in result
+    assert r"C:\Temp\plaud_update_1.ps1" in result
+
+
+def test_render_update_ps1_escapes_single_quote_in_dispatcher_path():
+    result = render_update_ps1(
+        tray_pid=1,
+        install_dir=r"C:\Programs\PlaudTools",
+        zip_path=r"C:\Temp\update.zip",
+        extract_dir=r"C:\Programs",
+        dispatcher_path=r"C:\Temp\It's_dispatch.ps1",
+    )
+    assert "It''s_dispatch.ps1" in result
 
 
 # ---------------------------------------------------------------------------

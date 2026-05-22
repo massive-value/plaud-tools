@@ -67,6 +67,7 @@ def render_update_ps1(
     install_dir: str,
     zip_path: str,
     extract_dir: str,
+    dispatcher_path: str | None = None,
 ) -> str:
     """Return a PS1 dispatcher that calls the bundled update.ps1 with the given args.
 
@@ -85,6 +86,10 @@ def render_update_ps1(
         Absolute path to the downloaded update archive.
     extract_dir:
         Directory to extract the zip into (parent of install_dir).
+    dispatcher_path:
+        Absolute path to the dispatcher PS1 itself. Passed to update.ps1 as
+        ``-DispatcherPath`` so update.ps1 can delete it after a successful
+        run. Optional for backwards compatibility with older callers.
     """
     scripts = scripts_dir()
     ps1 = scripts / "update.ps1"
@@ -92,13 +97,17 @@ def render_update_ps1(
     safe_install = _ps_escape(install_dir)
     safe_zip = _ps_escape(zip_path)
     safe_extract = _ps_escape(extract_dir)
-    return (
+    line = (
         f"& '{safe_ps1}'"
         f" -TrayPid {tray_pid}"
         f" -InstallDir '{safe_install}'"
         f" -ZipPath '{safe_zip}'"
-        f" -ExtractDir '{safe_extract}'\n"
+        f" -ExtractDir '{safe_extract}'"
     )
+    if dispatcher_path:
+        safe_dispatcher = _ps_escape(dispatcher_path)
+        line += f" -DispatcherPath '{safe_dispatcher}'"
+    return line + "\n"
 
 
 def render_uninstall_ps1(

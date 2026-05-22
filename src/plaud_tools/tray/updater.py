@@ -243,6 +243,7 @@ class UpdateDialog:
                 install_dir=str(install_dir),
                 zip_path=str(zip_path),
                 extract_dir=str(install_dir.parent),
+                dispatcher_path=str(ps_path),
             )
             ps_path.write_text(ps_content, encoding="utf-8")
             sentinel.write_text(new_version, encoding="utf-8")
