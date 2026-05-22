@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-05-21
+
+### Added
+
+- Tray: `HomeWindow` now shows a yellow setup-failures banner when `_verify_env`
+  reports any missing PATH, shell completions, or autostart entries; the banner
+  transitions to green "Setup complete" and auto-dismisses on success, or shows
+  the error and rebinds to open the log folder on failure. (#46)
+- Install (`install.ps1`): `--repair` and `--force` switches plus a robust
+  zip-layout probe that handles archives with or without a top-level directory.
+  (#24)
+- Install: setup helpers (PATH entry, PowerShell completions, autostart) are
+  now idempotent and run at install time, not first launch. Stale `plaud.ps1`
+  completion sourcing lines from older builds are stripped automatically. (#23)
+- Install: `update.ps1` and `uninstall.ps1` are now shipped as bundle assets
+  under `mcp/scripts/` instead of generated at runtime from string templates,
+  which makes them auditable and code-signable. (#25)
+- MCP: tool handlers now return structured `api_error` results with stable
+  error codes (`session_expired`, `rate_limited`, `not_found`, `invalid_input`,
+  `network`, `api_error`) instead of bare strings, and the tray shows a toast
+  when a `session_expired` error is observed. (#33)
+- CI: new `bundle-smoke` job on `windows-latest` that builds the PyInstaller
+  bundle and runs `--version` on the frozen `plaud-tools.exe` and
+  `plaud-mcp.exe`; the same smoke runs in `release.yml` before publishing. (#36)
+
+### Changed
+
+- Tray: `_test_connection` is bounded by a 15-second timeout via
+  `_TEST_CONNECTION_TIMEOUT`; previously the call could hang the tray UI
+  indefinitely on a slow Plaud API response. (#44)
+- Tray uninstall dialog: uninstall buttons are now disabled while uninstall is
+  in progress, and the dialog warns when AI-client configs still reference the
+  installed paths after removal. (#28)
+
+### Fixed
+
+- Tray: `tray.log` now rotates via `RotatingFileHandler` (1 MB × 3 backups)
+  instead of a single ever-growing `FileHandler`. (#44)
+- MCP: `_call` no longer catches `RuntimeError` blindly; ffmpeg-not-found
+  errors raised from `transcode_to_mp3` are now caught explicitly by
+  `upload_recording` and surfaced as MCP error results. (#44)
+
+### Performance
+
+- Session: `SessionManager` now caches the loaded session in memory after the
+  first keyring read, eliminating repeated keyring lookups on every API call.
+  Cache is invalidated on `save()` and `clear()`. (#43)
+
+### Tests
+
+- New: `test_lifecycle_helpers.py` (433 tests) covering `_setup_ps_completions`,
+  `_remove_ps_completions`, PATH setup/removal, and the bundled PS1 templates.
+  (#35)
+- New: `test_mcp_golden.py` golden-snapshot test pinning MCP tool descriptions
+  to a JSON file under `tests/data/`. (#37)
+
 ## [0.1.21] - 2026-05-21
 
 ### Added
