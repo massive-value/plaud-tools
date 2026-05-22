@@ -11,15 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Tray now shows a Windows toast notification when an update is detected, and
-  again on each subsequent startup while the update remains uninstalled.
-  Previously the tray menu and home window updated silently, so users only saw
-  the new version if they happened to open the tray menu.  The toast fires via
-  the existing winrt/PowerShell fallback path used by session-expired
-  notifications.  Within a single session the same version is only toasted
-  once to avoid repetition during the 20–28 h re-check interval; a fresh
-  startup always toasts if an update is waiting.  Clicking the toast is not
-  yet actionable — see #83 for the COM activation follow-on.
+- Tray now shows a system notification when an update is detected, and again
+  on each subsequent startup while the update remains uninstalled.  Previously
+  the tray menu and home window updated silently, so users only saw the new
+  version if they happened to open the tray menu.  The notification uses
+  pystray's ``icon.notify()`` (backed by ``Shell_NotifyIcon`` on Windows),
+  which requires no AUMID registration and works in the frozen bundle out of
+  the box.  The winrt/PowerShell toast path is retained as a fallback.
+  Within a single session the same version is only notified once; a fresh
+  startup always notifies if an update is waiting.
+- Tray registers ``HKCU\Software\Classes\AppUserModelId\PlaudTools.TrayApp``
+  at startup so that Windows will show toast notifications from the app (used
+  by the session-expired toast and as the pystray fallback path).
 
 ## [0.2.3] - 2026-05-22
 

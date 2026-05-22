@@ -25,6 +25,7 @@ from .setup import (
     _setup_ps_completions,
     _verify_env,
 )
+from .setup import APP_NAME
 from .toasts import _show_session_expired_toast, _show_update_available_toast
 from .updater import _check_for_update
 
@@ -75,7 +76,17 @@ class _BackgroundMixin:
             version = result[0]
             if version != _notified_version:
                 _notified_version = version
-                _show_update_available_toast(version)
+                if self._icon:
+                    try:
+                        self._icon.notify(
+                            f"v{version} is ready — open the tray menu to install.",
+                            f"{APP_NAME} — Update Available",
+                        )
+                    except Exception:
+                        logging.warning("pystray notify failed; falling back to toast", exc_info=True)
+                        _show_update_available_toast(version)
+                else:
+                    _show_update_available_toast(version)
 
         try:
             result = _check_for_update()

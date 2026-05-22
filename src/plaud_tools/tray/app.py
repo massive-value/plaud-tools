@@ -38,6 +38,7 @@ from .setup import (
     _apply_theme,
     _assets_path,
     _autostart_enabled,
+    _register_aumid,
     _set_app_icon,
     _set_autostart,
     _setup_logging,
@@ -287,6 +288,7 @@ class TrayApp(_BackgroundMixin):
             raise
 
     def _run(self) -> None:
+        _register_aumid()
         self._load_session()
         self._icons = _load_icons()
         logging.debug("icons loaded from %s", _assets_path())
