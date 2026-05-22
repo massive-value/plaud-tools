@@ -229,11 +229,20 @@ _TOOLS: list[types.Tool] = [
 
 def _make_server() -> Server:
     store = SessionStore()
+    # One SessionManager per server process so the in-memory keyring cache
+    # added in v0.1.22 actually applies to MCP tool calls.  Previously this
+    # constructed a fresh SessionManager (and thus a fresh empty cache) on
+    # every tool invocation, defeating the cache and doubling keyring reads.
+    manager = SessionManager(store)
 
     def get_client() -> PlaudClient | None:
+        # store.load() also fronts the keyring; we keep it as the cheap
+        # "is there any session at all?" probe before constructing the client.
+        # SessionManager.require() (called inside PlaudClient.request paths)
+        # validates expiry against the in-memory cache after the first hit.
         if store.load() is None:
             return None
-        return PlaudClient(SessionManager(store))
+        return PlaudClient(manager)
 
     handlers = build_handlers(get_client)
     server = Server("plaud-mcp")
