@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-22
+
+The v0.2.0 milestone consolidates the bundle/install/MCP-stability cycle. The
+patch releases on the v0.1.x line (v0.1.20–v0.1.22) shipped the user-visible
+work incrementally; v0.2.0 promotes the cumulative set and lands two final
+internal-quality changes that close out the milestone:
+
+### Changed
+
+- Tray code reorganized: the 2,127-line `tray_app.py` is split into focused
+  submodules under `src/plaud_tools/tray/` (`app`, `setup`, `updater`,
+  `uninstaller`, `background`, `icons`, `toasts`, plus a `windows/` package
+  for `LoginWindow`, `WizardWindow`, and `HomeWindow`). `tray_app.py` is now a
+  ~250-line compatibility shim that re-exports every public symbol the rest
+  of the codebase and tests rely on; external imports
+  (`from plaud_tools.tray_app import main`) continue to work unchanged. (#38)
+
+### Removed
+
+- Dead code: `_fetch_transcript` private method on `PlaudClient`, the
+  `build_read_handlers` alias in `mcp.py`, the unreachable `return ""` after
+  `sys.exit(...)` in CLI `update`, and the redundant client rebuild in CLI
+  `ping`. (#39)
+
+### Internal
+
+- Shared query helpers (`_parse_isoish`, `_filter_recordings`,
+  `_summarize_recording`) deduplicated into a new `plaud_tools/query.py`
+  module; previously the CLI and MCP layers each carried their own copies
+  that had drifted in subtle ways (parameter naming, sort order, unfiled-
+  filter semantics). Both call sites now import from `query.py` and the
+  reconciled implementation supports both prior conventions. (#39)
+- CLI `transcript` subcommand handler is now explicit; the previous accidental
+  fall-through is replaced by an `if args.command == "transcript"` branch plus
+  an `AssertionError` for any unrecognized command so future subcommands fail
+  loudly when added without a handler. (#39)
+- `transcribe_and_summarize` no longer computes `utcoffset()` twice. (#39)
+- `_acquire_instance_lock` carries an inline comment explaining why the
+  `Global\` named-event prefix is required (cross-session activation per the
+  v0.1.18 single-instance fix). (#39)
+
+### Milestone summary (work shipped during the v0.2.0 cycle)
+
+For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
+
+- MCP: pagination (#30), structured error codes + `session_expired` tray
+  toast (#33), split `delete_recording`/`rename_speaker` and `clear_folder`
+  flag (#32), 7-tool description tighten (#30).
+- Install: idempotent install-time tray setup (#23), `--repair`/`--force`
+  switches with robust zip probe (#24), update/uninstall scripts shipped as
+  bundle assets (#25), graceful scoped MCP shutdown (#22).
+- Tray: first-run welcome toast and HomeWindow banner (#27), setup-failures
+  banner (#46), log rotation + bounded `_test_connection` (#44), uninstall
+  dialog polish + dangling AI-client config warning (#28).
+- Client: `-302` region redirect now forwards request body on POST/PATCH/DELETE
+  (#34), `PlaudApiError` carries structured fields (#42), `SessionManager`
+  in-memory keyring cache (#43), bundled ffmpeg fallback for the CLI (#41).
+- Diagnostics: `plaud-tools doctor` self-check command (#45).
+- CI: bundle-smoke gate runs PyInstaller `--version` on every PR and before
+  every release tag (#36).
+- Tests: new lifecycle helper suite (#35), MCP tool-description golden
+  snapshot (#37); coverage grew from ~270 to ~450 tests across the milestone.
+- Build: UPX compression disabled across PyInstaller specs (#26).
+
 ## [0.1.22] - 2026-05-21
 
 ### Added
