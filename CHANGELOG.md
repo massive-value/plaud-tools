@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Start-Sleep -Seconds 2` race. `docs/adr/003-mcp-process-lifecycle.md`
   documents the tray↔MCP lifecycle contract. (#22)
 
+- First-run welcome: on first launch after `install.ps1`, a Windows toast
+  notification appears explaining where the tray icon lives.  `HomeWindow`
+  also shows a one-time blue banner directing the user to "Configure AI
+  Agents…"; the banner is dismissed when that button is clicked.  The
+  `plaud_just_installed.txt` sentinel is consumed immediately so neither
+  surface repeats on subsequent launches.  Falls back gracefully when the
+  toast API is unavailable.
+
 ### Fixed
 
 - `TrayApp._quit()` no longer calls `icon.stop()` synchronously on the
