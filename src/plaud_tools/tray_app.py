@@ -1331,6 +1331,10 @@ class HomeWindow:
         self._repair_btn: ttk.Button | None = None
         self._welcome_banner_armed: bool = False
         self._welcome_banner: tk.Frame | None = None
+        # Setup-failure row: yellow banner at the top of HomeWindow shown when
+        # _verify_env reports any missing entries.
+        self._setup_failure_row: tk.Frame | None = None
+        self._setup_failure_label: tk.Label | None = None
 
     def show(self) -> None:
         if self._win and self._win.winfo_exists():
@@ -1339,6 +1343,7 @@ class HomeWindow:
             self._refresh_session()
             self._refresh_update_btn()
             self._refresh_repair_btn()
+            self._refresh_setup_failure_row()
             return
 
         win = tk.Toplevel(self._root)
@@ -1350,6 +1355,26 @@ class HomeWindow:
 
         frame = ttk.Frame(win, padding=20)
         frame.pack(fill="both", expand=True)
+
+        # Setup-failure row — yellow banner at the top shown when _verify_env
+        # detects any missing setup entries (PATH, completions, autostart).
+        # Created here so it is always available; shown/hidden by
+        # _refresh_setup_failure_row().
+        self._setup_failure_row = tk.Frame(frame, background="#b45309", padx=10, pady=6)
+        self._setup_failure_label = tk.Label(
+            self._setup_failure_row,
+            text="",
+            background="#b45309",
+            foreground="white",
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            wraplength=340,
+            justify="left",
+        )
+        self._setup_failure_label.pack(anchor="w")
+        self._setup_failure_label.bind("<Button-1>", lambda _e: self._handle_repair_setup())
+        self._setup_failure_row.bind("<Button-1>", lambda _e: self._handle_repair_setup())
+        # Rendered (shown or hidden) after the window is fully laid out.
 
         # Welcome banner — shown once after first install, dismissed on
         # "Configure AI Agents…" click.
@@ -1394,6 +1419,7 @@ class HomeWindow:
         self._repair_btn = ttk.Button(btn_frame, text="Repair setup",
                                        command=self._handle_repair_setup)
         self._refresh_repair_btn()
+        self._refresh_setup_failure_row()
 
         if self._on_open_log_folder is not None:
             ttk.Button(btn_frame, text="View Logs",
@@ -1473,6 +1499,31 @@ class HomeWindow:
         else:
             self._repair_btn.pack_forget()
 
+    def _refresh_setup_failure_row(self) -> None:
+        """Show or hide the yellow setup-failure banner at the top of HomeWindow.
+
+        The row is visible when ``_verify_env`` has reported at least one missing
+        entry AND a repair callback is available.  On success the row is hidden
+        (after a brief green message displayed via ``_set_status``).
+
+        Because the row widget is created first inside the frame in ``show()``,
+        calling ``pack()`` on it will place it above all other widgets.
+        """
+        if self._setup_failure_row is None or self._setup_failure_label is None:
+            return
+        status = self._get_env_status()
+        if status is not None and not status.all_ok and self._on_repair_setup is not None:
+            missing = ", ".join(status.missing_labels())
+            self._setup_failure_label.configure(
+                text=f"Some setup is missing ({missing}) — click to repair.",
+                background="#b45309",
+                foreground="white",
+                cursor="hand2",
+            )
+            self._setup_failure_row.pack(fill="x", pady=(0, 10))
+        else:
+            self._setup_failure_row.pack_forget()
+
     def _set_status(self, msg: str, ok: bool = True) -> None:
         if self._status_var is None or self._status_label is None:
             return
@@ -1519,13 +1570,59 @@ class HomeWindow:
         self._on_check_for_update(_done)
 
     def _handle_repair_setup(self) -> None:
-        if self._repair_btn is None or self._on_repair_setup is None:
+        if self._on_repair_setup is None:
             return
-        self._repair_btn.configure(state="disabled", text="Repairing…")
+        if self._repair_btn is not None:
+            self._repair_btn.configure(state="disabled", text="Repairing…")
         if self._status_var is not None:
             self._status_var.set("")
+        # Show "Repairing…" state in the setup-failure row while the worker runs.
+        if self._setup_failure_row is not None and self._setup_failure_label is not None:
+            self._setup_failure_label.configure(
+                text="Repairing setup…",
+                cursor="",
+            )
+            self._setup_failure_row.pack(fill="x", pady=(0, 10))
 
         def _done(ok: bool, msg: str) -> None:
+            if ok:
+                # Show a brief green "Setup complete" in the failure row, then
+                # dismiss it after a few seconds.
+                if self._setup_failure_row is not None and self._setup_failure_label is not None:
+                    self._setup_failure_label.configure(
+                        text="Setup complete.",
+                        background="#15803d",
+                        foreground="white",
+                        cursor="",
+                    )
+                    self._setup_failure_row.configure(background="#15803d")
+                    self._setup_failure_row.pack(fill="x", pady=(0, 10))
+                    if self._win and self._win.winfo_exists():
+                        def _dismiss_row() -> None:
+                            self._refresh_setup_failure_row()
+                            # Reset colour for next time the row might be shown.
+                            if self._setup_failure_row is not None:
+                                self._setup_failure_row.configure(background="#b45309")
+                            if self._setup_failure_label is not None:
+                                self._setup_failure_label.configure(background="#b45309")
+                        self._win.after(4000, _dismiss_row)
+            else:
+                # On failure: show the error in the row; add log-folder hint.
+                if self._setup_failure_row is not None and self._setup_failure_label is not None:
+                    hint = ""
+                    if self._on_open_log_folder is not None:
+                        hint = " — see logs for details."
+                    self._setup_failure_label.configure(
+                        text=f"Repair failed: {msg}{hint}",
+                        cursor="hand2" if self._on_open_log_folder else "",
+                    )
+                    if self._on_open_log_folder is not None:
+                        # Rebind click to open log folder when repair failed.
+                        self._setup_failure_label.bind(
+                            "<Button-1>",
+                            lambda _e: self._on_open_log_folder() if self._on_open_log_folder else None,
+                        )
+                    self._setup_failure_row.pack(fill="x", pady=(0, 10))
             self._set_status(msg, ok)
             self._refresh_repair_btn()
             if self._win and self._win.winfo_exists():
@@ -1874,7 +1971,8 @@ class TrayApp:
         """Background thread: check PATH/completions/autostart without mutating.
 
         Stores the result in ``self._env_status`` and nudges the HomeWindow to
-        show the "Repair setup" button if anything is missing.
+        show the setup-failure banner and "Repair setup" button if anything is
+        missing.
         """
         try:
             status = _verify_env()
@@ -1883,7 +1981,11 @@ class TrayApp:
                 missing = ", ".join(status.missing_labels())
                 logging.warning("Environment check: missing %s", missing)
                 if self._root and self._home_win:
-                    self._root.after(0, self._home_win._refresh_repair_btn)
+                    def _nudge_home() -> None:
+                        if self._home_win:
+                            self._home_win._refresh_repair_btn()
+                            self._home_win._refresh_setup_failure_row()
+                    self._root.after(0, _nudge_home)
         except Exception:
             logging.warning("Environment check failed", exc_info=True)
 
