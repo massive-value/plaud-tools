@@ -58,6 +58,12 @@ jobs:
           Copy-Item -Recurse out\plaud-cli\plaud-tools\* out\plaud-tray\PlaudTools\cli\
           Copy-Item scripts\pt.cmd out\plaud-tray\PlaudTools\cli\pt.cmd
 
+      - name: Smoke test CLI executable
+        run: out\plaud-tray\PlaudTools\cli\plaud-tools.exe --version
+
+      - name: Smoke test MCP executable
+        run: out\plaud-tray\PlaudTools\mcp\plaud-mcp.exe --version
+
       - name: Create zip
         run: Compress-Archive -Path out\plaud-tray\PlaudTools -DestinationPath PlaudTools.zip
 
