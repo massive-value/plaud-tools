@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-05-23
+
+Two fixes targeting post-install reliability of the frozen tray bundle.
+
+1. **Silent PowerShell crash when launching the updater from a no-console app.**
+   `subprocess.Popen` with `DETACHED_PROCESS` from a PyInstaller GUI (no-console)
+   frozen app passes `NULL`/invalid stdio handles to the child process.
+   PowerShell crashes immediately on startup before any script code runs —
+   leaving no transcript, no sentinel, and the tray closed with no recovery path.
+   Switched to `CREATE_NO_WINDOW` with explicit `DEVNULL` handles so PowerShell
+   gets valid (NUL) stdio regardless of the parent console state.  Also adds
+   `-ExecutionPolicy Bypass` (enterprise policy cannot silently block the
+   dispatcher), `-NonInteractive` (suppresses prompts), and a 0.5 s post-launch
+   poll that writes a failure sentinel and logs the exit code if PowerShell exits
+   immediately.  `update.ps1` gains a heartbeat marker written before
+   `Start-Transcript` so future failures can distinguish "PowerShell never ran
+   the script" from "script ran but failed mid-way".
+
+2. **Stale dist-info in the bundle causes the tray to report the wrong version
+   and loop forever on update checks.**  `copy_metadata('plaud-tools')` in
+   `plaud-tray.spec` collects whatever `dist-info` `importlib.metadata` resolves
+   in the build environment.  Without `--force-reinstall`, `pip install` leaves
+   old dist-info on disk alongside the new one; PyInstaller bundles both, and at
+   runtime `importlib.metadata` picks the lower version.  The CI release step now
+   passes `--force-reinstall` to guarantee a single canonical dist-info in the
+   bundle.
+
+### Fixed
+
+- **Updater no longer silently crashes on enterprise or no-console machines.**
+  `CREATE_NO_WINDOW` + explicit `DEVNULL` handles replace the old
+  `DETACHED_PROCESS` launch; `-ExecutionPolicy Bypass -NonInteractive` flags
+  added; 0.5 s launch-health poll writes a sentinel on immediate exit.
+  `update.ps1` heartbeat marker added before `Start-Transcript`.
+  (`src/plaud_tools/tray/updater.py`, `src/plaud_tools/scripts/update.ps1`)
+- **Release CI bundles the correct dist-info version.**
+  `pip install --force-reinstall` in the release workflow removes stale
+  dist-info before building, preventing the tray from reporting the previous
+  version at runtime.  (`.github/workflows/release.yml`)
+
 ## [0.2.8] - 2026-05-22
 
 Follow-up to v0.2.7's DPAPI shadow fix.  Two narrow but biting issues:
