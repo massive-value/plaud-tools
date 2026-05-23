@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-05-22
+
+Follow-up to v0.2.7's DPAPI shadow fix.  Two narrow but biting issues:
+
+1. **The very first MCP call right after a v0.2.6 → v0.2.7 upgrade could
+   still hit `session_expired`.**  v0.2.7 self-heals the shadow file inside
+   the tray's `_load_session()`, but in the frozen bundle that runs after
+   ~3-5 s of `pystray` / `PIL` imports — long enough for an AI client to
+   notice its MCP child died during the bundle swap and respawn it before
+   the shadow exists on disk.  v0.2.8 prises that work out of the import
+   path so it runs at process start.
+2. **`pytest` locally would overwrite the user's real session.dat.**  One
+   v0.2.6-era test in `tests/test_client.py` constructed `SessionStore`
+   with no `dpapi_path=`, which post-v0.2.7 silently DPAPI-encrypted
+   synthetic test data straight into the production
+   `%LOCALAPPDATA%\PlaudTools\session.dat`.  The next MCP call read the
+   3-byte test token, failed JWT decode, and the tray prompted for sign-in.
+   Pure-developer regression (CI was unaffected — `LOCALAPPDATA` is unset
+   on Linux), but it cost real sign-ins on Kadin's dev machine while
+   working v0.2.8.  Fixed plus belt-and-braces.
+
+### Added
+
+- **Eager DPAPI shadow self-heal in the tray entry script.**
+  `SessionStore.prime_dpapi_shadow()` — a single, non-retrying keyring read
+  that writes the shadow if and only if the read succeeded and the shadow
+  is missing.  Called from `scripts/plaud_tray_entry.py` *before*
+  `from plaud_tools.tray_app import main` so it runs ahead of the pystray /
+  PIL import chain, tightening the window between tray-launch and
+  shadow-existence to a fraction of the previous ~3-5 s.  Signed-out users
+  pay no retry budget here (single read, no backoff loop); the existing
+  `load_with_source()` self-heal remains as the slower-path safety net.
+  Skipped on the `--com-activate` toast-handler path so short-lived helper
+  processes don't pay the keyring cost.  Five new tests in
+  `tests/test_auth.py` covering the healthy / already-primed / signed-out /
+  keyring-raises / dpapi-disabled cases.
+- **Conftest trip-wire against real-path DPAPI writes.**
+  `tests/conftest.py` now monkeypatches
+  `plaud_tools.session._default_dpapi_path` to `None` for every test
+  (autouse), so any future regression that forgets `dpapi_path=` writes
+  *nothing* instead of corrupting the user's session.  A second autouse
+  fixture snapshots the real shadow's mtime around each test and raises
+  loudly if it changed.  The path snapshot is captured at module import
+  time so the redirect fixture cannot shadow the trip-wire.
+
+### Fixed
+
+- **`test_session_store_prefers_keyring_when_available` no longer writes
+  to the user's real `%LOCALAPPDATA%\PlaudTools\session.dat`.**  The test
+  now pins `dpapi_path` under `tmp_path` like every other DPAPI-aware
+  test in the suite.  Comment in-place documents the regression so it
+  doesn't get reintroduced.
+
 ## [0.2.7] - 2026-05-22
 
 The headline change is a **DPAPI shadow-file fallback** that finally closes
@@ -814,7 +867,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/massive-value/plaud-tools/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/massive-value/plaud-tools/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/massive-value/plaud-tools/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/massive-value/plaud-tools/compare/v0.2.4...v0.2.5

@@ -711,7 +711,12 @@ def test_session_store_prefers_keyring_when_available(tmp_path, monkeypatch):
             return FakeKeyring.value
 
     monkeypatch.setattr("plaud_tools.session.importlib.import_module", lambda name: FakeKeyring)
-    store = SessionStore(tmp_path / "session.json")
+    # dpapi_path MUST be pinned under tmp_path.  Leaving it unset on Windows
+    # makes _default_dpapi_path() resolve to the real
+    # %LOCALAPPDATA%\PlaudTools\session.dat, so store.save() DPAPI-encrypts
+    # the synthetic test session straight into the user's production shadow
+    # — the v0.2.7 regression caught in v0.2.8.
+    store = SessionStore(tmp_path / "session.json", dpapi_path=tmp_path / "session.dat")
     store.save(PlaudSession(access_token="jwt", region="eu", email="user@example.com"))
     session, source = store.load_with_source()
     assert calls == {"service": "plaud-tools", "account": "session"}

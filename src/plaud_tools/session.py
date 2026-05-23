@@ -419,6 +419,43 @@ class SessionStore:
     # service's cold-start settling window.
     # ------------------------------------------------------------------
 
+    def prime_dpapi_shadow(self) -> bool:
+        """Best-effort, low-latency DPAPI shadow self-heal for tray-startup.
+
+        Why this exists: ``load_with_source`` also writes the shadow on a
+        first successful keyring load, but it pays the full keyring retry
+        budget (~3.6 s worst-case) and only runs after the tray finishes
+        importing pystray/PIL — a ~3-5 s window during which an AI client
+        respawning its MCP child can still hit the cold-start
+        ``session_expired`` path because the shadow file does not yet exist.
+        This entry point is meant to be called from the tray exe's entry
+        script *before* the heavy imports load, with a single non-retrying
+        keyring read so signed-out users do not pay the retry budget here.
+
+        Returns True iff this call wrote the shadow.  Safe to call any
+        number of times — when the shadow already exists, returns False
+        without touching keyring at all.
+        """
+        if self.dpapi_path is None:
+            return False
+        if self.dpapi_path.exists():
+            return False
+        keyring = self._load_keyring_module()
+        if keyring is None:
+            return False
+        try:
+            payload = keyring.get_password(self.service_name, self.account_name)
+        except Exception:
+            return False
+        if not payload:
+            return False
+        try:
+            parsed = json.loads(payload)
+            session = PlaudSession(**parsed)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return self._save_to_dpapi(session)
+
     def _save_to_dpapi(self, session: PlaudSession) -> bool:
         if self.dpapi_path is None:
             return False

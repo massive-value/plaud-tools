@@ -769,3 +769,143 @@ def test_save_succeeds_when_keyring_fails_but_dpapi_works(tmp_path, monkeypatch)
 
     assert shadow.exists(), "DPAPI shadow must absorb the save when keyring fails"
     assert not plaintext.exists(), "plaintext fallback must not fire when DPAPI succeeded"
+
+
+# ---------------------------------------------------------------------------
+# prime_dpapi_shadow (v0.2.8) — eager, low-latency self-heal called from the
+# tray entry script before pystray/PIL load so the shadow exists earlier in
+# tray-startup, tightening the v0.2.6 → v0.2.7 upgrade race window.
+# ---------------------------------------------------------------------------
+
+
+def test_prime_writes_shadow_when_keyring_healthy_and_shadow_missing(tmp_path, monkeypatch):
+    from plaud_tools.session import SessionStore
+
+    _patch_fake_dpapi(monkeypatch)
+    payload = json.dumps({"access_token": "tok", "region": "us", "email": "u@example.com"})
+
+    class HealthyKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            return payload
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: HealthyKeyring if name == "keyring" else __import__(name),
+    )
+
+    shadow = tmp_path / "session.dat"
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=shadow)
+
+    assert store.prime_dpapi_shadow() is True
+    assert shadow.exists()
+    decrypted = _FakeDpapi.unprotect(shadow.read_bytes()).decode()
+    assert "u@example.com" in decrypted
+
+
+def test_prime_is_noop_when_shadow_already_exists(tmp_path, monkeypatch):
+    """If the shadow is already on disk, prime must not touch keyring at all —
+    that protects a freshly-saved shadow against an accidental rewrite from a
+    racing keyring read inside prime.
+    """
+    from plaud_tools.session import SessionStore
+
+    _patch_fake_dpapi(monkeypatch)
+    sentinel = b"PRE-EXISTING-SHADOW"
+
+    keyring_calls = {"n": 0}
+
+    class TrackingKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            keyring_calls["n"] += 1
+            return None
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: TrackingKeyring if name == "keyring" else __import__(name),
+    )
+
+    shadow = tmp_path / "session.dat"
+    shadow.write_bytes(sentinel)
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=shadow)
+
+    assert store.prime_dpapi_shadow() is False
+    assert shadow.read_bytes() == sentinel
+    assert keyring_calls["n"] == 0, "prime must short-circuit before touching keyring"
+
+
+def test_prime_is_noop_when_keyring_returns_none(tmp_path, monkeypatch):
+    """Signed-out users (keyring legitimately empty) must not be charged any
+    retry budget here — prime must read exactly once and give up.
+    """
+    from plaud_tools.session import SessionStore
+
+    _patch_fake_dpapi(monkeypatch)
+
+    keyring_calls = {"n": 0}
+
+    class EmptyKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            keyring_calls["n"] += 1
+            return None
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: EmptyKeyring if name == "keyring" else __import__(name),
+    )
+
+    shadow = tmp_path / "session.dat"
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=shadow)
+
+    assert store.prime_dpapi_shadow() is False
+    assert not shadow.exists()
+    assert keyring_calls["n"] == 1, "prime must do exactly one keyring read, no retry budget"
+
+
+def test_prime_swallows_keyring_exception(tmp_path, monkeypatch):
+    """Keyring raising on a transient cold-start must NOT bubble out of prime —
+    the tray entry script wraps prime in its own try/except but the contract
+    is that prime itself is fully best-effort.
+    """
+    from plaud_tools.session import SessionStore
+
+    _patch_fake_dpapi(monkeypatch)
+
+    class BrokenKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            raise RuntimeError("vault locked")
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: BrokenKeyring if name == "keyring" else __import__(name),
+    )
+
+    shadow = tmp_path / "session.dat"
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=shadow)
+
+    assert store.prime_dpapi_shadow() is False
+    assert not shadow.exists()
+
+
+def test_prime_is_noop_when_dpapi_disabled(tmp_path, monkeypatch):
+    from plaud_tools.session import SessionStore
+
+    _patch_fake_dpapi(monkeypatch)
+    payload = json.dumps({"access_token": "tok", "region": "us", "email": "u@example.com"})
+
+    class HealthyKeyring:
+        @staticmethod
+        def get_password(*_a, **_k):
+            return payload
+
+    monkeypatch.setattr(
+        "plaud_tools.session.importlib.import_module",
+        lambda name: HealthyKeyring if name == "keyring" else __import__(name),
+    )
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
+    assert store.prime_dpapi_shadow() is False
