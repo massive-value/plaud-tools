@@ -67,7 +67,6 @@ class HomeWindow:
         _set_app_icon(win)
         win.title(APP_NAME)
         win.resizable(False, False)
-        win.geometry("400x460")
         self._win = win
 
         frame = ttk.Frame(win, padding=20)
@@ -168,6 +167,8 @@ class HomeWindow:
                   foreground="#6b7280",
                   font=("Segoe UI", 8)).pack(side="right")
 
+        win.update_idletasks()
+        win.geometry(f"400x{win.winfo_reqheight()}")
         win.lift()
         win.focus_force()
 

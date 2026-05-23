@@ -140,15 +140,19 @@ function Get-ZipExtractDestination {
 }
 
 # ---------------------------------------------------------------------------
-# Stop every plaud-mcp.exe whose Path is under $InstallDir, and confirm it
-# stays dead. Returns $true when no scoped plaud-mcp has been alive for
-# $StableMs milliseconds. Returns $false if a supervisor keeps respawning it
-# after $MaxAttempts attempts.
+# Stop ALL processes whose Path is under $InstallDir (plaud-mcp, ffmpeg, any
+# other child processes), and confirm they stay dead. Returns $true when no
+# scoped process has been alive for $StableMs milliseconds. Returns $false if
+# a supervisor keeps respawning processes after $MaxAttempts attempts.
 #
 # This is the bug the v0.2.0 → 0.2.1 update path hit: when Claude Desktop
 # launches plaud-mcp, killing the process just causes Claude to relaunch it
 # almost immediately, and the respawned exe keeps mcp\_internal\*.dll locked,
 # causing Expand-Archive to throw and the script to bail.
+#
+# Using path-based discovery (rather than name-based) also catches ffmpeg and
+# any other child processes that plaud-mcp may have spawned — Stop-Process on
+# the parent does NOT kill children on Windows.
 # ---------------------------------------------------------------------------
 
 function Stop-PlaudMcpScoped {
@@ -158,10 +162,10 @@ function Stop-PlaudMcpScoped {
         [int]$StableMs = 500
     )
 
-    $scope = $InstallDir.TrimEnd('\').TrimEnd('/').ToLower()
+    $scope = $InstallDir.TrimEnd('\').TrimEnd('/').ToLower() + '\'
 
     $findProcs = {
-        Get-Process -Name 'plaud-mcp' -ErrorAction SilentlyContinue | Where-Object {
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
             $_.Path -and $_.Path.ToLower().StartsWith($scope)
         }
     }
@@ -172,13 +176,13 @@ function Stop-PlaudMcpScoped {
             # Nothing alive — wait $StableMs to make sure nobody respawns it.
             Start-Sleep -Milliseconds $StableMs
             if (-not (& $findProcs)) {
-                Write-Host "plaud-mcp confirmed stopped (attempt $attempt)"
+                Write-Host "All install-dir processes confirmed stopped (attempt $attempt)"
                 return $true
             }
             continue
         }
 
-        Write-Host "Attempt $attempt`: killing $($procs.Count) plaud-mcp process(es)"
+        Write-Host "Attempt $attempt`: killing $($procs.Count) process(es): $(($procs | Select-Object -ExpandProperty Name) -join ', ')"
         foreach ($p in $procs) {
             try { $p.CloseMainWindow() | Out-Null } catch {}
         }
@@ -214,7 +218,7 @@ try {
     # 2. Make sure scoped plaud-mcp is dead AND stays dead long enough to
     #    extract over its locked DLLs.
     if (-not (Stop-PlaudMcpScoped -InstallDir $InstallDir)) {
-        $msg = "plaud-mcp.exe keeps respawning under $InstallDir. Close Claude Desktop (or any other MCP client that has Plaud Tools registered) and run the update again."
+        $msg = "A process under $InstallDir keeps respawning (likely plaud-mcp being restarted by Claude Desktop). Close Claude Desktop (or any other MCP client that has Plaud Tools registered) and run the update again."
         Write-Host "FAIL: $msg"
         Write-FailureSentinel -Reason $msg
         throw $msg
