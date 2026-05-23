@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-05-23
+
+Three bug fixes targeting uninstall reliability and tray UI.
+
+1. **Uninstaller left files behind when plaud-mcp or ffmpeg were running.**
+   Both `uninstall.ps1` and `update.ps1` killed processes by name (`plaud-mcp`)
+   and missed child processes such as `ffmpeg` spawned during audio work.
+   `Stop-Process` on a parent does not kill its children on Windows, so orphaned
+   processes kept `_internal` DLLs locked and `Remove-Item` failed silently.
+   Both scripts now enumerate processes by install-directory path so every
+   executable under the install tree is caught regardless of name.
+
+2. **Uninstaller silently left the directory intact on a timing race.**
+   A single `Remove-Item -ErrorAction SilentlyContinue` with no retry meant
+   that if any file handle was transiently held (even briefly after process
+   exit), the whole directory was silently left behind.  `uninstall.ps1` now
+   sleeps 2 seconds after the tray PID exits (lets Windows release PyInstaller
+   DLL handles) and retries `Remove-Item` up to 5 times with 2-second gaps.
+
+3. **Version label clipped off the bottom of the home window on first install.**
+   The welcome banner shown on fresh install added ~60 px of content that the
+   hardcoded `400×460` geometry could not accommodate, pushing `v0.2.x` below
+   the window boundary.  The geometry is now computed dynamically via
+   `update_idletasks()` + `winfo_reqheight()` so the window always fits its
+   content.
+
+   Also adds `Press Enter to close…` pauses to all early-exit paths in
+   `install.ps1` (error, already-up-to-date, upgrade-via-tray) so messages are
+   readable when the script runs in a new PowerShell window that auto-closes.
+
+### Fixed
+
+- **Uninstall / update now kill all install-dir processes by path**, not just
+  `plaud-mcp` by name — catches ffmpeg children and any future executables.
+  (`src/plaud_tools/scripts/uninstall.ps1`, `src/plaud_tools/scripts/update.ps1`)
+- **Uninstall directory removal is now retried** with a 2 s post-exit sleep and
+  up to 5 attempts (2 s apart) so transient file-lock races no longer silently
+  leave the install directory intact.
+  (`src/plaud_tools/scripts/uninstall.ps1`)
+- **Home window auto-sizes its height** to content via `winfo_reqheight()`,
+  fixing the version label being clipped when the welcome banner is shown.
+  (`src/plaud_tools/tray/windows/home.py`)
+- **Install script pauses on all early exits** so messages are readable in
+  auto-closing PowerShell windows.  (`scripts/install.ps1`)
+
 ## [0.2.9] - 2026-05-23
 
 Two fixes targeting post-install reliability of the frozen tray bundle.
