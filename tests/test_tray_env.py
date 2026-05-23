@@ -168,13 +168,26 @@ class TestAutostartOptOut:
         monkeypatch.setattr(sys, "executable", str(fake_exe))
         # The marker side of the toggle is what we care about — winreg side
         # only matters on Windows and is exercised in other Windows-only tests.
+        # On non-Windows CI we simulate win32 by patching sys.platform and
+        # injecting a fake winreg module so the platform guard in
+        # _autostart_opt_out_marker_path / _set_autostart sees "win32".
         if sys.platform == "win32":
             monkeypatch.setattr("winreg.OpenKey", MagicMock(
                 return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)))
             monkeypatch.setattr("winreg.SetValueEx", MagicMock())
             monkeypatch.setattr("winreg.DeleteValue", MagicMock())
         else:
-            monkeypatch.setattr(setup_mod.sys, "platform", "linux", raising=False)
+            import types
+            mock_winreg = types.ModuleType("winreg")
+            mock_winreg.HKEY_CURRENT_USER = 0x80000001  # type: ignore[attr-defined]
+            mock_winreg.KEY_SET_VALUE = 0x0002          # type: ignore[attr-defined]
+            mock_winreg.REG_SZ = 1                      # type: ignore[attr-defined]
+            mock_winreg.OpenKey = MagicMock(            # type: ignore[attr-defined]
+                return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False))
+            mock_winreg.SetValueEx = MagicMock()        # type: ignore[attr-defined]
+            mock_winreg.DeleteValue = MagicMock()       # type: ignore[attr-defined]
+            monkeypatch.setitem(sys.modules, "winreg", mock_winreg)
+            monkeypatch.setattr(setup_mod.sys, "platform", "win32", raising=False)
 
         marker = setup_mod._autostart_opt_out_marker_path()
         assert marker is not None
