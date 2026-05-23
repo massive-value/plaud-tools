@@ -153,11 +153,17 @@ try {
         if ($installedVersion -eq $latestVersion -and -not $Force) {
             Write-Host ''
             Write-Host "PlaudTools v$installedVersion is already installed and up to date." -ForegroundColor Green
+            Write-Host ''
+            Write-Host 'Press Enter to close...' -ForegroundColor Gray
+            try { Read-Host } catch { }
             exit 0
         } elseif (-not $Force) {
             Write-Host ''
             Write-Host "PlaudTools v$installedVersion is installed; v$latestVersion is available." -ForegroundColor Yellow
             Write-Host 'Open PlaudTools from the system tray and click Check for Updates to upgrade.' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host 'Press Enter to close...' -ForegroundColor Gray
+            try { Read-Host } catch { }
             exit 1
         } else {
             # -Force/-Repair: shut down running processes then wipe the install dir.
@@ -345,5 +351,8 @@ try {
     Write-Host ''
     Write-Host "Installation failed: $_" -ForegroundColor Red
     Write-Host 'Please report this at https://github.com/massive-value/plaud-tools/issues'
+    Write-Host ''
+    Write-Host 'Press Enter to close...' -ForegroundColor Gray
+    try { Read-Host } catch { }
     exit 1
 }
