@@ -178,6 +178,7 @@ class UpdateDialog:
         install_btn: ttk.Button,
     ) -> None:
         """Download the zip, write the .bat helper, launch it, then quit the tray."""
+        import time as _time
 
         def _set_status(text: str) -> None:
             if self._root:
@@ -233,6 +234,7 @@ class UpdateDialog:
             install_dir = Path(sys.executable).parent
             tray_pid = os.getpid()
             sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
+            fail_sentinel = Path(tempfile.gettempdir()) / "plaud_update_failed.txt"
             ps_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.ps1"
 
             update_info = self._app._update_info
@@ -248,11 +250,54 @@ class UpdateDialog:
             ps_path.write_text(ps_content, encoding="utf-8")
             sentinel.write_text(new_version, encoding="utf-8")
 
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            logging.info(
+                "in-app update: launching updater for v%s "
+                "(tray_pid=%s zip=%s dispatcher=%s)",
+                new_version, tray_pid, zip_path, ps_path,
+            )
+
+            # CREATE_NO_WINDOW (not DETACHED_PROCESS) + explicit DEVNULL handles:
+            # DETACHED_PROCESS from a no-console frozen app passes NULL stdio
+            # handles to the child, which causes PowerShell to crash before any
+            # script code runs. CREATE_NO_WINDOW suppresses the window without
+            # detaching, and DEVNULL handles are always valid.
+            proc = subprocess.Popen(
+                [
+                    "powershell", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass",
+                    "-WindowStyle", "Hidden",
+                    "-File", str(ps_path),
+                ],
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 cwd=tempfile.gettempdir(),
             )
+            logging.info("in-app update: PowerShell updater launched (pid=%s)", proc.pid)
+
+            # Sanity-check: if PowerShell exits within 0.5 s the script almost
+            # certainly never ran (invalid handles, policy block, etc.).
+            _time.sleep(0.5)
+            rc = proc.poll()
+            if rc is not None:
+                import json as _json
+                fail_msg = (
+                    f"PowerShell exited immediately with code {rc} — "
+                    "the update script may have been blocked by an enterprise "
+                    f"policy (AppLocker / WDAC). Dispatcher: {ps_path}"
+                )
+                logging.error("in-app update: %s", fail_msg)
+                fail_sentinel.write_text(
+                    _json.dumps({
+                        "reason": fail_msg,
+                        "log": str(ps_path),
+                        "time": "",
+                        "tray_pid": tray_pid,
+                    }),
+                    encoding="utf-8",
+                )
+                sentinel.unlink(missing_ok=True)
 
             if self._root:
                 self._root.after(0, self._app._quit)

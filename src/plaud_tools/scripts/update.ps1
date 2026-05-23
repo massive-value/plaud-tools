@@ -67,6 +67,12 @@ $logPath        = Join-Path $env:TEMP "plaud_update_$TrayPid.log"
 $failSentinel   = Join-Path $env:TEMP "plaud_update_failed.txt"
 $successSentinel = Join-Path $env:TEMP "plaud_just_updated.txt"
 
+# Heartbeat: written before Start-Transcript so we can tell whether the script
+# reached PowerShell at all (vs. PowerShell crashing before running any code).
+Set-Content -Path "$env:TEMP\plaud_update_$TrayPid.alive.txt" `
+    -Value "update.ps1 reached at $(Get-Date -Format 'o')" `
+    -Encoding UTF8 -ErrorAction SilentlyContinue
+
 # Wipe any stale failure sentinel from a previous run so we never surface an
 # old failure on top of a successful update.
 Remove-Item $failSentinel -ErrorAction SilentlyContinue
