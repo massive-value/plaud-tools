@@ -29,7 +29,7 @@ jobs:
           Write-Host "pyproject.toml version set to $version"
 
       - name: Install dependencies
-        run: pip install ".[tray,dev]"
+        run: pip install --force-reinstall ".[tray,dev]"
 
       - name: Generate Windows PE version info
         run: python pyinstaller/version_info.py
