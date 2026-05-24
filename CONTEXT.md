@@ -58,6 +58,25 @@ endpoint, refresh on demand.  Until then, simplicity wins.
 
 **Bundle users** and **pip users** have different update and uninstall paths; features in this area must treat them separately.
 
+## Install layout and app data
+
+**Install layout** — the on-disk arrangement of binaries for the *running*
+plaud-tools install, derived from `sys.executable`.  Distribution-channel
+aware (bundle / pip / dev).  Represented by `InstallLayout` in `layout.py`.
+Tray uninstall, tray update, MCP-child process scoping, and AI-client wiring
+all act on the *running* install, never a hardcoded canonical path.  The
+canonical install path (`%LOCALAPPDATA%\Programs\PlaudTools\`) is the
+responsibility of `scripts/install.ps1` and does not survive into the Python
+code.
+
+**App data** — the per-user data directory and the known files inside it
+(session storage, tray log, MCP log, events).  Channel-agnostic,
+platform-aware via `platformdirs`.  On Windows: `%LOCALAPPDATA%\PlaudTools\`.
+On macOS / Linux: per `platformdirs.user_data_dir` conventions.  Lives in
+`appdata.py`.  All log and event files share the data directory; logs do
+not get a separate `user_log_dir` subtree (deliberate — preserves existing
+Windows file locations as a no-op and keeps Mac/Linux conventions simple).
+
 ## Rewrite priorities
 
 - reduce MCP tool count while improving reliability and token efficiency
