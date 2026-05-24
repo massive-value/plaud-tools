@@ -9,7 +9,6 @@ import pytest
 
 from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
 from plaud_tools.mcp import (
-    _decode_jwt_header_safe,
     _diagnose_session_state,
     _emit_session_expired,
     _error_result,
@@ -322,20 +321,6 @@ class TestDiagnoseSessionState:
         diag = _diagnose_session_state()
         assert diag["store_source"] == "file"
         assert diag["token_typ"] == "UT"
-
-
-class TestDecodeJwtHeaderSafe:
-    def test_returns_empty_for_non_jwt(self):
-        assert _decode_jwt_header_safe("not-a-jwt") == {}
-
-    def test_returns_empty_for_garbage(self):
-        assert _decode_jwt_header_safe("a.b.c") == {}
-
-    def test_decodes_valid_header(self):
-        import base64 as _b64
-        header = _b64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
-        out = _decode_jwt_header_safe(f"{header}.payload.sig")
-        assert out == {"alg": "HS256", "typ": "UT"}
 
 
 # ---------------------------------------------------------------------------
