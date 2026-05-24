@@ -15,20 +15,21 @@ import tempfile
 import tkinter as tk
 from pathlib import Path
 
+from ..appdata import events_path as _events_path, tray_log as _tray_log_path
 from ..ps1_templates import render_uninstall_ps1
 from ..session import SessionStore
 
 APP_NAME = "Plaud Tools"
 
 
-# Logging (writes to %LOCALAPPDATA%\PlaudTools\tray.log in frozen builds)
+# Logging (writes to appdata.tray_log() — platform-aware via appdata.py)
 
 
 def _setup_logging() -> None:
-    log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = _tray_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.handlers.RotatingFileHandler(
-        str(log_dir / "tray.log"),
+        str(log_path),
         maxBytes=1_000_000,
         backupCount=3,
         encoding="utf-8",
@@ -478,14 +479,6 @@ def _verify_env() -> "EnvStatus":
         completions_ok=_check_ps_completions(),
         autostart_ok=_autostart_enabled() or _autostart_opted_out(),
     )
-
-
-# Events file path (shared with mcp.py via same convention)
-
-
-def _events_path() -> Path:
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    return localappdata / "PlaudTools" / "events.jsonl"
 
 
 __all__ = [

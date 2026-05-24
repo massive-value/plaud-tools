@@ -8,21 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .appdata import events_path as _events_path
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .query import filter_recordings, parse_isoish, summarize_recording
 from .session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Events file (tray watches this for session_expired notifications)
-# ---------------------------------------------------------------------------
-
-def _events_path() -> Path:
-    """Return the path to the tray events file."""
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    return localappdata / "PlaudTools" / "events.jsonl"
 
 
 def _write_event(event_type: str, **kwargs: Any) -> None:

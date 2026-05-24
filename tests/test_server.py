@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 from plaud_tools.server import _TOOLS, _make_server, _mcp_log_path, _setup_mcp_logging
 
@@ -95,6 +96,10 @@ def test_server_constructs_without_error():
 
 
 def test_mcp_log_path_uses_localappdata(monkeypatch, tmp_path):
+    # appdata.data_dir() branches on sys.platform; pin to win32 so the
+    # LOCALAPPDATA env-var override is honoured on Linux CI as well. This
+    # test pins the Windows-only LOCALAPPDATA behaviour by name.
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     p = _mcp_log_path()
     assert p == tmp_path / "PlaudTools" / "mcp.log"
@@ -102,6 +107,7 @@ def test_mcp_log_path_uses_localappdata(monkeypatch, tmp_path):
 
 def test_setup_mcp_logging_writes_startup_banner(monkeypatch, tmp_path):
     """Pin issue #78 fix: the MCP server now leaves an on-disk audit trail."""
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     root = logging.getLogger()
     saved_handlers = root.handlers[:]
@@ -133,6 +139,7 @@ def test_setup_mcp_logging_attaches_even_when_root_already_has_handlers(monkeypa
     pip-installed plaud-mcp v0.2.2 never write its mcp.log banner even
     though _setup_mcp_logging ran.  We now attach directly.
     """
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     root = logging.getLogger()
     saved_handlers = root.handlers[:]
