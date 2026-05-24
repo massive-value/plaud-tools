@@ -273,7 +273,8 @@ class TrayApp(_BackgroundMixin):
         self._open_url(REPO_URL)
 
     def _open_log_folder(self) -> None:
-        log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PlaudTools"
+        from ..appdata import data_dir as _data_dir
+        log_dir = _data_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(str(log_dir))  # type: ignore[attr-defined]

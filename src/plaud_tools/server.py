@@ -8,7 +8,6 @@ import logging
 import logging.handlers
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 import mcp.server.stdio
@@ -17,15 +16,10 @@ from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
 from . import __version__
+from .appdata import mcp_log as _mcp_log_path
 from .client import PlaudClient
 from .mcp import build_handlers
 from .session import SessionManager, SessionStore
-
-
-def _mcp_log_path() -> Path:
-    """Return ``%LOCALAPPDATA%\\PlaudTools\\mcp.log`` (matches the tray log dir)."""
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    return localappdata / "PlaudTools" / "mcp.log"
 
 
 def _setup_mcp_logging() -> None:

@@ -15,6 +15,7 @@ from typing import Any
 from . import __version__
 from . import ai_clients as _ai_clients_mod
 from .ai_clients import CLIENTS
+from .appdata import tray_log as _log_path
 from .errors import PlaudSessionExpiredError
 from .session import SessionManager, SessionStore
 
@@ -70,11 +71,6 @@ def _ffmpeg_path() -> Path:
     if which:
         return Path(which)
     return Path("ffmpeg")
-
-
-def _log_path() -> Path:
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    return localappdata / "PlaudTools" / "tray.log"
 
 
 # ---------------------------------------------------------------------------

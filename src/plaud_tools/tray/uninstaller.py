@@ -10,6 +10,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
+from ..appdata import data_dir as _data_dir
 from ..ps1_templates import render_uninstall_ps1
 from ..session import SessionStore
 from .setup import (
@@ -99,11 +100,14 @@ def _delete_session_files() -> None:
 
 
 def _delete_log_files() -> None:
-    """Delete tray log files from both the legacy and current log directories."""
-    localappdata = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    # Check both legacy path (Plaud) and potential future path (PlaudTools)
-    for log_dir_name in ("Plaud", "PlaudTools"):
-        log_dir = localappdata / log_dir_name
+    """Delete tray log files from the current data directory (and the legacy Plaud dir)."""
+    current_data_dir = _data_dir()
+    # Check the current data dir and the legacy path (Plaud) for any stragglers
+    candidate_dirs = [current_data_dir]
+    legacy = current_data_dir.parent / "Plaud"
+    if legacy != current_data_dir:
+        candidate_dirs.append(legacy)
+    for log_dir in candidate_dirs:
         if not log_dir.exists():
             continue
         for log_file in log_dir.glob("tray.log*"):
@@ -119,9 +123,11 @@ def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> No
     tray_pid = os.getpid()
     log_dirs: list[str] = []
     if delete_logs:
-        localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        for name in ("PlaudTools", "Plaud"):
-            log_dirs.append(str(Path(localappdata) / name))
+        current_data_dir = _data_dir()
+        log_dirs.append(str(current_data_dir))
+        legacy = current_data_dir.parent / "Plaud"
+        if legacy != current_data_dir:
+            log_dirs.append(str(legacy))
     ps_content = render_uninstall_ps1(
         tray_pid=tray_pid,
         install_dir=str(install_dir),

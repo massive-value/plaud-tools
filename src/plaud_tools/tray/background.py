@@ -98,7 +98,7 @@ class _BackgroundMixin:
                 interval_seconds = random.uniform(20 * 3600, 28 * 3600)
 
     def _event_poll_loop(self) -> None:
-        """Poll %LOCALAPPDATA%\\PlaudTools\\events.jsonl every 5 s for tray events.
+        """Poll ``appdata.events_path()`` every 5 s for tray events.
 
         Currently handles ``session_expired`` events written by the MCP server.
         Lines are consumed (the file is truncated) after reading so events are
