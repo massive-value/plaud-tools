@@ -16,6 +16,7 @@ import tkinter as tk
 from pathlib import Path
 
 from ..appdata import events_path as _events_path, tray_log as _tray_log_path
+from ..layout import InstallLayout
 from ..ps1_templates import render_uninstall_ps1
 from ..session import SessionStore
 
@@ -49,8 +50,14 @@ def _setup_logging() -> None:
 
 
 def _mcp_exe() -> str:
-    if getattr(sys, "frozen", False):
-        return str(Path(sys.executable).parent / "mcp" / "plaud-mcp.exe")
+    """Return the absolute path to plaud-mcp as a string.
+
+    Delegates to InstallLayout.detect() so the path is derived from the running
+    install rather than a hardcoded location.
+    """
+    layout = InstallLayout.detect()
+    if layout.mcp_exe is not None:
+        return str(layout.mcp_exe)
     # Dev fallback: PyInstaller onedir output next to repo root
     return str(Path(__file__).parent.parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe")
 
@@ -266,10 +273,16 @@ def _set_autostart(enable: bool) -> None:
 # First-run environment setup (PATH + PowerShell completions)
 
 
-def _install_dir() -> Path:
-    """Return the canonical install directory (%LOCALAPPDATA%\\Programs\\PlaudTools)."""
-    localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(localappdata) / "Programs" / "PlaudTools"
+def _install_dir() -> Path | None:
+    """Return the root directory of the running install, or None for pip/dev.
+
+    Derived from sys.executable via InstallLayout.detect(), NOT from a
+    hardcoded canonical path.  This closes the latent autostart bug: a bundle
+    extracted outside the canonical path now correctly points the autostart
+    registry entry at the *running* install rather than at the empty canonical
+    location.
+    """
+    return InstallLayout.detect().install_root
 
 
 def _cli_dir() -> Path | None:
@@ -295,21 +308,35 @@ def _completions_dir() -> Path | None:
     return None
 
 
-def _install_completions_dir() -> Path:
-    """Return the expected completions path inside the canonical install dir."""
-    return _install_dir() / "completions"
+def _install_completions_dir() -> Path | None:
+    """Return the expected completions path inside the running install dir, or None.
+
+    Returns None for pip/dev channels where install_root is None (no bundle
+    install directory to anchor the stale-sourcing regex to).
+    """
+    install_root = _install_dir()
+    if install_root is None:
+        return None
+    return install_root / "completions"
 
 
-def _stale_sourcing_re() -> "re.Pattern[str]":
+def _stale_sourcing_re() -> "re.Pattern[str] | None":
     """Regex that matches only sourcing lines that point at the PlaudTools install dir.
 
-    Anchored to the canonical install path so unrelated user scripts that happen
-    to live in a directory called ``completions`` are never touched.
+    Anchored to the running install path (derived from sys.executable) so
+    unrelated user scripts that happen to live in a directory called
+    ``completions`` are never touched.
+
+    Returns None for pip/dev channels where there is no install directory to
+    anchor the pattern to.  Callers must handle the None case.
     """
     import re
+    completions_dir = _install_completions_dir()
+    if completions_dir is None:
+        return None
     # Escape backslashes for use inside a regex; the install dir may contain
     # only standard ASCII path characters so a simple re.escape is safe.
-    install_completions = str(_install_completions_dir())
+    install_completions = str(completions_dir)
     escaped = re.escape(install_completions)
     # Allow either forward or back slashes as the trailing separator.
     return re.compile(
@@ -379,7 +406,10 @@ def _setup_ps_completions() -> None:
         try:
             if profile.exists():
                 content = profile.read_text(encoding="utf-8-sig")
-                lines = [l for l in content.splitlines(keepends=True) if not stale_re.match(l.strip())]
+                lines = [
+                    l for l in content.splitlines(keepends=True)
+                    if stale_re is None or not stale_re.match(l.strip())
+                ]
                 content = "".join(lines)
                 if source_line in content:
                     profile.write_text(content, encoding="utf-8")

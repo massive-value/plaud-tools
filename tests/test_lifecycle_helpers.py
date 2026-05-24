@@ -28,25 +28,42 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _patch_home(monkeypatch, tray_helpers, home_path: Path) -> Path:
-    """Redirect ``Path.home()`` and pin LOCALAPPDATA so that the canonical
-    install directory used by ``_stale_sourcing_re()`` resolves under
-    *home_path*.
+    """Redirect ``Path.home()``, simulate a frozen bundle, and return the
+    expected completions directory so callers can write stale sourcing lines
+    that ``_stale_sourcing_re()`` will match.
 
-    Returns the canonical install completions directory rooted under
-    *home_path* so callers can write stale sourcing lines that the regex
-    actually matches.  The current production regex is anchored to the
-    canonical install dir (``%LOCALAPPDATA%/Programs/PlaudTools``), so a
-    stale path like ``/opt/plaud/completions/plaud.ps1`` is *intentionally*
-    not stripped — only lines under the canonical dir are.
+    After the layout.py migration, ``_stale_sourcing_re()`` derives its anchor
+    from ``sys.executable`` (via ``InstallLayout.detect()``), not from a
+    hardcoded canonical path.  This helper therefore:
+    1. Creates a fake bundle layout rooted at ``home_path/Programs/PlaudTools/``.
+    2. Sets ``sys.frozen = True`` and ``sys.executable`` to point at the CLI exe
+       in that fake layout, so ``InstallLayout.detect()`` produces
+       ``install_root = home_path/Programs/PlaudTools/``.
+    3. Returns ``home_path/Programs/PlaudTools/completions`` — the completions
+       dir the regex will be anchored to.
+
+    Any stale sourcing line pointing at that completions directory will be
+    matched; lines elsewhere will not.
 
     Uses a dotted import path for ``pathlib.Path.home`` so monkeypatch saves
     and restores the classmethod descriptor correctly across Python 3.11–3.13.
     """
     monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: home_path))
-    # Pin LOCALAPPDATA so _install_dir() resolves deterministically under home_path.
     monkeypatch.setenv("LOCALAPPDATA", str(home_path))
-    canonical_completions = home_path / "Programs" / "PlaudTools" / "completions"
-    return canonical_completions
+
+    # Create the fake bundle layout so InstallLayout.detect() resolves correctly.
+    install_root = home_path / "Programs" / "PlaudTools"
+    cli_dir = install_root / "cli"
+    cli_dir.mkdir(parents=True, exist_ok=True)
+    fake_exe = cli_dir / "plaud-tools.exe"
+    if not fake_exe.exists():
+        fake_exe.touch()
+
+    # Simulate frozen bundle: sys.executable points at the CLI exe.
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+
+    return install_root / "completions"
 
 
 # ---------------------------------------------------------------------------

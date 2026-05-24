@@ -59,40 +59,75 @@ class TestEnvStatus:
 # ---------------------------------------------------------------------------
 
 class TestStaleSourceRe:
-    """Verify the stale-sourcing regex is anchored to the install directory."""
+    """Verify the stale-sourcing regex is anchored to the running install directory.
 
-    def _install_completions(self) -> str:
-        return str(_install_completions_dir())
+    After the layout.py migration, _install_completions_dir() returns None in
+    dev/test mode (no frozen bundle).  These tests simulate a frozen bundle by
+    monkeypatching sys.frozen and sys.executable so the regex anchors to a real
+    path derived from sys.executable (not a hardcoded canonical path).
+    """
 
     def _make_line(self, path: str) -> str:
         return f'. "{path}"'
 
-    def test_matches_current_install_path(self):
-        completions = self._install_completions()
-        line = self._make_line(str(Path(completions) / "plaud-tools.ps1"))
-        assert _stale_sourcing_re().match(line.strip()) is not None
+    def _setup_frozen_env(self, monkeypatch, tmp_path: Path) -> Path:
+        """Simulate a frozen bundle and return the expected completions path."""
+        install_root = tmp_path / "PlaudTestInstall"
+        cli_dir = install_root / "cli"
+        cli_dir.mkdir(parents=True)
+        fake_exe = cli_dir / "plaud-tools.exe"
+        fake_exe.touch()
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(fake_exe))
+        return install_root / "completions"
 
-    def test_matches_old_name_in_install_dir(self):
+    def test_matches_current_install_path(self, monkeypatch, tmp_path):
+        completions = self._setup_frozen_env(monkeypatch, tmp_path)
+        line = self._make_line(str(completions / "plaud-tools.ps1"))
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(line.strip()) is not None
+
+    def test_matches_old_name_in_install_dir(self, monkeypatch, tmp_path):
         """Stale lines using the old plaud.ps1 name should also be caught."""
-        completions = self._install_completions()
-        line = self._make_line(str(Path(completions) / "plaud.ps1"))
-        assert _stale_sourcing_re().match(line.strip()) is not None
+        completions = self._setup_frozen_env(monkeypatch, tmp_path)
+        line = self._make_line(str(completions / "plaud.ps1"))
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(line.strip()) is not None
 
-    def test_does_not_match_different_install_dir(self):
+    def test_does_not_match_different_install_dir(self, monkeypatch, tmp_path):
         """Lines pointing at a different completions folder must NOT be removed."""
+        self._setup_frozen_env(monkeypatch, tmp_path)
         other_dir = "C:\\Users\\user\\Documents\\completions\\plaud-tools.ps1"
         line = self._make_line(other_dir)
-        assert _stale_sourcing_re().match(line.strip()) is None
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(line.strip()) is None
 
-    def test_does_not_match_unrelated_script(self):
+    def test_does_not_match_unrelated_script(self, monkeypatch, tmp_path):
         """A user's own completions script should never be matched."""
+        self._setup_frozen_env(monkeypatch, tmp_path)
         line = self._make_line("C:\\Users\\user\\scripts\\my-completions\\plaud-helper.ps1")
-        assert _stale_sourcing_re().match(line.strip()) is None
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(line.strip()) is None
 
-    def test_case_insensitive(self):
-        completions = self._install_completions().upper()
-        line = self._make_line(str(Path(completions) / "plaud-tools.ps1"))
-        assert _stale_sourcing_re().match(line.strip()) is not None
+    def test_case_insensitive(self, monkeypatch, tmp_path):
+        completions = self._setup_frozen_env(monkeypatch, tmp_path)
+        line = self._make_line(str(completions / "plaud-tools.ps1").upper())
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(line.strip()) is not None
+
+    def test_returns_none_in_dev_mode(self):
+        """In dev/pip mode (not frozen), _stale_sourcing_re() returns None."""
+        # In test mode sys.frozen is not set, so the function should return None.
+        assert _stale_sourcing_re() is None
+
+    def test_install_completions_dir_returns_none_in_dev_mode(self):
+        """In dev/pip mode (not frozen), _install_completions_dir() returns None."""
+        assert _install_completions_dir() is None
 
 
 # ---------------------------------------------------------------------------

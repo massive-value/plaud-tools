@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import ttk
 
 from ..appdata import data_dir as _data_dir
+from ..layout import InstallLayout
 from ..ps1_templates import render_uninstall_ps1
 from ..session import SessionStore
 from .setup import (
@@ -65,10 +66,14 @@ def _remove_cli_path() -> None:
 def _remove_ps_completions() -> None:
     """Remove plaud-tools sourcing lines from the user's PowerShell profiles.
 
-    Only lines that point at the canonical PlaudTools install directory are removed;
+    Only lines that point at the running PlaudTools install directory are removed;
     unrelated user scripts in other completions folders are not touched.
+    When _stale_sourcing_re() returns None (pip/dev channel with no install_root),
+    no removal is performed.
     """
     stale_re = _stale_sourcing_re()
+    if stale_re is None:
+        return
     user_docs = Path.home() / "Documents"
     profiles = [
         user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
@@ -302,7 +307,7 @@ class UninstallDialog:
                         parent=self._root,
                     )
                 else:
-                    install_dir = Path(sys.executable).parent
+                    install_dir = InstallLayout.detect().install_root or Path(sys.executable).parent
                     win.destroy()
                     _launch_uninstall_helper(install_dir, delete_logs=var_logs.get())
                     # Quit the tray so the helper can delete the directory.
