@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import sys
 import threading
 import time
 from pathlib import Path
@@ -63,7 +64,12 @@ def test_setup_logging_rotating_handler_limits(tmp_path, monkeypatch):
 
 
 def test_setup_logging_creates_log_file_in_localappdata(tmp_path, monkeypatch):
-    """Log file must land at <LOCALAPPDATA>/PlaudTools/tray.log."""
+    """Log file must land at <LOCALAPPDATA>/PlaudTools/tray.log.
+
+    Pin sys.platform to win32 so appdata.data_dir() honours the LOCALAPPDATA
+    override on Linux CI (which would otherwise use platformdirs.user_data_dir).
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
     root = logging.getLogger()

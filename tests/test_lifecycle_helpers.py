@@ -521,6 +521,9 @@ class TestDeleteLogFiles:
         log2 = log_dir / "tray.log.1"
         log2.write_text("rotated", encoding="utf-8")
 
+        # appdata.data_dir() branches on sys.platform; pin to win32 so the
+        # LOCALAPPDATA env-var override is honoured on Linux CI as well.
+        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
 
@@ -533,6 +536,7 @@ class TestDeleteLogFiles:
         log_file = log_dir / "tray.log"
         log_file.write_text("log", encoding="utf-8")
 
+        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
 
@@ -544,6 +548,7 @@ class TestDeleteLogFiles:
             d.mkdir()
             (d / "tray.log").write_text("x", encoding="utf-8")
 
+        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
 
