@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-05-24
+
+One latent bug fix and a behind-the-scenes refactor cluster (ADR 004)
+preparing for Mac/Linux bundles.
+
+1. **Bundles extracted to a non-canonical path wrote the autostart registry
+   entry to the wrong location.** The canonical install path
+   `%LOCALAPPDATA%\Programs\PlaudTools\` was hardcoded inside the Python
+   tray setup, so a user who manually extracted the bundle to a custom
+   directory (e.g. `C:\Tools\PlaudTools\`) ended up with an autostart entry
+   pointing at the empty canonical location, and the tray failed to start
+   on the next reboot.  Install layout is now derived entirely from
+   `sys.executable` via the new `InstallLayout.detect()`; the canonical
+   path lives only in `scripts/install.ps1` and never leaks into Python.
+   (`src/plaud_tools/layout.py`, `src/plaud_tools/tray/setup.py`; #89)
+
+Architectural cleanup per ADR 004 — no user-visible behaviour change, but
+the path layer is now ready to grow Mac and Linux variants when those
+distribution channels are built:
+
+- New `appdata.py` module owns the per-user data directory and known files
+  inside it (session, tray log, MCP log, events).  Windows path is
+  byte-identical to the previous inline reconstructions; macOS/Linux paths
+  come from `platformdirs.user_data_dir`.  Replaces 9+ inline
+  `%LOCALAPPDATA%\PlaudTools\` reconstructions across the tree.  (#88, #90)
+- New `layout.py` module owns install-layout detection (`InstallLayout`
+  with `bundle`/`pip`/`dev` channels) and executable resolution.  Replaces
+  five independent install-dir computations in `doctor`, tray setup,
+  updater, uninstaller, and `mcp_lifecycle`.  (#89)
+- HTTP-error translation and retryability classification move from
+  `transport.py` and `mcp.py` onto `PlaudApiError.from_http_error()` and
+  `.classify()`.  `transport.py` now carries zero Plaud-domain knowledge.
+  (#86)
+- JWT header decoding and the session-diagnostic snapshot move from
+  `mcp.py` into `session.py` behind `SessionManager.diagnose()`.  The
+  on-the-wire `session_expired` event payload is unchanged field-for-field.
+  (#87)
+
+### Fixed
+
+- **Autostart registry entry now points at the running install dir**, not
+  the hardcoded canonical path.  Bundles relocated by manual extraction
+  (rather than via `install.ps1`) start cleanly on the next reboot.
+  (`src/plaud_tools/layout.py`, `src/plaud_tools/tray/setup.py`)
+
+### Changed
+
+- **`FileSessionStore` default path** moves from
+  `~/.config/plaud-tools/session.json` to
+  `%LOCALAPPDATA%\PlaudTools\session.json` (via `appdata.session_path()`).
+  A one-shot read-only legacy fallback reads from the old location if the
+  new path does not exist; the next `save()` writes to the new path.
+  Affects only the rare case where both the keyring and DPAPI shadow had
+  failed.  (`src/plaud_tools/session.py`)
+- **`platformdirs` added as a runtime dependency** for cross-platform
+  data-directory resolution.  (`pyproject.toml`)
+
 ## [0.2.10] - 2026-05-23
 
 Three bug fixes targeting uninstall reliability and tray UI.
