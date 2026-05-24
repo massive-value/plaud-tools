@@ -15,6 +15,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING
 
 from .. import __version__ as APP_VERSION
+from ..layout import InstallLayout
 from ..ps1_templates import render_update_ps1
 from .setup import APP_NAME, _set_app_icon
 
@@ -231,7 +232,7 @@ class UpdateDialog:
         try:
             _set_status("Installing…")
 
-            install_dir = Path(sys.executable).parent
+            install_dir = InstallLayout.detect().install_root or Path(sys.executable).parent
             tray_pid = os.getpid()
             sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
             fail_sentinel = Path(tempfile.gettempdir()) / "plaud_update_failed.txt"

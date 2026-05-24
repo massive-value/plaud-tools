@@ -17,42 +17,38 @@ from . import ai_clients as _ai_clients_mod
 from .ai_clients import CLIENTS
 from .appdata import tray_log as _log_path
 from .errors import PlaudSessionExpiredError
+from .layout import InstallLayout
 from .session import SessionManager, SessionStore
 
 
 # ---------------------------------------------------------------------------
-# Install-dir / executable resolution
+# Install-dir / executable resolution (delegated to InstallLayout)
 # ---------------------------------------------------------------------------
 
 def _install_dir() -> Path:
     """Return the root directory of the current installation.
 
-    - Frozen bundle: parent of the executable (e.g. .../PlaudTools/cli/)
-    - pip install / dev: the Python executable's parent (site-packages/Scripts).
+    Delegates to InstallLayout.detect() so that both doctor and tray use
+    the same running-install semantics (derived from sys.executable).
+    Returns the executable's parent for pip/dev channels where install_root
+    is None.
     """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent.parent  # cli/ -> PlaudTools/
+    layout = InstallLayout.detect()
+    if layout.install_root is not None:
+        return layout.install_root
     return Path(sys.executable).parent
 
 
 def _cli_exe_path() -> Path:
     """Absolute path to the plaud-tools executable."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable)
-    # pip install: look for plaud-tools script on PATH via shutil.which
-    which = shutil.which("plaud-tools")
-    if which:
-        return Path(which)
-    return Path(sys.executable)
+    return InstallLayout.detect().cli_exe
 
 
-def _mcp_exe_path() -> Path:
-    """Absolute path to the plaud-mcp executable."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent.parent / "mcp" / "plaud-mcp.exe"
-    which = shutil.which("plaud-mcp")
-    if which:
-        return Path(which)
+def _mcp_exe_path() -> Path | None:
+    """Absolute path to the plaud-mcp executable, or a dev-fallback path."""
+    layout = InstallLayout.detect()
+    if layout.mcp_exe is not None:
+        return layout.mcp_exe
     # Dev fallback: PyInstaller onedir output next to repo root
     return (
         Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe"
@@ -65,11 +61,9 @@ def _ffmpeg_path() -> Path:
     In a frozen bundle ffmpeg.exe lives next to plaud-mcp.exe; for pip users
     ffmpeg is expected on the system PATH.
     """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent.parent / "mcp" / "ffmpeg.exe"
-    which = shutil.which("ffmpeg")
-    if which:
-        return Path(which)
+    layout = InstallLayout.detect()
+    if layout.ffmpeg_exe is not None:
+        return layout.ffmpeg_exe
     return Path("ffmpeg")
 
 
