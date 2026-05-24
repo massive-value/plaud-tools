@@ -79,9 +79,22 @@ class TestNamedAccessors:
 
     @pytest.fixture(autouse=True)
     def _pin_data_dir(self, monkeypatch, tmp_path):
-        """Redirect data_dir() to tmp_path so all accessors are deterministic."""
+        """Redirect data_dir() to tmp_path so all accessors are deterministic.
+
+        Also restores the real dpapi_shadow_path implementation (overriding the
+        conftest autouse redirect) so tests here exercise the real function.
+        This is safe because data_dir() is pinned to tmp_path — dpapi_shadow_path
+        can never reach the real %LOCALAPPDATA%\\PlaudTools\\ directory.
+        """
         import plaud_tools.appdata as appdata_mod
         monkeypatch.setattr(appdata_mod, "data_dir", lambda: tmp_path)
+        # Override the conftest's _block_real_dpapi_shadow redirect with the
+        # real implementation (but safely pinned, since data_dir -> tmp_path).
+        def _safe_dpapi_shadow_path():
+            if sys.platform != "win32":
+                return None
+            return appdata_mod.data_dir() / "session.dat"
+        monkeypatch.setattr(appdata_mod, "dpapi_shadow_path", _safe_dpapi_shadow_path)
 
     def test_tray_log_inside_data_dir(self, tmp_path):
         from plaud_tools.appdata import tray_log

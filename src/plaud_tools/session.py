@@ -6,12 +6,12 @@ import importlib
 import json
 import logging
 import os
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import time
 from typing import Any, Literal, Protocol
 
+from . import appdata
 from .errors import PlaudSessionExpiredError
 
 log = logging.getLogger(__name__)
@@ -94,16 +94,6 @@ def _dpapi_unprotect(ciphertext: bytes) -> bytes:
         kernel32.LocalFree(blob_out.pbData)
 
 
-def _default_dpapi_path() -> Path | None:
-    """Production default for the DPAPI shadow file (Windows only)."""
-    if sys.platform != "win32":
-        return None
-    localappdata = os.environ.get("LOCALAPPDATA")
-    if not localappdata:
-        return None
-    return Path(localappdata) / "PlaudTools" / "session.dat"
-
-
 # Sentinel used by ``SessionStore.__init__`` to distinguish "caller did not
 # pass a dpapi_path, please auto-default" from "caller explicitly passed None
 # to disable DPAPI."  Without this, tests cannot opt out of the auto-default
@@ -125,13 +115,23 @@ class SessionStoreProtocol(Protocol):
 
 class FileSessionStore:
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path or Path.home() / ".config" / "plaud-tools" / "session.json")
+        self.path = Path(path) if path is not None else appdata.session_path()
 
     def load(self) -> PlaudSession | None:
-        if not self.path.exists():
-            return None
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        return PlaudSession(**data)
+        if self.path.exists():
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return PlaudSession(**data)
+        # One-shot legacy-path read: if the new appdata path does not exist but
+        # the old ~/.config/plaud-tools/session.json does, read from there.
+        # Subsequent saves go to self.path (the new appdata path).  This handles
+        # the rare users who relied on FileSessionStore as last-resort fallback
+        # (both keyring AND DPAPI unavailable) and whose session.json lives at
+        # the pre-ADR-004 location.
+        legacy = Path.home() / ".config" / "plaud-tools" / "session.json"
+        if legacy.exists():
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+            return PlaudSession(**data)
+        return None
 
     def save(self, session: PlaudSession) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +161,7 @@ class SessionStore:
         # DPAPI path pass an explicit ``dpapi_path`` under ``tmp_path``; tests
         # that want DPAPI explicitly disabled pass ``dpapi_path=None``.
         if dpapi_path is _DPAPI_PATH_DEFAULT:
-            dpapi_path = _default_dpapi_path() if service_name == "plaud-tools" else None
+            dpapi_path = appdata.dpapi_shadow_path() if service_name == "plaud-tools" else None
         self.dpapi_path: Path | None = Path(dpapi_path) if dpapi_path else None  # type: ignore[arg-type]
 
     def load(self) -> PlaudSession | None:

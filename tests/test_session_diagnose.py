@@ -5,7 +5,8 @@ mcp.py into session.py so SessionManager owns all UT-JWT introspection.
 
 All tests that construct SessionStore or SessionManager are covered by the
 autouse fixtures in conftest.py:
-  - _block_real_dpapi_shadow:  redirects _default_dpapi_path -> None
+  - _block_real_dpapi_shadow:  redirects appdata.dpapi_shadow_path -> None
+  - _block_real_session_path:  redirects appdata.session_path -> tmp_path
   - _fail_if_real_shadow_written: mtime trip-wire on the real shadow file
   - _zero_keyring_retry_delay:  collapses retry budget to zero delay
 """

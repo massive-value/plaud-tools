@@ -909,3 +909,170 @@ def test_prime_is_noop_when_dpapi_disabled(tmp_path, monkeypatch):
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
     assert store.prime_dpapi_shadow() is False
+
+
+# ---------------------------------------------------------------------------
+# appdata migration (issue #90)
+# ---------------------------------------------------------------------------
+# These tests cover the migration of session.py to use appdata.py for both
+# the DPAPI shadow path and the FileSessionStore default path.
+# ---------------------------------------------------------------------------
+
+
+def test_file_session_store_default_path_uses_appdata_session_path(monkeypatch, tmp_path):
+    """Trip-wire: FileSessionStore() with no path= argument must resolve to
+    appdata.session_path(), NOT ~/.config/plaud-tools/session.json.
+
+    The autouse _block_real_session_path fixture in conftest.py redirects
+    appdata.session_path to a tmp_path so this test never touches real user data.
+    We verify the resolved path equals whatever appdata.session_path() returns
+    in this context (which is the redirected tmp path).
+    """
+    from plaud_tools import appdata as appdata_mod
+    from plaud_tools.session import FileSessionStore
+
+    expected = appdata_mod.session_path()
+    store = FileSessionStore()
+    # Must use appdata.session_path(), not the old ~/.config path
+    assert store.path == expected
+    # Sanity-check: the old default path must NOT be the resolved path
+    old_default = __import__("pathlib").Path.home() / ".config" / "plaud-tools" / "session.json"
+    assert store.path != old_default, (
+        "FileSessionStore default must point to appdata.session_path(), "
+        "not the legacy ~/.config/plaud-tools/session.json"
+    )
+
+
+def test_session_store_default_dpapi_path_uses_appdata_on_windows(monkeypatch, tmp_path):
+    """Trip-wire: SessionStore with service_name='plaud-tools' and no explicit
+    dpapi_path= must resolve to appdata.dpapi_shadow_path() on Windows.
+
+    The autouse fixture redirects appdata.dpapi_shadow_path -> None so the
+    default is overridden in tests. Here we temporarily undo the redirect on a
+    private instance to verify the wiring.
+    """
+    import sys as _sys
+    from plaud_tools import appdata as appdata_mod
+    from plaud_tools.session import SessionStore, _DPAPI_PATH_DEFAULT
+
+    # Simulate Windows: patch appdata.dpapi_shadow_path to return a known path
+    fake_shadow = tmp_path / "fake_shadow.dat"
+    monkeypatch.setattr(appdata_mod, "dpapi_shadow_path", lambda: fake_shadow)
+    monkeypatch.setattr(_sys, "platform", "win32")
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools")
+    assert store.dpapi_path == fake_shadow, (
+        f"Expected dpapi_path={fake_shadow!r}, got {store.dpapi_path!r}. "
+        "SessionStore must use appdata.dpapi_shadow_path() for the default."
+    )
+
+
+def test_session_store_default_dpapi_path_is_none_off_windows(monkeypatch, tmp_path):
+    """Trip-wire: on non-Windows platforms, the SessionStore default dpapi_path
+    must be None (appdata.dpapi_shadow_path() returns None off Windows).
+    """
+    import sys as _sys
+    from plaud_tools import appdata as appdata_mod
+    from plaud_tools.session import SessionStore
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr(appdata_mod, "dpapi_shadow_path", lambda: None)
+
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools")
+    assert store.dpapi_path is None, (
+        f"Expected dpapi_path=None on non-Windows, got {store.dpapi_path!r}. "
+        "appdata.dpapi_shadow_path() returns None off Windows."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy path migration tests (FileSessionStore.load one-shot fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_file_session_store_load_clean_install(tmp_path, monkeypatch):
+    """Clean install: neither new path nor legacy path exists -> returns None."""
+    from plaud_tools import appdata as appdata_mod
+    from plaud_tools.session import FileSessionStore
+
+    new_path = tmp_path / "new" / "session.json"
+    monkeypatch.setattr(appdata_mod, "session_path", lambda: new_path)
+    store = FileSessionStore()
+    result = store.load()
+    assert result is None
+
+
+def test_file_session_store_load_upgrade_with_legacy_file(tmp_path, monkeypatch):
+    """Upgrade path: new path does not exist but legacy file does.
+    load() reads from legacy; subsequent save() writes to new path.
+    """
+    import json as _json
+    from plaud_tools import appdata as appdata_mod
+    from plaud_tools.session import FileSessionStore, PlaudSession
+
+    new_path = tmp_path / "new" / "session.json"
+    legacy_dir = tmp_path / "legacy" / ".config" / "plaud-tools"
+    legacy_path = legacy_dir / "session.json"
+
+    # Set up legacy file
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        _json.dumps({"access_token": "legacy-tok", "region": "eu", "email": "legacy@example.com"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(appdata_mod, "session_path", lambda: new_path)
+    # Patch Path.home() to return tmp_path / "legacy" so legacy path resolves under tmp
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path / "legacy"))
+
+    store = FileSessionStore()
+    result = store.load()
+
+    assert result is not None, "Should have loaded from legacy path"
+    assert result.access_token == "legacy-tok"
+    assert result.region == "eu"
+    assert result.email == "legacy@example.com"
+
+    # Subsequent save must go to new path
+    store.save(result)
+    assert new_path.exists(), "save() must write to the new appdata path, not the legacy path"
+    saved = _json.loads(new_path.read_text(encoding="utf-8"))
+    assert saved["access_token"] == "legacy-tok"
+
+
+def test_file_session_store_load_upgrade_new_path_wins(tmp_path, monkeypatch):
+    """Both new path and legacy path exist: new path takes precedence.
+    The legacy file is NOT read.
+    """
+    import json as _json
+    from plaud_tools import appdata as appdata_mod
+    from plaud_tools.session import FileSessionStore, PlaudSession
+
+    new_path = tmp_path / "new" / "session.json"
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    new_path.write_text(
+        _json.dumps({"access_token": "new-tok", "region": "us", "email": "new@example.com"}),
+        encoding="utf-8",
+    )
+
+    legacy_dir = tmp_path / "legacy" / ".config" / "plaud-tools"
+    legacy_path = legacy_dir / "session.json"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        _json.dumps({"access_token": "legacy-tok", "region": "eu", "email": "legacy@example.com"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(appdata_mod, "session_path", lambda: new_path)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path / "legacy"))
+
+    store = FileSessionStore()
+    result = store.load()
+
+    assert result is not None
+    assert result.access_token == "new-tok", (
+        "When both new and legacy paths exist, new path must win"
+    )
+    assert result.region == "us"

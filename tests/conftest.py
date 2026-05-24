@@ -39,12 +39,12 @@ def _zero_keyring_retry_delay(monkeypatch):
 
 
 # Capture the real production DPAPI shadow path once at import time, BEFORE
-# any autouse fixture has monkeypatched ``_default_dpapi_path``.  The lazy
-# variant of this lookup would resolve to ``None`` inside the fixtures (the
-# redirect fixture wins) and silently disable the trip-wire.
+# any autouse fixture has monkeypatched ``appdata.dpapi_shadow_path``.  The
+# lazy variant of this lookup would resolve to ``None`` inside the fixtures
+# (the redirect fixture wins) and silently disable the trip-wire.
 try:
-    from plaud_tools.session import _default_dpapi_path as _resolve_default_dpapi_path
-    _REAL_DPAPI_SHADOW_PATH = _resolve_default_dpapi_path()
+    from plaud_tools.appdata import dpapi_shadow_path as _resolve_dpapi_shadow_path
+    _REAL_DPAPI_SHADOW_PATH = _resolve_dpapi_shadow_path()
 except Exception:
     _REAL_DPAPI_SHADOW_PATH = None
 
@@ -55,7 +55,7 @@ def _block_real_dpapi_shadow(monkeypatch):
 
     Any ``SessionStore`` constructed without an explicit ``dpapi_path=`` on
     Windows defaults to the real production shadow path via
-    ``_default_dpapi_path()``.  Before v0.2.8, one such test
+    ``appdata.dpapi_shadow_path()``.  Before v0.2.8, one such test
     (``test_session_store_prefers_keyring_when_available``) silently
     DPAPI-encrypted synthetic test data straight into the user's production
     shadow on every ``pytest`` run, triggering a session_expired toast and a
@@ -63,7 +63,20 @@ def _block_real_dpapi_shadow(monkeypatch):
     the default to ``None`` here means any future regression that forgets
     ``dpapi_path=`` writes nothing — it does not corrupt the user's session.
     """
-    monkeypatch.setattr("plaud_tools.session._default_dpapi_path", lambda: None)
+    monkeypatch.setattr("plaud_tools.appdata.dpapi_shadow_path", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _block_real_session_path(monkeypatch, tmp_path):
+    """Refuse to touch the user's real %LOCALAPPDATA%\\PlaudTools\\session.json.
+
+    ``FileSessionStore()`` constructed without an explicit ``path=`` resolves to
+    ``appdata.session_path()``.  Without this redirect, any test that constructs
+    a bare ``FileSessionStore()`` would read from or write to the real user's
+    session file.  Redirect to a per-test tmp directory so accidental omissions
+    fail safely (file simply won't exist) rather than corrupting real state.
+    """
+    monkeypatch.setattr("plaud_tools.appdata.session_path", lambda: tmp_path / "session.json")
 
 
 @pytest.fixture(autouse=True)
@@ -73,9 +86,9 @@ def _fail_if_real_shadow_written():
     The ``_block_real_dpapi_shadow`` redirect handles the common case of a
     test forgetting ``dpapi_path=``.  This fixture catches the case where a
     future test *bypasses* the redirect — e.g. by monkeypatching
-    ``_default_dpapi_path`` back, or by manually constructing the production
-    path.  Snapshot is per-test so the user's tray rewriting the shadow
-    between tests does not produce false positives.
+    ``appdata.dpapi_shadow_path`` back, or by manually constructing the
+    production path.  Snapshot is per-test so the user's tray rewriting the
+    shadow between tests does not produce false positives.
     """
     shadow = _REAL_DPAPI_SHADOW_PATH
     if shadow is None:
