@@ -10,7 +10,7 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import time
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from .errors import PlaudSessionExpiredError
 
@@ -18,6 +18,25 @@ log = logging.getLogger(__name__)
 
 TOKEN_REFRESH_BUFFER_SECONDS = 30 * 24 * 60 * 60
 _SECONDS_PER_DAY = 86_400
+
+
+def _decode_header_safe(jwt: str) -> dict[str, Any]:
+    """Decode the header segment of a JWT without verifying the signature.
+
+    Returns an empty dict on any parse error.  Mirrors ``_decode_expiry`` but
+    operates on the header (index 0) rather than the payload (index 1).
+    """
+    parts = jwt.split(".")
+    if len(parts) != 3:
+        return {}
+    header = parts[0] + "=" * (-len(parts[0]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(header.encode("ascii"))
+        obj = json.loads(decoded.decode("utf-8"))
+        return obj if isinstance(obj, dict) else {}
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
 
 # Legacy credentials written by the predecessor TypeScript tool
 # (``plaud-toolkit``).  Stored as two separate Windows Credential Manager
@@ -593,3 +612,45 @@ class SessionManager:
             return None
         exp = obj.get("exp")
         return int(exp) if isinstance(exp, int | float) else None
+
+    def diagnose(self) -> dict[str, Any]:
+        """Best-effort snapshot of the session as seen by this SessionManager.
+
+        Returns a dict with the following fields (all are session-y; MCP-local
+        fields like ``mcp_pid`` and ``mcp_version`` are added by the caller):
+
+        Always present:
+          - ``store_source``: one of ``env``, ``keyring``, ``legacy_keyring``,
+            ``dpapi_file``, ``file``, or ``missing``.
+
+        Present when a session was loaded:
+          - ``region``: the session region string.
+          - ``email_present``: bool — True if the session carries an email.
+          - ``token_typ``: the ``typ`` JWT header claim, if decodable.
+          - ``days_until_expiry``: whole days until expiry, if decodable.
+
+        Present only on unexpected failure:
+          - ``diagnose_error``: ``"ExcType: message"`` string.
+        """
+        diag: dict[str, Any] = {}
+        try:
+            store = self.store
+            if hasattr(store, "load_with_source"):
+                session, source = store.load_with_source()
+            else:
+                session = store.load()
+                source = "missing" if session is None else "file"
+            diag["store_source"] = source
+            if session is not None:
+                diag["region"] = session.region
+                diag["email_present"] = bool(session.email)
+                header = _decode_header_safe(session.access_token)
+                if header:
+                    diag["token_typ"] = header.get("typ")
+                exp = self._decode_expiry(session.access_token)
+                if exp is not None:
+                    remaining = exp - int(time())
+                    diag["days_until_expiry"] = max(0, remaining // _SECONDS_PER_DAY)
+        except Exception as exc:
+            diag["diagnose_error"] = f"{type(exc).__name__}: {exc}"
+        return diag

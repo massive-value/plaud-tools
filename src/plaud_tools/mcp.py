@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -44,26 +43,13 @@ def _write_event(event_type: str, **kwargs: Any) -> None:
 # fields are safe metadata; token bytes never appear here.
 # ---------------------------------------------------------------------------
 
-def _decode_jwt_header_safe(token: str) -> dict[str, Any]:
-    parts = token.split(".")
-    if len(parts) != 3:
-        return {}
-    header = parts[0] + "=" * (-len(parts[0]) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode(header.encode("ascii"))
-        obj = json.loads(decoded.decode("utf-8"))
-        return obj if isinstance(obj, dict) else {}
-    except (ValueError, json.JSONDecodeError):
-        return {}
-
-
 def _diagnose_session_state() -> dict[str, Any]:
     """Best-effort snapshot of how the MCP currently sees the user session.
 
-    Used to enrich the session_expired event payload so the tray log and on-disk
-    mcp.log carry enough context to distinguish keyring-isolation issues,
-    stale env-var overrides, malformed tokens, and 30-day-buffer trips without
-    needing to reproduce the failure.
+    Thin wrapper: calls ``SessionManager(SessionStore()).diagnose()`` for the
+    session-y fields, then merges in MCP-process-local fields (PID, app version,
+    env-token-present flag).  This keeps all JWT introspection in session.py
+    while leaving only facade-local metadata here.  See ADR 004.
     """
     # Lazy import to avoid the circular import surfaced by
     # ``plaud_tools/__init__.py`` re-exporting ``build_handlers`` from this module.
@@ -74,25 +60,9 @@ def _diagnose_session_state() -> dict[str, Any]:
         "mcp_version": _app_version,
         "env_token_present": bool(os.getenv("PLAUD_ACCESS_TOKEN")),
     }
-    try:
-        store = SessionStore()
-        session, source = store.load_with_source()
-        diag["store_source"] = source
-        if session is not None:
-            diag["region"] = session.region
-            diag["email_present"] = bool(session.email)
-            header = _decode_jwt_header_safe(session.access_token)
-            if header:
-                diag["token_typ"] = header.get("typ")
-            try:
-                manager = SessionManager(store)
-                days = manager.days_until_expiry()
-                if days is not None:
-                    diag["days_until_expiry"] = days
-            except Exception as exc:
-                diag["days_decode_error"] = type(exc).__name__
-    except Exception as exc:
-        diag["diagnose_error"] = f"{type(exc).__name__}: {exc}"
+    store = SessionStore()
+    manager = SessionManager(store)
+    diag.update(manager.diagnose())
     return diag
 
 
