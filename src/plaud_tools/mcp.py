@@ -107,16 +107,6 @@ def _emit_session_expired(reason: str) -> None:
 # Structured error helpers
 # ---------------------------------------------------------------------------
 
-def _classify_api_error(exc: PlaudApiError) -> tuple[str, bool]:
-    """Return (error_code, retryable) for a PlaudApiError."""
-    status = exc.http_status
-    if status == 404:
-        return "not_found", False
-    if status is not None and (status == 429 or status >= 500):
-        return "transient", True
-    return "api_error", False
-
-
 def _json_result(value: Any, is_error: bool = False) -> dict[str, Any]:
     result = {"content": [{"type": "text", "text": json.dumps(value, indent=2)}]}
     if is_error:
@@ -160,7 +150,7 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
             retryable=False,
         )
     except PlaudApiError as exc:
-        code, retryable = _classify_api_error(exc)
+        code, retryable = exc.classify()
         return _error_result(
             str(exc),
             error_code=code,

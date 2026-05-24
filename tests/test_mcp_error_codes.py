@@ -9,7 +9,6 @@ import pytest
 
 from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
 from plaud_tools.mcp import (
-    _classify_api_error,
     _decode_jwt_header_safe,
     _diagnose_session_state,
     _emit_session_expired,
@@ -21,7 +20,7 @@ from plaud_tools.mcp import (
 
 
 # ---------------------------------------------------------------------------
-# _classify_api_error mapping
+# PlaudApiError.classify() mapping (formerly _classify_api_error in mcp.py)
 # ---------------------------------------------------------------------------
 
 class TestClassifyApiError:
@@ -31,42 +30,42 @@ class TestClassifyApiError:
         return PlaudApiError("some error", http_status=http_status)
 
     def test_404_maps_to_not_found(self):
-        code, retryable = _classify_api_error(self._make_err(404))
+        code, retryable = self._make_err(404).classify()
         assert code == "not_found"
         assert retryable is False
 
     def test_429_maps_to_transient_and_retryable(self):
-        code, retryable = _classify_api_error(self._make_err(429))
+        code, retryable = self._make_err(429).classify()
         assert code == "transient"
         assert retryable is True
 
     def test_500_maps_to_transient_and_retryable(self):
-        code, retryable = _classify_api_error(self._make_err(500))
+        code, retryable = self._make_err(500).classify()
         assert code == "transient"
         assert retryable is True
 
     def test_503_maps_to_transient_and_retryable(self):
-        code, retryable = _classify_api_error(self._make_err(503))
+        code, retryable = self._make_err(503).classify()
         assert code == "transient"
         assert retryable is True
 
     def test_400_maps_to_api_error(self):
-        code, retryable = _classify_api_error(self._make_err(400))
+        code, retryable = self._make_err(400).classify()
         assert code == "api_error"
         assert retryable is False
 
     def test_401_maps_to_api_error(self):
-        code, retryable = _classify_api_error(self._make_err(401))
+        code, retryable = self._make_err(401).classify()
         assert code == "api_error"
         assert retryable is False
 
     def test_403_maps_to_api_error(self):
-        code, retryable = _classify_api_error(self._make_err(403))
+        code, retryable = self._make_err(403).classify()
         assert code == "api_error"
         assert retryable is False
 
     def test_none_status_maps_to_api_error(self):
-        code, retryable = _classify_api_error(self._make_err(None))
+        code, retryable = self._make_err(None).classify()
         assert code == "api_error"
         assert retryable is False
 
