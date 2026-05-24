@@ -101,6 +101,79 @@ class TestBundleChannel:
             layout = InstallLayout.detect()
         assert layout.channel in ("pip", "dev")
 
+    def test_tray_exe_at_install_root_resolves_install_root_to_exe_dir(
+        self, monkeypatch, tmp_path
+    ):
+        """Tray exe sits AT the install root (no cli/ subdirectory).
+
+        Per scripts/install.ps1 and pyinstaller/plaud-tray.spec, the tray
+        entry point is .../PlaudTools/PlaudTools.exe — directly at the install
+        root.  install_root must therefore equal exe.parent, NOT exe.parent.parent
+        (which would point at the grandparent and silently break tray autostart,
+        PATH munging, completions setup, and the uninstaller delete target).
+        """
+        # Construct a tray layout: install_root = tmp_path, no cli/ subdir.
+        tray_exe = tmp_path / "PlaudTools.exe"
+        tray_exe.touch()
+        (tmp_path / "mcp").mkdir()
+        (tmp_path / "mcp" / "plaud-mcp.exe").touch()
+        (tmp_path / "mcp" / "ffmpeg.exe").touch()
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(tray_exe))
+
+        layout = InstallLayout.detect()
+
+        assert layout.channel == "bundle"
+        # install_root is exe_dir (NOT exe_dir.parent — that would be the
+        # grandparent and break every production tray consumer).
+        assert layout.install_root == tmp_path, (
+            f"tray exe install_root was {layout.install_root!r}; expected "
+            f"{tmp_path!r}.  Walking up one level too far would silently break "
+            f"the autostart registry entry, PATH update, and uninstaller target."
+        )
+        assert layout.mcp_exe == tmp_path / "mcp" / "plaud-mcp.exe"
+        assert layout.ffmpeg_exe == tmp_path / "mcp" / "ffmpeg.exe"
+
+    def test_tray_exe_cli_exe_field_falls_back_to_tray_when_cli_subdir_missing(
+        self, monkeypatch, tmp_path
+    ):
+        """When the tray is the running exe and there is no cli/ subdir,
+        cli_exe falls back to the tray exe path (rather than pointing at a
+        non-existent file).
+        """
+        tray_exe = tmp_path / "PlaudTools.exe"
+        tray_exe.touch()
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(tray_exe))
+
+        layout = InstallLayout.detect()
+
+        # No cli/plaud-tools.exe exists, so cli_exe defaults to the tray exe.
+        assert layout.cli_exe == tray_exe
+
+    def test_tray_exe_cli_exe_field_uses_cli_subdir_when_present(
+        self, monkeypatch, tmp_path
+    ):
+        """When the tray is running but a sibling cli/plaud-tools.exe exists,
+        cli_exe points at the CLI executable (the more useful target for
+        external callers wanting to invoke the CLI).
+        """
+        tray_exe = tmp_path / "PlaudTools.exe"
+        tray_exe.touch()
+        cli_dir = tmp_path / "cli"
+        cli_dir.mkdir()
+        cli_exe = cli_dir / "plaud-tools.exe"
+        cli_exe.touch()
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(tray_exe))
+
+        layout = InstallLayout.detect()
+
+        assert layout.cli_exe == cli_exe
+
 
 # ---------------------------------------------------------------------------
 # REGRESSION TEST — the canonical-path autostart bug
@@ -190,6 +263,40 @@ class TestCanonicalPathRegression:
 
         assert layout.mcp_exe == custom_root / "mcp" / "plaud-mcp.exe"
         assert layout.ffmpeg_exe == custom_root / "mcp" / "ffmpeg.exe"
+
+    def test_tray_exe_at_non_canonical_path_produces_correct_install_root(
+        self, monkeypatch, tmp_path
+    ):
+        """Tray exe regression: PlaudTools.exe relocated to a non-canonical
+        path must derive install_root from sys.executable.
+
+        This is the exact production scenario the canonical-path bug fix
+        targets: tray/setup.py:_install_dir() previously hardcoded the
+        canonical %LOCALAPPDATA%\\Programs\\PlaudTools\\ path, so a tray
+        running from anywhere else would write its autostart entry pointing
+        at the empty canonical location.  With install_root derived from
+        sys.executable, the autostart entry now correctly points at the
+        actual install.
+        """
+        non_canonical_root = tmp_path / "PlaudCustom"
+        non_canonical_root.mkdir()
+        tray_exe = non_canonical_root / "PlaudTools.exe"
+        tray_exe.touch()
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(tray_exe))
+
+        layout = InstallLayout.detect()
+
+        assert layout.install_root == non_canonical_root, (
+            f"Tray exe install_root was {layout.install_root!r}; expected "
+            f"{non_canonical_root!r}.  The tray is the autostart-relevant "
+            f"entry point — if its install_root is wrong, the registry "
+            f"entry written by _set_autostart points at the wrong location."
+        )
+        # And not at any hardcoded canonical path.
+        assert "Programs" not in str(layout.install_root) or \
+               layout.install_root == non_canonical_root
 
 
 # ---------------------------------------------------------------------------

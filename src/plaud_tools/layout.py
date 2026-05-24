@@ -93,30 +93,35 @@ class InstallLayout:
 
     @classmethod
     def _detect_bundle(cls, exe: Path) -> "InstallLayout":
-        """Build a bundle layout from the frozen executable path."""
-        # install_root = parent of the exe's directory
-        # e.g.  .../PlaudTools/cli/plaud-tools.exe → .../PlaudTools/
-        #        .../PlaudTools/PlaudTools.exe       → .../PlaudTools/
+        """Build a bundle layout from the frozen executable path.
+
+        The bundle ships TWO frozen entry points (per ``scripts/install.ps1``
+        and ``pyinstaller/plaud-tray.spec``):
+
+        - **CLI** at ``.../PlaudTools/cli/plaud-tools.exe`` (in a ``cli/``
+          subdirectory).
+        - **Tray** at ``.../PlaudTools/PlaudTools.exe`` (directly at the
+          install root, no subdirectory).
+
+        ``install_root`` must resolve to ``.../PlaudTools/`` in both cases —
+        walking up one level for the CLI exe, but staying put for the tray exe.
+        """
         exe_dir = exe.parent
-        install_root = exe_dir.parent
-
-        # If the exe is directly in install_root (tray app layout), keep it.
-        # If it's in a sub-directory (cli/ layout), walk up one level.
-        # Heuristic: if the stem matches the CLI stem the exe is in cli/.
         exe_stem = exe.stem.lower()
-        if exe_stem == _BUNDLE_CLI_STEM.lower():
-            # .../PlaudTools/cli/plaud-tools.exe → install_root is cli/..
-            install_root = exe_dir.parent
-        else:
-            # .../PlaudTools/PlaudTools.exe → install_root is exe_dir.parent
-            # (same calc, kept explicit for clarity)
-            install_root = exe_dir.parent
 
-        # CLI exe: the frozen entry point is the exe itself for the CLI;
-        # or if we're running as the tray, look in cli/
         if exe_stem == _BUNDLE_CLI_STEM.lower():
+            # .../PlaudTools/cli/plaud-tools.exe → install_root is cli/'s parent
+            install_root = exe_dir.parent
             cli_exe: Path = exe
+        elif exe_stem == _BUNDLE_TRAY_STEM.lower():
+            # .../PlaudTools/PlaudTools.exe → install_root IS the exe directory
+            install_root = exe_dir
+            cli_candidate = install_root / "cli" / f"{_BUNDLE_CLI_STEM}.exe"
+            cli_exe = cli_candidate if cli_candidate.exists() else exe
         else:
+            # Unknown frozen entry point: assume it sits at the install root.
+            # Defensive fallback so future bundle entry points don't crash here.
+            install_root = exe_dir
             cli_candidate = install_root / "cli" / f"{_BUNDLE_CLI_STEM}.exe"
             cli_exe = cli_candidate if cli_candidate.exists() else exe
 
