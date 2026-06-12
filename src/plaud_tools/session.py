@@ -261,10 +261,6 @@ class SessionStore:
     # are treated the same — both look transient in practice and the loop
     # handles them uniformly.
     _KEYRING_RETRY_DELAYS_S: tuple[float, ...] = (0.1, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
-    # Legacy alias retained so tests that monkeypatch this to 0.0 keep working
-    # — when the delays tuple references this attribute via the property below
-    # the override still flows through.
-    _KEYRING_RETRY_DELAY_S = 0.1
 
     @property
     def _keyring_retry_attempts(self) -> int:
@@ -281,7 +277,7 @@ class SessionStore:
                 result = keyring.get_password(self.service_name, self.account_name)
             except Exception:
                 if attempt < total:
-                    delay = delays[attempt - 1] if self._KEYRING_RETRY_DELAY_S else 0.0
+                    delay = delays[attempt - 1]
                     log.warning(
                         "keyring.get_password raised on attempt %d of %d for service=%r "
                         "account=%r; retrying in %.3fs",
@@ -307,7 +303,7 @@ class SessionStore:
             if result is not None:
                 return str(result)  # keyring.get_password returns Any; we know it's a str here
             if attempt < total:
-                delay = delays[attempt - 1] if self._KEYRING_RETRY_DELAY_S else 0.0
+                delay = delays[attempt - 1]
                 log.warning(
                     "keyring.get_password returned None on attempt %d of %d for service=%r "
                     "account=%r; retrying in %.3fs",

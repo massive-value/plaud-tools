@@ -27,15 +27,17 @@ def _zero_keyring_retry_delay(monkeypatch):
     out Windows Credential Manager hiccups on cold-start.  Tests that
     exercise the "no session" path against the real keyring (e.g. CLI
     invocations under a synthetic service name) would otherwise pay that
-    full budget per call, padding the suite by ~10 s.  Forcing the base
-    delay to 0 keeps the retry *shape* (attempt count, log lines, ordering)
-    identical while collapsing wall-clock time.
+    full budget per call, padding the suite by ~10 s.  Replacing the delays
+    sequence with an empty tuple collapses both the wall-clock time *and* the
+    retry count to a single attempt, keeping non-retry-shape tests instant.
+    Tests that explicitly verify retry behaviour override this fixture with a
+    zero-delay sequence of the appropriate length.
     """
     try:
         from plaud_tools.session import SessionStore
     except Exception:
         return
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0, raising=False)
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", (), raising=False)
 
 
 # Capture the real production DPAPI shadow path once at import time, BEFORE
