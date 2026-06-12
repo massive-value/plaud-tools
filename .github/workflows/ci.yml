@@ -73,3 +73,26 @@ jobs:
 
       - name: Smoke test CLI executable
         run: out\plaud-cli\plaud-tools\plaud-tools.exe --version
+
+      - name: Download ffmpeg (pinned)
+        run: |
+          # Pinned to ffmpeg 8.1.1 (essentials build) — same pin as release.yml.
+          # SHA-256 sourced from https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.1-essentials_build.zip.sha256
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.1-essentials_build.zip"
+          $expectedHash = "6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541"
+          Invoke-WebRequest $ffmpegUrl -OutFile ffmpeg.zip
+          $actualHash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "ffmpeg SHA-256 mismatch! expected=$expectedHash actual=$actualHash"
+            exit 1
+          }
+          Write-Host "ffmpeg SHA-256 verified: $actualHash"
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp
+          $exe = Get-ChildItem ffmpeg-tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $ffmpegDir = $exe.DirectoryName
+          Write-Host "ffmpeg located at: $($exe.FullName)"
+          # Add ffmpeg's directory to PATH for subsequent steps.
+          echo "$ffmpegDir" >> $env:GITHUB_PATH
+
+      - name: Run ffmpeg transcode smoke
+        run: python scripts/ffmpeg_smoke.py
