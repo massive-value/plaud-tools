@@ -59,6 +59,23 @@ def _setup_mcp_logging() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Annotation policy — Decision D4 (Wave 2 / C6)
+#
+# Servers DECLARE capability hints via ToolAnnotations; clients ENFORCE policy
+# (e.g. confirmation dialogs, audit trails).  This server never shows
+# interactive prompts — it runs over stdio — so destructive safety is achieved
+# by two complementary mechanisms:
+#
+#   1. ToolAnnotations: machine-readable hints that well-behaved clients use to
+#      surface warnings or gate execution.
+#   2. A required `confirm: true` parameter on delete_recording (the only truly
+#      irreversible tool) so the LLM must explicitly pass the flag after the
+#      human confirms; the handler rejects the call if confirm is absent or false.
+#
+# openWorldHint=True is set on every tool: all calls interact with the external
+# Plaud service and may observe or affect state not visible in this conversation.
+# ---------------------------------------------------------------------------
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="browse_recordings",
@@ -94,6 +111,13 @@ _TOOLS: list[types.Tool] = [
                 },
             },
         },
+        # Pure read — no writes, no side-effects.
+        # idempotentHint omitted: redundant when readOnlyHint=True (reads are
+        # inherently idempotent; stating it again adds noise without value).
+        annotations=types.ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="get_recording",
@@ -113,6 +137,11 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id"],
         },
+        # Pure read — same rationale as browse_recordings.
+        annotations=types.ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="mutate_recording",
@@ -140,6 +169,14 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id", "mutation"],
         },
+        # Reversible write (trash/restore are inverses; rename/move are
+        # undoable).  destructiveHint=False signals the client that no
+        # data is permanently lost.  idempotentHint omitted: repeated
+        # renames with a different new_name have different outcomes.
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="delete_recording",
@@ -148,9 +185,25 @@ _TOOLS: list[types.Tool] = [
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Must be true to proceed. Set this only after the human has "
+                        "explicitly confirmed they want to permanently delete the recording. "
+                        "Re-invoke with confirm=true after obtaining confirmation."
+                    ),
+                },
             },
-            "required": ["recording_id"],
+            "required": ["recording_id", "confirm"],
         },
+        # Hard delete: irreversible.  destructiveHint=True + idempotentHint=False
+        # because deleting an already-deleted ID will raise an error from Plaud
+        # (not a no-op), so clients must not retry blindly.
+        annotations=types.ToolAnnotations(
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="rename_speaker",
@@ -170,6 +223,15 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id", "original_label", "new_name"],
         },
+        # Additive label edit — reversible by calling again with swapped args.
+        # idempotentHint=True: applying the same rename twice leaves the
+        # transcript in the same final state (all occurrences of original_label
+        # become new_name; the second call is a no-op if the label no longer exists).
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="upload_recording",
@@ -200,6 +262,13 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["file_path"],
         },
+        # Additive — creates a new recording; does not modify existing data.
+        # idempotentHint omitted: uploading the same file twice creates two
+        # separate recordings, so the operation is not idempotent.
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="list_folders",
@@ -208,6 +277,11 @@ _TOOLS: list[types.Tool] = [
             "type": "object",
             "properties": {},
         },
+        # Pure read — same rationale as browse_recordings / get_recording.
+        annotations=types.ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="process_recording",
@@ -246,6 +320,15 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id"],
         },
+        # Additive compute — triggers AI processing; does not delete or
+        # overwrite existing user data (the transcript/summary are new artifacts).
+        # idempotentHint=True: re-triggering on an already-processed recording
+        # is a no-op on the Plaud side (the existing transcript is kept).
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
     ),
     types.Tool(
         name="merge_recordings",
@@ -265,6 +348,14 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_ids", "title"],
         },
+        # Creates a new merged recording; the source recordings remain.
+        # destructiveHint=False: sources are not deleted by the merge itself.
+        # idempotentHint omitted: merging the same IDs twice creates two
+        # separate merged recordings (not idempotent).
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
     ),
 ]
 

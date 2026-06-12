@@ -102,12 +102,17 @@
     "description": "Permanently and irreversibly delete a recording.",
     "inputSchema": {
       "properties": {
+        "confirm": {
+          "description": "Must be true to proceed. Set this only after the human has explicitly confirmed they want to permanently delete the recording. Re-invoke with confirm=true after obtaining confirmation.",
+          "type": "boolean"
+        },
         "recording_id": {
           "type": "string"
         }
       },
       "required": [
-        "recording_id"
+        "recording_id",
+        "confirm"
       ],
       "type": "object"
     },

@@ -69,8 +69,9 @@ def test_server_mutate_recording_has_no_original_label_param():
 
 
 def test_server_delete_recording_requires_recording_id():
+    # D4: confirm is now a required field alongside recording_id.
     tool = next(t for t in _TOOLS if t.name == "delete_recording")
-    assert tool.inputSchema["required"] == ["recording_id"]
+    assert set(tool.inputSchema["required"]) == {"recording_id", "confirm"}
 
 
 def test_server_rename_speaker_requires_all_three_params():

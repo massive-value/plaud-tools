@@ -567,3 +567,61 @@ class TestWriteEventRotation:
 
         rotated = tmp_path / "events.jsonl.1"
         assert not rotated.exists(), "events.jsonl.1 must NOT exist below cap"
+
+
+# ---------------------------------------------------------------------------
+# delete_recording confirm gate (Wave 2 / C6 — Decision D4)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteRecordingConfirmGate:
+    """Verify that delete_recording enforces the confirm=True gate (D4).
+
+    The MCP surface cannot show interactive prompts over stdio, so the handler
+    must block deletes unless the caller explicitly passes confirm=True —
+    the LLM-native equivalent of the CLI's --yes flag.
+    """
+
+    def _handlers(self):
+        mock_client = MagicMock()
+        # delete_recordings must not be called unless confirm=True
+        mock_client.delete_recordings = MagicMock()
+        return build_handlers(lambda: mock_client), mock_client
+
+    def test_delete_without_confirm_returns_validation_error(self):
+        """Calling delete_recording without confirm → validation error, no delete."""
+        handlers, mock_client = self._handlers()
+
+        result = handlers["delete_recording"](recording_id="rec-abc")
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        assert payload["retryable"] is False
+        assert "confirm" in payload["error"].lower()
+        # The actual delete must NOT have been attempted.
+        mock_client.delete_recordings.assert_not_called()
+
+    def test_delete_with_confirm_false_returns_validation_error(self):
+        """Passing confirm=False explicitly also triggers the gate."""
+        handlers, mock_client = self._handlers()
+
+        result = handlers["delete_recording"](recording_id="rec-abc", confirm=False)
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        assert payload["retryable"] is False
+        mock_client.delete_recordings.assert_not_called()
+
+    def test_delete_with_confirm_true_proceeds(self):
+        """With confirm=True the handler invokes the client delete method."""
+        handlers, mock_client = self._handlers()
+        # Make delete_recordings return None (success)
+        mock_client.delete_recordings.return_value = None
+
+        result = handlers["delete_recording"](recording_id="rec-abc", confirm=True)
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload.get("ok") is True
+        assert payload["recording_id"] == "rec-abc"
+        # Exactly one call with the correct ID list.
+        mock_client.delete_recordings.assert_called_once_with(["rec-abc"])

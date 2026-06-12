@@ -77,6 +77,35 @@ On macOS / Linux: per `platformdirs.user_data_dir` conventions.  Lives in
 not get a separate `user_log_dir` subtree (deliberate — preserves existing
 Windows file locations as a no-op and keeps Mac/Linux conventions simple).
 
+## Destructive-operation handling — CLI vs MCP (Decision D4)
+
+The CLI and MCP surfaces apply different but complementary mechanisms to guard
+destructive operations:
+
+**CLI (`cli.py`)** — interactive sessions use a `--yes` / `-y` flag.  Without
+the flag, a destructive subcommand (e.g. `plaud delete`) prints a confirmation
+prompt and exits; with `--yes` it proceeds immediately.  This is appropriate
+for terminal users who can read and respond to stdout.
+
+**MCP (`server.py` + `mcp.py`)** — the MCP server runs over stdio and cannot
+display interactive prompts.  Safety is layered:
+
+1. `ToolAnnotations` on every `types.Tool` entry in `_TOOLS` declare
+   machine-readable capability hints (`readOnlyHint`, `destructiveHint`,
+   `idempotentHint`, `openWorldHint`).  Well-behaved MCP clients (e.g. Claude
+   Desktop) surface these to the user or gate execution automatically.
+2. `delete_recording` additionally requires a `confirm: boolean` parameter.
+   When `confirm` is absent or `false`, the handler returns a structured
+   validation error (`error_code: "validation"`) instructing the caller to
+   re-invoke with `confirm=true` only after obtaining explicit human approval.
+   This means even clients that ignore `ToolAnnotations` cannot silently
+   hard-delete a recording.
+
+**Rationale:** servers declare capability hints; clients enforce policy.  No
+server-side interactive prompt is possible over stdio.  The `confirm` gate is
+the MCP-native equivalent of `--yes`, moved into the tool schema so the LLM
+must carry explicit evidence of consent through the call.
+
 ## Rewrite priorities
 
 - reduce MCP tool count while improving reliability and token efficiency
