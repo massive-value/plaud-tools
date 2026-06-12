@@ -33,6 +33,7 @@ dependencies = [
     "keyring>=25,<26",
     "mcp>=1.0,<2.0",
     "platformdirs>=4.0",
+    "tomlkit>=0.12",
 ]
 
 [project.urls]
