@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Developer tooling & CI (audit remediation, wave 1)
+
+Quality-baseline work. No runtime behaviour change; raises the floor for
+every future change.
+
+- **Ruff lint + format** adopted repo-wide (line-length 110; rules
+  E/F/W/I/UP/B). A `lint` CI job enforces `ruff check` and
+  `ruff format --check`. (#102)
+- **Mypy baseline.** Lenient global config with stricter per-module
+  opt-ins for `session`, `client`, `layout`, `appdata`; a `py.typed`
+  marker now ships in the wheel/sdist; mypy runs in the `lint` CI job.
+  Type-checking is pinned to `platform = "win32"` (Windows-first bundle)
+  for deterministic cross-runner results. (#106)
+- **Tri-platform CI matrix (owner decision D2).** Tests now run on
+  windows + ubuntu + **macOS** × Python 3.11–3.13. Fixed a handful of
+  tests that assumed a Windows/Linux-only world. (#105)
+- **Real-ffmpeg transcode smoke.** The Windows bundle-smoke CI job now
+  generates a WAV and round-trips it through the real `transcode_to_mp3`
+  ffmpeg subprocess, asserting MP3 output — catching ffmpeg-integration
+  regressions the stubbed unit tests can't. (#103)
+- **`query.py` unit tests.** Direct coverage for `parse_isoish`,
+  `filter_recordings` (incl. the unfiled vs `folder_id=""` equivalence),
+  and `summarize_recording`. (#104)
+
 ### Hardening (audit remediation, wave 0)
 
 Robustness and supply-chain quick wins from the v0.2.11 principal audit.
