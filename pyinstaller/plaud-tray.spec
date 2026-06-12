@@ -109,6 +109,18 @@ a = Analysis(
         'comtypes.server',
         'comtypes.server.localserver',
         'comtypes.server.register',
+        # psutil — preferred process enumerator in mcp_lifecycle.py (Wave 2 / C4).
+        # psutil ships C extensions (_psutil_windows, _psutil_common) that
+        # PyInstaller's static analysis cannot discover automatically.  Listing
+        # every known extension sub-module ensures they are collected into the
+        # bundle so the psutil import in _default_process_enumerator succeeds at
+        # runtime and the PowerShell fallback is never reached in normal operation.
+        # The PowerShell fallback in _windows_fallback_enumerator is RETAINED as
+        # defense-in-depth (ADR 003 amendment 2026-06-12).
+        'psutil',
+        'psutil._psutil_windows',
+        'psutil._psutil_common',
+        'psutil._pswindows',
     ],
     hookspath=[],
     runtime_hooks=[],

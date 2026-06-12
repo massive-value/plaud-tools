@@ -87,12 +87,14 @@ blocking on a callback that needed the tk thread to service it.
 - **Kill by PID rather than name+path**: The tray does not spawn `plaud-mcp`
   directly, so it has no PID to track. Path-scoped enumeration is the
   correct primitive.
-- **Use psutil as a required dependency**: `psutil` is optional.
-  `mcp_lifecycle.py` falls back to WMIC on Windows when `psutil` is absent,
-  and further falls back to a PowerShell `Get-Process` call when WMIC is
-  unavailable (WMIC was removed from Windows 11 22H2+). Both fallbacks yield
-  full executable paths, satisfying the path-scoping requirement.
-  The PowerShell snippet used in production bundles does not need Python at all.
+- **Use psutil as a required dependency**: ~~`psutil` is optional.~~
+  As of 2026-06-12 (Wave 2 / C4), `psutil>=5.9` is a **required** dependency
+  of the `[tray]` optional-dependency extra in `pyproject.toml` and is listed
+  in the tray bundle's `hiddenimports` in `pyinstaller/plaud-tray.spec`.  In
+  the frozen bundle psutil is always available and is always the active
+  enumerator; the PowerShell fallback in `_windows_fallback_enumerator` is
+  retained as defense-in-depth but is not exercised during normal operation.
+  See the amendment below for details.
 - **Fixed sleep as a fallback**: Rejected in favour of polling. A fixed sleep
   always waits the full duration even when the process exits immediately; a
   poll exits as soon as the process is gone, or escalates exactly on deadline.
@@ -126,3 +128,36 @@ been updated accordingly.
 
 Deciding whether to bundle `psutil` into the frozen distribution is a separate
 concern tracked as task C4.
+
+## Amendment — 2026-06-12 (Wave 2 / C4: psutil bundled as tray dependency)
+
+`psutil>=5.9` is now a declared dependency of the `[tray]` optional-dependency
+extra (`pyproject.toml`) and is collected into the frozen tray bundle via
+explicit `hiddenimports` in `pyinstaller/plaud-tray.spec`:
+
+```python
+'psutil',
+'psutil._psutil_windows',
+'psutil._psutil_common',
+'psutil._pswindows',
+```
+
+psutil ships C extensions that PyInstaller's static analysis cannot discover
+automatically.  The explicit `hiddenimports` entries ensure the extension
+modules are present in the frozen archive.
+
+**Fallback retention:** The PowerShell fallback chain in
+`_windows_fallback_enumerator` (WMIC → `Get-Process | ConvertTo-Csv`) is
+**retained** as defense-in-depth.  In normal operation the frozen bundle uses
+psutil; the fallbacks are only reachable if the bundle is run in a degraded
+environment where psutil fails to import despite being present (e.g. an
+unexpected DLL load failure).
+
+**CI frozen-import proof:** The `bundle-smoke` job in `.github/workflows/ci.yml`
+now builds the tray spec and runs
+`PlaudTools.exe --diagnose-enum`.  This flag is implemented in
+`scripts/plaud_tray_entry.py`; it imports `plaud_tools.mcp_lifecycle`, reports
+`enumerator=psutil` when psutil is importable in the frozen context, and exits 0
+without starting the tkinter/pystray GUI (critical: CI runners have no display).
+The CI step asserts the output contains `enumerator=psutil`; any regression
+(e.g. a missing C-extension hiddenimport) causes a hard CI failure before merge.

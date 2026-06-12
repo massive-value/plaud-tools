@@ -62,7 +62,7 @@ plaud_tools = ["py.typed"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6", "build>=1.0", "mypy>=1.10"]
-tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4"]
+tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4", "psutil>=5.9"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

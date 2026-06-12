@@ -113,6 +113,30 @@ jobs:
       - name: Run ffmpeg transcode smoke
         run: python scripts/ffmpeg_smoke.py
 
+      # Wave 2 / C4 — frozen psutil import proof.
+      #
+      # Build the tray bundle and run PlaudTools.exe --diagnose-enum.  This flag
+      # imports plaud_tools.mcp_lifecycle (exercising all hiddenimports) and
+      # prints "enumerator=psutil" when psutil is bundled correctly, then exits 0
+      # WITHOUT starting the tkinter/pystray GUI (critical: no display on CI).
+      #
+      # If psutil's C extensions are missing from the bundle the import fails and
+      # the flag prints "enumerator=powershell_fallback", causing this step to
+      # fail the assertion and block the merge.
+      - name: Build tray bundle (psutil proof)
+        run: pyinstaller pyinstaller/plaud-tray.spec --distpath out/plaud-tray --noconfirm
+
+      - name: Frozen psutil import proof (--diagnose-enum)
+        shell: pwsh
+        run: |
+          $output = & "out\plaud-tray\PlaudTools\PlaudTools.exe" --diagnose-enum
+          Write-Host "diagnose-enum output: $output"
+          if ($output -notmatch "enumerator=psutil") {
+            Write-Error "[BUNDLE-GATE] psutil is NOT the active enumerator in the frozen build. Output: $output"
+            exit 1
+          }
+          Write-Host "[BUNDLE-GATE] psutil confirmed as active enumerator in frozen build."
+
   # Wave 2 / C3: verify that each platform's constraint file is installable.
   # This job is intentionally separate from the existing test/lint/bundle-smoke
   # jobs so concurrent agents can own those job definitions independently.
