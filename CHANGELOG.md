@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### MCP & release (audit remediation, wave 2 — partial)
+
+- **MCP tool annotations + delete confirmation (owner decision D4).** All
+  nine MCP tools now carry `ToolAnnotations` capability hints
+  (`readOnlyHint` on browse/get/list_folders; `destructiveHint=false` on
+  the reversible/additive writers; `destructiveHint=true` on
+  `delete_recording`). `delete_recording` additionally requires an explicit
+  `confirm: true` argument — without it the tool returns a `validation`
+  error instructing the agent to confirm with the user first. The CLI
+  continues to gate destructive ops with `--yes`; the asymmetry (servers
+  declare, clients enforce) is documented in `CONTEXT.md`. (#108)
+- **Tri-platform dependency lockfiles (owner decision D2).** New
+  `constraints/{windows,macos,linux}.txt` pin the dependency closure per
+  platform (compiled with `uv pip compile`). The release build installs
+  with `-c constraints/windows.txt` and publishes that file as a
+  lightweight SBOM asset; a CI job verifies all three install on their
+  native OS. Refresh procedure documented in `docs/agents/lockfiles.md`.
+  (#107)
+
 ### Developer tooling & CI (audit remediation, wave 1)
 
 Quality-baseline work. No runtime behaviour change; raises the floor for
