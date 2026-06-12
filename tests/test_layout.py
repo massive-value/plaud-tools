@@ -90,6 +90,45 @@ class TestBundleChannel:
 
         assert layout.ffmpeg_exe == install_root / "mcp" / "ffmpeg.exe"
 
+    def test_mcp_exe_none_when_candidate_absent(self, monkeypatch, tmp_path):
+        """mcp_exe must be None when the candidate path does not exist on disk."""
+        # Create a bundle tree WITHOUT the mcp/ subdirectory.
+        cli_dir = tmp_path / "cli"
+        cli_dir.mkdir()
+        cli_exe = cli_dir / "plaud-tools.exe"
+        cli_exe.touch()
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(cli_exe))
+
+        layout = InstallLayout.detect()
+
+        assert layout.mcp_exe is None, (
+            "mcp_exe must be None when the candidate path doesn't exist; got {layout.mcp_exe!r} instead."
+        )
+
+    def test_ffmpeg_exe_none_when_candidate_absent(self, monkeypatch, tmp_path):
+        """ffmpeg_exe must be None when the candidate path does not exist on disk."""
+        # Create a bundle tree WITHOUT ffmpeg.exe (mcp dir exists but only plaud-mcp).
+        cli_dir = tmp_path / "cli"
+        cli_dir.mkdir()
+        cli_exe = cli_dir / "plaud-tools.exe"
+        cli_exe.touch()
+        mcp_dir = tmp_path / "mcp"
+        mcp_dir.mkdir()
+        (mcp_dir / "plaud-mcp.exe").touch()
+        # ffmpeg.exe intentionally NOT created
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(cli_exe))
+
+        layout = InstallLayout.detect()
+
+        assert layout.ffmpeg_exe is None, (
+            "ffmpeg_exe must be None when the candidate path doesn't exist; "
+            "got {layout.ffmpeg_exe!r} instead."
+        )
+
     def test_frozen_false_attribute_absent(self, monkeypatch, tmp_path):
         """When sys.frozen is absent entirely, detect() falls through to pip/dev."""
         fake_exe = tmp_path / "python.exe"
