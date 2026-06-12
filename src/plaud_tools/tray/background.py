@@ -65,7 +65,7 @@ class _BackgroundMixin:
         _session: PlaudSession | None
         _home_win: HomeWindow | None
         _login_win: LoginWindow | None
-        _update_info: tuple[str, str, str | None] | None
+        _update_info: tuple[str, str, str | None, str | None] | None
         _env_status: EnvStatus | None
 
         def _refresh(self) -> None: ...

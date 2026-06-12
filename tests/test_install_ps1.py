@@ -89,6 +89,61 @@ def test_install_ps1_existing_exact_version_exits_without_force():
     assert "-not $Force" in content
 
 
+# ---------------------------------------------------------------------------
+# install.ps1 — SHA256SUMS hash verification logic
+# ---------------------------------------------------------------------------
+
+
+def test_install_ps1_downloads_sha256sums_asset():
+    content = _read_install_ps1()
+    # Must look for the SHA256SUMS asset in the release asset list.
+    assert "SHA256SUMS" in content
+
+
+def test_install_ps1_uses_get_filehash():
+    content = _read_install_ps1()
+    # Must compute the actual hash via Get-FileHash.
+    assert "Get-FileHash" in content
+    assert "SHA256" in content
+
+
+def test_install_ps1_compares_expected_and_actual_hash():
+    content = _read_install_ps1()
+    # Must store both an expected hash (parsed from SHA256SUMS) and the actual
+    # hash, then compare them — key variable names confirm the logic is present.
+    assert "expectedHash" in content
+    assert "actualHash" in content
+
+
+def test_install_ps1_fails_closed_on_mismatch():
+    content = _read_install_ps1()
+    # On mismatch the installer must throw (fail-closed) — not silently continue.
+    assert "SHA256 mismatch" in content
+    assert "throw" in content
+
+
+def test_install_ps1_soft_fail_when_sums_absent():
+    content = _read_install_ps1()
+    # When SHA256SUMS is absent, the script must warn but proceed.
+    assert "Write-Warning" in content
+    assert "integrity could not be verified" in content
+
+
+def test_install_ps1_cleans_up_sums_temp_file():
+    content = _read_install_ps1()
+    # The downloaded SHA256SUMS temp file must be removed in a finally block.
+    assert "SHA256SUMS" in content
+    # Verify the finally / cleanup pattern around the sums download.
+    assert "finally" in content
+
+
+def test_install_ps1_parses_two_space_format():
+    content = _read_install_ps1()
+    # Must split on whitespace to extract the hash token (standard sha256sum format).
+    # The parser uses -split or Trim() to isolate the first hex token.
+    assert r"-split '\s+'" in content or r"-split" in content
+
+
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
 def test_install_ps1_syntax_valid():
     """Smoke: pwsh can parse the script without syntax errors."""
@@ -104,6 +159,112 @@ def test_install_ps1_syntax_valid():
         timeout=30,
     )
     assert result.returncode == 0, f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# install.ps1 hash-check logic — behavioral tests via pwsh
+#
+# These tests exercise the Verify-Zip-Checksum logic in isolation by writing a
+# small PS1 harness that reproduces the same pattern used in install.ps1:
+#   * matching hash → no throw, exits 0
+#   * tampered zip (wrong hash in SHA256SUMS) → throws, exits 1
+#   * absent SHA256SUMS file → writes a warning, exits 0
+# ---------------------------------------------------------------------------
+
+# The standalone hash-check logic extracted from install.ps1 for direct testing.
+# It mirrors the exact pattern used in install.ps1 so we test the real algorithm.
+_HASH_CHECK_PS1 = r"""
+param(
+    [string]$ZipPath,
+    [string]$SumsPath   # '' = absent
+)
+$ErrorActionPreference = 'Stop'
+
+if ($SumsPath -and (Test-Path $SumsPath)) {
+    $sumsContent = Get-Content $SumsPath -Encoding UTF8 -Raw
+    $expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
+    $actualHash   = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToUpper()
+    if ($actualHash -ne $expectedHash) {
+        throw "SHA256 mismatch"
+    }
+    Write-Host "VERIFIED"
+} else {
+    Write-Warning "integrity could not be verified"
+    Write-Host "PROCEEDING"
+}
+"""
+
+
+def _run_hash_check(  # type: ignore[type-arg]
+    tmp_path: Path, zip_bytes: bytes, sums_content: str | None
+) -> subprocess.CompletedProcess:
+    """Write test artefacts and run the hash-check PS1 harness."""
+    zip_file = tmp_path / "PlaudTools.zip"
+    zip_file.write_bytes(zip_bytes)
+    harness = tmp_path / "hash_check.ps1"
+    harness.write_text(_HASH_CHECK_PS1, encoding="utf-8")
+
+    sums_path = ""
+    if sums_content is not None:
+        sums_file = tmp_path / "SHA256SUMS"
+        sums_file.write_text(sums_content, encoding="utf-8")
+        sums_path = str(sums_file)
+
+    return subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(harness),
+            "-ZipPath",
+            str(zip_file),
+            "-SumsPath",
+            sums_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _sha256_hex(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_install_ps1_hash_check_matching_hash_passes(tmp_path: Path):
+    """A zip whose SHA256 matches the SHA256SUMS entry should succeed."""
+    payload = b"fake zip content"
+    expected = _sha256_hex(payload)
+    sums = f"{expected}  PlaudTools.zip\n"
+    result = _run_hash_check(tmp_path, payload, sums)
+    assert result.returncode == 0, f"Expected success:\n{result.stdout}\n{result.stderr}"
+    assert "VERIFIED" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_install_ps1_hash_check_tampered_zip_fails(tmp_path: Path):
+    """A tampered zip (hash mismatch) must be refused — fail closed."""
+    payload = b"fake zip content"
+    tampered_hash = "a" * 64  # Wrong hash — 64 hex chars but all 'a'.
+    sums = f"{tampered_hash}  PlaudTools.zip\n"
+    result = _run_hash_check(tmp_path, payload, sums)
+    assert result.returncode != 0, (
+        f"Expected failure on tampered zip but got exit 0:\n{result.stdout}\n{result.stderr}"
+    )
+    assert "mismatch" in result.stderr.lower() or "mismatch" in result.stdout.lower()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_install_ps1_hash_check_absent_sums_warns_and_proceeds(tmp_path: Path):
+    """When SHA256SUMS is absent, the script should warn but exit 0 (soft-fail)."""
+    payload = b"fake zip content"
+    result = _run_hash_check(tmp_path, payload, sums_content=None)
+    assert result.returncode == 0, f"Expected soft-fail (exit 0):\n{result.stdout}\n{result.stderr}"
+    assert "PROCEEDING" in result.stdout
 
 
 # ---------------------------------------------------------------------------

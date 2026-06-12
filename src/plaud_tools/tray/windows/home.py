@@ -22,7 +22,7 @@ class HomeWindow:
         on_open_uninstall: Callable[[], None],
         on_repair_setup: Callable[[Callable[[bool, str], None]], None] | None,
         get_session_label: Callable[[], str],
-        get_update_info: Callable[[], tuple[str, str, str | None] | None],
+        get_update_info: Callable[[], tuple[str, str, str | None, str | None] | None],
         get_env_status: Callable[[], EnvStatus | None],
         on_open_log_folder: Callable[[], None] | None = None,
         on_open_help: Callable[[], None] | None = None,
