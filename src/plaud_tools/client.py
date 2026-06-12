@@ -7,7 +7,8 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, overload
 from urllib.parse import urlencode
 
 from .errors import PlaudApiError, PlaudSessionExpiredError
@@ -123,9 +124,31 @@ class PlaudClient:
         data = self._request_json("GET", "/user/me", strict=True)
         return data.get("data_user") or data.get("data") or data
 
+    @overload
+    def upload_recording(
+        self,
+        data: Path,
+        filename: str,
+        file_type: str,
+        *,
+        start_time: int | None = ...,
+        timezone_offset: float | None = ...,
+    ) -> Recording: ...
+
+    @overload
     def upload_recording(
         self,
         data: bytes,
+        filename: str,
+        file_type: str,
+        *,
+        start_time: int | None = ...,
+        timezone_offset: float | None = ...,
+    ) -> Recording: ...
+
+    def upload_recording(
+        self,
+        data: Path | bytes,
         filename: str,
         file_type: str,
         *,
@@ -134,8 +157,14 @@ class PlaudClient:
     ) -> Recording:
         """4-step upload: presign → S3 multipart PUT → merge_multipart → confirm_upload.
 
+        *data* may be either a ``Path`` pointing to the audio file on disk, or
+        a ``bytes`` buffer (kept for backward compatibility).  The ``Path``
+        variant is preferred for large files: it reads 5 MiB chunks directly
+        from disk rather than holding the entire file in memory.
+
         file_type must be "MP3", "OPUS", or "OGG". For other audio formats,
-        transcode to MP3 first using plaud_tools.transcode.transcode_to_mp3().
+        transcode to MP3 first using plaud_tools.transcode.transcode_to_mp3_path()
+        and pass the resulting path here.
 
         start_time_ms: millisecond epoch for the recording's date. Defaults to now.
         Plaud respects whatever value the client sends — pass the original
@@ -143,10 +172,20 @@ class PlaudClient:
         """
         if not filename.strip():
             raise ValueError("filename cannot be empty")
-        if not data:
-            raise ValueError("data cannot be empty")
         if file_type not in ("MP3", "OPUS", "OGG"):
             raise ValueError(f"file_type must be MP3, OPUS, or OGG — got {file_type!r}")
+
+        # Resolve filesize without loading the entire file into memory when a
+        # Path is supplied.  For the bytes overload we keep the existing len()
+        # behaviour so the presign filesize matches what we actually upload.
+        if isinstance(data, Path):
+            filesize = data.stat().st_size
+            if filesize == 0:
+                raise ValueError("data cannot be empty")
+        else:
+            filesize = len(data)
+            if filesize == 0:
+                raise ValueError("data cannot be empty")
 
         start_time_ms = start_time if start_time is not None else int(time.time() * 1000)
         if timezone_offset is None:
@@ -159,7 +198,7 @@ class PlaudClient:
             "POST",
             "/file/get_upload_presigned_url",
             strict=True,
-            body={"filesize": len(data), "file_type": file_type},
+            body={"filesize": filesize, "file_type": file_type},
         )
         presign_data = presign.get("data") or {}
         part_urls = presign_data.get("part_urls")
@@ -176,16 +215,39 @@ class PlaudClient:
         # Upload chunks to S3. Content-Type matches the web client exactly —
         # the presigned signature does not bind Content-Type, but mimicking
         # the browser shields against any future tightening.
+        #
+        # For the Path variant we open the file once and read _CHUNK_SIZE bytes
+        # per part, avoiding a full in-memory buffer.  For the bytes variant we
+        # slice the existing buffer as before (no behaviour change for callers
+        # that already have bytes in hand).
         parts: list[dict[str, Any]] = []
-        for i, url in enumerate(part_urls):
-            start_byte = i * _CHUNK_SIZE
-            end_byte = min(start_byte + _CHUNK_SIZE, len(data))
-            chunk = data[start_byte:end_byte]
-            response = self._s3_put(str(url), chunk)
-            etag = response.headers.get("etag", "").replace('"', "")
-            if not etag:
-                raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
-            parts.append({"Etag": etag, "PartNumber": i + 1})
+        if isinstance(data, Path):
+            with data.open("rb") as fh:
+                for i, url in enumerate(part_urls):
+                    chunk = fh.read(_CHUNK_SIZE)
+                    if not chunk:
+                        # Presign returned more part URLs than the file has
+                        # chunks — treat as a protocol error rather than
+                        # silently uploading an empty part.
+                        raise PlaudApiError(
+                            f"Presign returned {len(part_urls)} part URLs but "
+                            f"file exhausted after {i} chunk(s)"
+                        )
+                    response = self._s3_put(str(url), chunk)
+                    etag = response.headers.get("etag", "").replace('"', "")
+                    if not etag:
+                        raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
+                    parts.append({"Etag": etag, "PartNumber": i + 1})
+        else:
+            for i, url in enumerate(part_urls):
+                start_byte = i * _CHUNK_SIZE
+                end_byte = min(start_byte + _CHUNK_SIZE, len(data))
+                chunk = data[start_byte:end_byte]
+                response = self._s3_put(str(url), chunk)
+                etag = response.headers.get("etag", "").replace('"', "")
+                if not etag:
+                    raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
+                parts.append({"Etag": etag, "PartNumber": i + 1})
 
         self._request_json(
             "POST",

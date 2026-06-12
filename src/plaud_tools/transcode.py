@@ -65,7 +65,7 @@ def _find_ffmpeg() -> str:
 
 
 def transcode_to_mp3(source_bytes: bytes, source_ext: str, *, quality: int = 4) -> bytes:
-    """Transcode audio to MP3 using ffmpeg.
+    """Transcode audio bytes to MP3 using ffmpeg, returning the result as bytes.
 
     source_ext is the source file extension (with or without a leading dot).
     It is used as the temp-file suffix so ffmpeg picks the right demuxer.
@@ -73,6 +73,9 @@ def transcode_to_mp3(source_bytes: bytes, source_ext: str, *, quality: int = 4) 
 
     quality is the VBR -qscale:a value: 0 = best (~245 kbps), 4 = speech
     default (~165 kbps), 9 = worst (~65 kbps).
+
+    For large files prefer ``transcode_to_mp3_path`` which avoids loading
+    the transcoded MP3 back into memory.
     """
     ff = _find_ffmpeg()
     ext = source_ext if source_ext.startswith(".") else f".{source_ext}"
@@ -108,3 +111,40 @@ def transcode_to_mp3(source_bytes: bytes, source_ext: str, *, quality: int = 4) 
                 os.unlink(p)
             except OSError:
                 pass
+
+
+def transcode_to_mp3_path(source_path: Path, dest_path: Path, *, quality: int = 4) -> None:
+    """Transcode audio from *source_path* to *dest_path* (MP3) using ffmpeg.
+
+    This is the path-in / path-out variant.  The transcoded bytes are written
+    directly to *dest_path* and are never loaded into Python memory, which
+    keeps peak RSS proportional to ffmpeg's own pipeline rather than the full
+    file size.
+
+    *source_path* must already exist.  *dest_path* will be created (or
+    overwritten) by ffmpeg; the caller is responsible for cleaning it up.
+
+    quality is the VBR -qscale:a value: 0 = best (~245 kbps), 4 = speech
+    default (~165 kbps), 9 = worst (~65 kbps).
+    """
+    ff = _find_ffmpeg()
+    result = subprocess.run(
+        [
+            ff,
+            "-y",
+            "-i",
+            str(source_path),
+            "-codec:a",
+            "libmp3lame",
+            "-qscale:a",
+            str(quality),
+            "-map_metadata",
+            "-1",
+            str(dest_path),
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        tail = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        msg = " ".join(tail[-3:])[:500]
+        raise RuntimeError(f"ffmpeg exited {result.returncode}: {msg}")

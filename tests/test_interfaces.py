@@ -805,7 +805,10 @@ class UploadStubClient(StubClient):
         self.merge_call = None
 
     def upload_recording(self, data, filename, file_type, **kwargs):
-        self.upload_call = (len(data), filename, file_type)
+        from pathlib import Path as _Path
+
+        size = data.stat().st_size if isinstance(data, _Path) else len(data)
+        self.upload_call = (size, filename, file_type)
         return Recording(id="new-rec", filename=filename)
 
     def transcribe_and_summarize(self, recording_id, **kwargs):
