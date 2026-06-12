@@ -414,6 +414,8 @@ class PlaudClient:
         path: str,
         strict: bool,
         body: dict[str, Any] | list[Any] | None = None,
+        *,
+        _redirected: bool = False,
     ) -> dict[str, Any]:
         try:
             session = self._session_manager.require()
@@ -440,10 +442,16 @@ class PlaudClient:
             raise PlaudApiError("Plaud API returned a non-object payload.")
 
         if payload.get("status") == -302:
+            # Guard against a server that returns -302 on every call — we allow
+            # at most one region redirect per outbound request.  The update_region
+            # persistence is load-bearing (fragile Plaud protocol): it must run
+            # before any retry so the next request hits the correct base URL.
+            if _redirected:
+                raise PlaudApiError("region redirect loop")
             domain = ((payload.get("data") or {}).get("domains") or {}).get("api", "")
             next_region = "eu" if "euc1" in domain else "us"
             self._session_manager.update_region(next_region)
-            return self._request_json(method, path, strict=strict, body=body)
+            return self._request_json(method, path, strict=strict, body=body, _redirected=True)
 
         if strict and payload.get("status") != 0:
             msg = payload.get("msg") or f"status {payload.get('status')}"
