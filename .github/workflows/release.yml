@@ -29,7 +29,10 @@ jobs:
           Write-Host "pyproject.toml version set to $version"
 
       - name: Install dependencies
-        run: pip install --force-reinstall ".[tray,dev]"
+        # -c pins every transitive dep to the audited windows constraint file (Wave 2 / C3).
+        # Regenerate constraints/windows.txt via: uv pip compile --upgrade --python-platform windows
+        #   --python-version 3.12 --extra tray --extra dev pyproject.toml -o constraints/windows.txt
+        run: pip install --force-reinstall -c constraints/windows.txt ".[tray,dev]"
 
       - name: Generate Windows PE version info
         run: python pyinstaller/version_info.py
@@ -89,6 +92,7 @@ jobs:
           files: |
             PlaudTools.zip
             SHA256SUMS
+            constraints/windows.txt
           generate_release_notes: true
 
   publish:
