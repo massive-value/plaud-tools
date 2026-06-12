@@ -94,8 +94,7 @@ class TestCollectFilteredPaged:
     def test_matches_span_two_upstream_pages(self):
         # Build two full pages; every record matches the query "meeting".
         page1 = [
-            make_rec(f"p1r{i}", filename="Meeting A", start_time=i * 1000)
-            for i in range(BROWSE_PAGE_SIZE)
+            make_rec(f"p1r{i}", filename="Meeting A", start_time=i * 1000) for i in range(BROWSE_PAGE_SIZE)
         ]
         page2 = [
             make_rec(f"p2r{i}", filename="Meeting B", start_time=(BROWSE_PAGE_SIZE + i) * 1000)
@@ -382,13 +381,9 @@ class TestBrowseRecordingsMcpHandler:
 
     def test_fetch_count_bounded_when_first_page_saturates_need(self):
         # 200 matching records in page 1; limit=2 → need=3, satisfied after 1 fetch.
-        page1 = [
-            make_rec(f"r{i}", filename="meeting", start_time=i * 1000)
-            for i in range(BROWSE_PAGE_SIZE)
-        ]
+        page1 = [make_rec(f"r{i}", filename="meeting", start_time=i * 1000) for i in range(BROWSE_PAGE_SIZE)]
         page2 = [
-            make_rec(f"s{i}", filename="meeting", start_time=(BROWSE_PAGE_SIZE + i) * 1000)
-            for i in range(5)
+            make_rec(f"s{i}", filename="meeting", start_time=(BROWSE_PAGE_SIZE + i) * 1000) for i in range(5)
         ]
         client, call_log = self._make_client([page1, page2])
         handlers = self._build_handlers(client)
@@ -497,8 +492,7 @@ class TestCliIncrementalBrowse:
             return recs
 
         page2 = [
-            make_rec(f"p2r{i}", filename="target", start_time=(BROWSE_PAGE_SIZE + i) * 1000)
-            for i in range(3)
+            make_rec(f"p2r{i}", filename="target", start_time=(BROWSE_PAGE_SIZE + i) * 1000) for i in range(3)
         ]
         client, call_log = self._make_client([make_page1(), page2])
         output = run_cli(["list", "--query", "target", "--limit", "3"], client=client)
