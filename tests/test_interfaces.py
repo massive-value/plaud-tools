@@ -438,6 +438,19 @@ class StubAuth:
         return type("Session", (), {"email": email, "region": region})()
 
 
+def test_login_password_help_warns_about_exposure():
+    """--password help text must warn about process-listing exposure and point to safer alternatives."""
+    from plaud_tools.cli import build_parser
+
+    parser = build_parser()
+    # Drill into the login subparser to get its specific help
+    login_parser = parser._subparsers._actions[-1].choices["login"]
+    login_help = login_parser.format_help()
+    assert "process listing" in login_help or "ps" in login_help or "Task Manager" in login_help
+    assert "PLAUD_ACCESS_TOKEN" in login_help
+    assert "session set --token" in login_help
+
+
 def test_cli_login_uses_auth_and_returns_stored_shape(tmp_path: Path):
     auth = StubAuth()
     store = SessionStore(
