@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Hardening (audit remediation, wave 0)
+
+Robustness and supply-chain quick wins from the v0.2.11 principal audit.
+No user-facing behaviour change in normal operation; each item closes a
+failure mode that previously surfaced only under timeouts, hostile servers,
+or broken tooling.
+
+- **Network calls now time out.** `UrllibTransport` gained a configurable
+  request timeout (30 s default; 120 s for S3 chunk PUTs on slow links).
+  A previously hung `urlopen` could wedge a CLI or MCP call indefinitely;
+  timeouts now surface as `PlaudApiError`. (#99)
+- **Region-redirect recursion is bounded.** A Plaud `-302` region redirect
+  now retries at most once; a server that returns `-302` forever raises
+  `PlaudApiError("region redirect loop")` instead of recursing without
+  limit. The first-redirect `update_region` persistence is unchanged. (#97)
+- **Release-pipeline integrity.** ffmpeg is downloaded from a pinned
+  versioned URL and verified against a hardcoded SHA-256; releases now
+  publish a `SHA256SUMS` asset alongside `PlaudTools.zip`; and all GitHub
+  Actions are pinned to full commit SHAs in both workflows. (#100)
+- **`events.jsonl` rotation.** The MCP event log rotates to
+  `events.jsonl.1` once it passes ~1 MB, so it can no longer grow without
+  bound. The write path remains never-raising and the tray reader tolerates
+  rotation. (#98)
+- **Honest process enumeration.** `mcp_lifecycle` now falls back to a
+  PowerShell `Get-Process` enumerator when `psutil` is absent (WMIC is gone
+  from current Windows 11), instead of silently finding no processes, and
+  logs a WARNING when enumeration yields nothing. ADR 003 amended. (#96)
+- **Structured MCP argument errors.** A bad tool argument now returns the
+  standard `{error_code: "validation", retryable: false}` payload instead
+  of leaking a raw `TypeError` to the MCP framework. (#101)
+
 ## [0.2.11] - 2026-05-24
 
 One latent bug fix and a behind-the-scenes refactor cluster (ADR 004)
