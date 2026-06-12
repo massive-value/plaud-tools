@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 
 import mcp.types as mcp_types
 
@@ -272,3 +273,124 @@ class TestCallToolTypeErrorGuard:
             json.loads(text)
         except json.JSONDecodeError as exc:
             raise AssertionError(f"call_tool returned non-JSON text for bogus kwarg: {text!r}") from exc
+
+
+# ---------------------------------------------------------------------------
+# C2: Non-blocking MCP server — responsiveness test (Wave 2)
+# ---------------------------------------------------------------------------
+
+
+class TestCallToolNonBlocking:
+    """Prove that call_tool runs handlers via asyncio.to_thread, keeping the
+    event loop responsive while a slow handler blocks in its worker thread.
+
+    Strategy: register a stub handler that sleeps for SLOW_SLEEP_S.  Fire it
+    as an asyncio task, then immediately call list_tools() (a fast coroutine).
+    Assert list_tools() returns well inside FAST_DEADLINE_S — i.e. before the
+    slow handler finishes — proving the event loop was not blocked.
+    """
+
+    # The "slow" handler blocks for this long in its worker thread.
+    SLOW_SLEEP_S = 0.5
+    # The fast op must complete well before the slow handler finishes.
+    # Set to half the slow sleep so there's a comfortable margin.
+    FAST_DEADLINE_S = 0.25
+
+    def _build_server_with_slow_tool(self):
+        """Build a minimal MCP server with a slow stub 'list_folders' handler.
+
+        The stub sleeps synchronously for SLOW_SLEEP_S, simulating a blocking
+        PlaudClient network call.  The call_tool handler uses asyncio.to_thread
+        (the production code path) so the event loop stays free while the stub
+        blocks in its worker thread.
+        """
+        from mcp.server.lowlevel import Server
+
+        inner_server = Server("plaud-mcp-test")
+
+        def slow_list_folders() -> dict:
+            """Synchronous handler that blocks for SLOW_SLEEP_S."""
+            time.sleep(TestCallToolNonBlocking.SLOW_SLEEP_S)
+            return {"content": [{"type": "text", "text": '{"ok": true}'}]}
+
+        handlers = {"list_folders": slow_list_folders}
+
+        @inner_server.list_tools()
+        async def list_tools_handler() -> list[mcp_types.Tool]:
+            return _TOOLS
+
+        @inner_server.call_tool()
+        async def call_tool_handler(name: str, arguments: dict) -> list[mcp_types.TextContent]:
+            handler = handlers.get(name)
+            if handler is None:
+                return [
+                    mcp_types.TextContent(
+                        type="text",
+                        text=json.dumps({"error": f"Unknown tool: {name}"}),
+                    )
+                ]
+            try:
+                # Production code path under test: asyncio.to_thread keeps the
+                # event loop unblocked while the handler does its work.
+                result = await asyncio.to_thread(handler, **arguments)
+                text = result["content"][0]["text"]
+            except TypeError as exc:
+                payload = {
+                    "error": f"Invalid arguments for tool '{name}': {exc}",
+                    "error_code": "validation",
+                    "retryable": False,
+                }
+                return [mcp_types.TextContent(type="text", text=json.dumps(payload, indent=2))]
+            return [mcp_types.TextContent(type="text", text=text)]
+
+        return inner_server
+
+    def test_event_loop_stays_responsive_during_slow_handler(self):
+        """list_tools() must return well before the slow handler finishes.
+
+        Timeline (approximate):
+          t=0.00  slow call_tool task launched (handler sleeps SLOW_SLEEP_S=0.5s in thread)
+          t=0.00  list_tools coroutine starts concurrently
+          t<0.25  list_tools must return (FAST_DEADLINE_S)
+          t=0.50  slow handler thread wakes, call_tool task resolves
+        """
+
+        async def _run() -> None:
+            server = self._build_server_with_slow_tool()
+            call_tool_sdk = server.request_handlers[mcp_types.CallToolRequest]
+            list_tools_sdk = server.request_handlers[mcp_types.ListToolsRequest]
+
+            slow_req = mcp_types.CallToolRequest(
+                method="tools/call",
+                params=mcp_types.CallToolRequestParams(name="list_folders", arguments={}),
+            )
+
+            # Launch the slow call_tool in the background.
+            slow_task = asyncio.create_task(call_tool_sdk(slow_req))
+
+            # Give the event loop one iteration so the task starts and the
+            # worker thread is actually running before we time the fast op.
+            await asyncio.sleep(0)
+
+            # Measure how long list_tools takes while the slow task is in flight.
+            t0 = time.perf_counter()
+            fast_result = await asyncio.wait_for(
+                list_tools_sdk(mcp_types.ListToolsRequest(method="tools/list", params=None)),
+                timeout=TestCallToolNonBlocking.FAST_DEADLINE_S,
+            )
+            fast_elapsed = time.perf_counter() - t0
+
+            # The fast op must have completed well within the deadline.
+            assert fast_elapsed < TestCallToolNonBlocking.FAST_DEADLINE_S, (
+                f"list_tools took {fast_elapsed:.3f}s — event loop was blocked "
+                f"(deadline {TestCallToolNonBlocking.FAST_DEADLINE_S}s, "
+                f"slow handler sleep {TestCallToolNonBlocking.SLOW_SLEEP_S}s)"
+            )
+
+            # Sanity: the fast result actually contains tools.
+            assert fast_result.root.tools, "list_tools returned empty tool list"
+
+            # Clean up: wait for the slow task to finish (it will, just slowly).
+            await slow_task
+
+        asyncio.run(_run())

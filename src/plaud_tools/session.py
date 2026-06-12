@@ -583,6 +583,9 @@ class SessionManager:
             raise PlaudSessionExpiredError("Stored Plaud token is malformed.")
         if int(time()) + TOKEN_REFRESH_BUFFER_SECONDS > expires_at:
             raise PlaudSessionExpiredError("Plaud session expired or expiring soon.")
+        # Safe under concurrent asyncio.to_thread handler calls: all threads
+        # compute and assign the same validated session object (idempotent
+        # assignment); the GIL makes the attribute write itself atomic.
         self._cached_session = session
         return session
 
