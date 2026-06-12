@@ -4,12 +4,16 @@ Uses stub process enumerators so no real processes are created or killed.
 """
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from plaud_tools.mcp_lifecycle import (
     ProcessInfo,
+    _default_process_enumerator,
     enumerate_mcp_processes,
     mcp_shutdown_ps1_snippet,
     shutdown_mcp_children,
@@ -240,3 +244,141 @@ def test_ps1_snippet_contains_scoped_stop_process():
     assert "Stop-Process" in snippet
     # Should be preceded by a pipe or applied to $mcpProcs, not a standalone Name filter
     assert "Stop-Process -Name plaud-mcp -Force\n" not in snippet
+
+
+# ---------------------------------------------------------------------------
+# _default_process_enumerator — PowerShell fallback parsing tests
+# ---------------------------------------------------------------------------
+
+# Fixture: canned ConvertTo-Csv output from PowerShell Get-Process
+_PS_CSV_OUTPUT = '''"Id","Path"
+"1234","C:\\Programs\\PlaudTools\\mcp\\plaud-mcp.exe"
+"5678","C:\\Programs\\PlaudTools\\mcp\\plaud-mcp.exe"
+"9999","C:\\Windows\\System32\\svchost.exe"
+'''
+
+# Fixture: empty output — no processes with a Path property
+_PS_CSV_EMPTY = '"Id","Path"\n'
+
+
+def _block_psutil(monkeypatch):
+    """Force an ImportError when psutil is imported inside the enumerator."""
+    # If psutil is already imported, temporarily remove it from sys.modules.
+    monkeypatch.setitem(sys.modules, "psutil", None)  # None triggers ImportError on import
+
+
+def test_powershell_fallback_parses_pid_and_exe_path(monkeypatch):
+    """The PowerShell CSV fallback must parse pid + full exe path correctly.
+
+    We force the psutil ImportError path by patching sys.modules, then
+    stub subprocess.check_output so WMIC raises (simulating Win11 removal)
+    and the PowerShell command returns our canned fixture output.
+    """
+    _block_psutil(monkeypatch)
+
+    call_count = {"n": 0}
+
+    def fake_check_output(cmd, **kwargs):
+        call_count["n"] += 1
+        if "wmic" in cmd[0].lower():
+            # Simulate WMIC being absent on modern Win11
+            raise FileNotFoundError("wmic not found")
+        # PowerShell call
+        return _PS_CSV_OUTPUT
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
+    monkeypatch.setattr("os.name", "nt")
+
+    results = list(_default_process_enumerator())
+
+    # Should have parsed all three rows
+    assert len(results) == 3
+    pids = {r.pid for r in results}
+    assert pids == {1234, 5678, 9999}
+    paths = {r.exe_path for r in results}
+    assert r"C:\Programs\PlaudTools\mcp\plaud-mcp.exe" in paths
+    assert r"C:\Windows\System32\svchost.exe" in paths
+
+
+def test_powershell_fallback_filters_via_enumerate_mcp_processes(tmp_path, monkeypatch):
+    """End-to-end: PowerShell fallback output flows through enumerate_mcp_processes scoping.
+
+    enumerate_mcp_processes must find only the plaud-mcp process inside tmp_path.
+    """
+    _block_psutil(monkeypatch)
+
+    # Create a plaud-mcp.exe inside tmp_path so path-resolve works
+    mcp_exe = tmp_path / "mcp" / "plaud-mcp.exe"
+    mcp_exe.parent.mkdir()
+    mcp_exe.touch()
+
+    # Build CSV fixture referencing the real tmp_path exe + an outside process
+    outside_exe = r"C:\OtherInstall\mcp\plaud-mcp.exe"
+    csv_output = (
+        '"Id","Path"\n'
+        f'"1001","{str(mcp_exe)}"\n'
+        f'"2002","{outside_exe}"\n'
+    )
+
+    def fake_check_output(cmd, **kwargs):
+        if "wmic" in cmd[0].lower():
+            raise FileNotFoundError("wmic not found")
+        return csv_output
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
+    monkeypatch.setattr("os.name", "nt")
+
+    # enumerate_mcp_processes uses _default_process_enumerator when no stub given
+    results = enumerate_mcp_processes(tmp_path)
+    assert len(results) == 1
+    assert results[0].pid == 1001
+
+
+def test_warning_logged_when_zero_results_and_no_psutil(monkeypatch, caplog):
+    """A WARNING must be emitted when psutil is absent and all fallbacks yield nothing.
+
+    This ensures silent failures are observable in production logs (ADR 003 amendment).
+    """
+    import logging
+
+    _block_psutil(monkeypatch)
+    monkeypatch.setattr("os.name", "nt")
+
+    def fake_check_output(cmd, **kwargs):
+        if "wmic" in cmd[0].lower():
+            raise FileNotFoundError("wmic not found")
+        # PowerShell returns only the header — no rows
+        return _PS_CSV_EMPTY
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
+
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.mcp_lifecycle"):
+        results = list(_default_process_enumerator())
+
+    assert results == []
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        "zero process entries" in msg or "disabled" in msg for msg in warning_messages
+    ), f"Expected a WARNING about zero results, got: {warning_messages}"
+
+
+def test_warning_logged_when_powershell_raises_and_no_psutil(monkeypatch, caplog):
+    """A WARNING must be emitted when PowerShell itself fails and psutil is absent."""
+    import logging
+
+    _block_psutil(monkeypatch)
+    monkeypatch.setattr("os.name", "nt")
+
+    def fake_check_output(cmd, **kwargs):
+        raise OSError("subprocess totally broken")
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
+
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.mcp_lifecycle"):
+        results = list(_default_process_enumerator())
+
+    assert results == []
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        "disabled" in msg or "fallback failed" in msg for msg in warning_messages
+    ), f"Expected a WARNING about fallback failure, got: {warning_messages}"

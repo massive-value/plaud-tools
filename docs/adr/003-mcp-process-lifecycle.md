@@ -88,7 +88,10 @@ blocking on a callback that needed the tk thread to service it.
   directly, so it has no PID to track. Path-scoped enumeration is the
   correct primitive.
 - **Use psutil as a required dependency**: `psutil` is optional.
-  `mcp_lifecycle.py` falls back to WMIC on Windows when `psutil` is absent.
+  `mcp_lifecycle.py` falls back to WMIC on Windows when `psutil` is absent,
+  and further falls back to a PowerShell `Get-Process` call when WMIC is
+  unavailable (WMIC was removed from Windows 11 22H2+). Both fallbacks yield
+  full executable paths, satisfying the path-scoping requirement.
   The PowerShell snippet used in production bundles does not need Python at all.
 - **Fixed sleep as a fallback**: Rejected in favour of polling. A fixed sleep
   always waits the full duration even when the process exits immediately; a
@@ -97,3 +100,29 @@ blocking on a callback that needed the tk thread to service it.
   the deadlock but introduces a new race where the thread might outlive the
   process. Letting `_run()` own the `icon.stop()` call after mainloop exits
   is simpler and correct.
+
+## Amendment — 2026-06-12 (Wave 0 / A5: enumeration honesty)
+
+The original docstring for `_default_process_enumerator` claimed it fell back
+"finally to parsing the output of `tasklist /FO CSV /V`", but this path was
+never implemented. The actual fallback was WMIC only — which itself was removed
+from Windows 11 22H2+. This left the enumerator silently yielding nothing when
+`psutil` was absent on modern Windows, violating the observability goal and
+breaking MCP child detection during update/uninstall on affected machines.
+
+**Change:** The fallback chain in `_default_process_enumerator` is now:
+
+1. `psutil` (preferred, cross-platform)
+2. WMIC via `subprocess` (legacy fallback, Windows only; silently skipped on
+   Win11 22H2+ where WMIC is absent)
+3. PowerShell `Get-Process | Where-Object { $_.Path } | ConvertTo-Csv` via
+   `subprocess` (modern Windows fallback; yields full `Path` property values,
+   satisfying the path-scoping requirement from this ADR)
+
+When `psutil` is absent **and** all Windows fallbacks yield zero entries, a
+`WARNING` is logged rather than silently returning, making the failure
+observable in production logs. The alternative decision reference above has
+been updated accordingly.
+
+Deciding whether to bundle `psutil` into the frozen distribution is a separate
+concern tracked as task C4.
