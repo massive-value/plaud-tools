@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### High-leverage (audit remediation, wave 3)
 
+- **Filtered browse pages incrementally instead of fetching everything.**
+  `browse_recordings` / CLI `list`/`search` now page the upstream API with
+  `skip`/`limit` and filter each page, stopping once enough matches are
+  collected to answer `has_more` honestly — no more pulling the entire
+  library into memory to filter client-side. Response shape (`items`,
+  `next_after`) unchanged. (#117)
 - **Config TOML editing no longer corrupts sections with arrays.** AI-client
   connect/disconnect now edits `mcp_servers.plaud` via `tomlkit` (style- and
   comment-preserving) instead of a `[^\[]*` regex that truncated sections
