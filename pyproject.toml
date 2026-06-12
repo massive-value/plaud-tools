@@ -54,8 +54,14 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["plaud_tools*"]
 
+[tool.setuptools.package-data]
+# Include the PEP 561 py.typed marker so downstream type-checkers know this
+# package ships inline types.  Without this entry setuptools omits the file
+# from sdist / wheel builds.
+plaud_tools = ["py.typed"]
+
 [project.optional-dependencies]
-dev = ["pytest>=8", "pyinstaller>=6", "build>=1.0"]
+dev = ["pytest>=8", "pyinstaller>=6", "build>=1.0", "mypy>=1.10"]
 tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4"]
 
 [tool.pytest.ini_options]
@@ -95,3 +101,46 @@ ignore = [
 [tool.ruff.lint.isort]
 # Keep isort consistent with the existing "from __future__ import annotations" style.
 force-sort-within-sections = false
+
+# ---------------------------------------------------------------------------
+# mypy — Wave 1 / B2
+# Global settings are intentionally lenient: the codebase uses dynamic patterns
+# (importlib, ctypes.windll, tray mixins) that are expensive to annotate fully.
+# Strict opt-ins are applied only to the four core modules where the types are
+# already well-specified and the improvement-to-noise ratio is high.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+# Pin the analysis platform to win32.  plaud-tools is a Windows-first bundle:
+# the tray/, ctypes (windll/WinError), and subprocess-flag code targets win32,
+# and many call sites guard on `sys.platform == "win32"`.  Pinning the platform
+# makes type-checking DETERMINISTIC across runners — a local Windows machine and
+# the Linux CI runner now evaluate `sys.platform` conditionals and platform-only
+# stubs (ctypes.windll, subprocess.CREATE_*, comtypes) identically, so
+# "passes locally" == "passes in CI".
+# Trade-off: POSIX-only branches are treated as unreachable and are NOT
+# type-checked under this setting.  Revisit (e.g. add a second `--platform linux`
+# mypy pass) when the Mac/Linux bundles land in D2.
+platform = "win32"
+# ignore_missing_imports covers optional extras (pystray, comtypes, winrt,
+# sv_ttk) and stubs that do not exist on the CI runner's platform.
+ignore_missing_imports = true
+# warn_unused_ignores catches stale # type: ignore comments after future fixes.
+warn_unused_ignores = false
+# Do NOT enable disallow_untyped_defs globally — the tray/ and mcp/ modules
+# use many dynamically-typed patterns that would require noisy ignores.
+disallow_untyped_defs = false
+
+# Strict opt-in modules: session, client, layout, appdata
+# These four have well-specified signatures and are the public core of the
+# package.  Stricter checking here gives the most signal-to-noise benefit.
+[[tool.mypy.overrides]]
+module = [
+    "plaud_tools.session",
+    "plaud_tools.client",
+    "plaud_tools.layout",
+    "plaud_tools.appdata",
+]
+disallow_untyped_defs = true
+warn_return_any = true
+check_untyped_defs = true

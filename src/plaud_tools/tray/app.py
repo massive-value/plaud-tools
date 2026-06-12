@@ -197,9 +197,9 @@ class TrayApp(_BackgroundMixin):
 
         def _show(ok: bool, msg: str) -> None:
             if ok:
-                messagebox.showinfo(APP_NAME, msg, parent=self._root)
+                messagebox.showinfo(APP_NAME, msg, parent=self._root)  # type: ignore[arg-type]  # _root is Tk|None; tkinter stubs expect Misc (non-None)
             else:
-                messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)
+                messagebox.showerror(APP_NAME, f"Connection failed:\n{msg}", parent=self._root)  # type: ignore[arg-type]  # same
 
         self._tk(lambda: self._test_connection(_show))
 
@@ -211,7 +211,7 @@ class TrayApp(_BackgroundMixin):
                 v = result[0]
                 self._tk(self._refresh)
                 if self._root:
-                    self._root.after(0, lambda v=v: on_done(True, f"v{v} available"))
+                    self._root.after(0, lambda v=v: on_done(True, f"v{v} available"))  # type: ignore[misc]  # default-arg lambda; tkinter .after() stubs can't infer type
             else:
                 if self._root:
                     self._root.after(0, lambda: on_done(False, "You're up to date."))
@@ -402,7 +402,7 @@ class TrayApp(_BackgroundMixin):
                     messagebox.showerror(
                         f"{APP_NAME} — Update failed",
                         body,
-                        parent=self._root,
+                        parent=self._root,  # type: ignore[arg-type]  # _root is Tk|None; tkinter stubs expect Misc
                     )
 
                 root.after(800, _show_update_failure)
@@ -418,8 +418,11 @@ class TrayApp(_BackgroundMixin):
                 if self._session and self._home_win:
 
                     def _show_update_success(v: str = updated_to) -> None:
-                        self._home_win.show()
-                        self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
+                        # Re-check for mypy: outer guard `if self._home_win` doesn't
+                        # narrow inside a nested def captured by a closure.
+                        if self._home_win is not None:
+                            self._home_win.show()
+                            self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
 
                     root.after(500, _show_update_success)
             except Exception:

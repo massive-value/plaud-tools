@@ -133,7 +133,7 @@ class UpdateDialog:
                 ).start()
 
             if zip_url:
-                install_btn.config(command=lambda zu=zip_url: _start_install(zu))
+                install_btn.config(command=lambda zu=zip_url: _start_install(zu))  # type: ignore[misc]  # default-arg lambda; tkinter stubs cannot infer type
             else:
                 # zip_url was cached as None (poller ran before CI finished uploading).
                 # Re-fetch once; enable the button if the asset is now available.
@@ -148,7 +148,7 @@ class UpdateDialog:
                             if not win.winfo_exists():
                                 return
                             if zu:
-                                self._app._update_info = (fresh[0], fresh[1], zu)
+                                self._app._update_info = (fresh[0], fresh[1], zu)  # type: ignore[index]  # fresh is non-None when zu is truthy (zu = fresh[2] if fresh else None)
                                 install_btn.config(
                                     state="normal",
                                     text="Install update and restart",
@@ -195,7 +195,7 @@ class UpdateDialog:
                 self._root.after(
                     0,
                     lambda: (
-                        status_var.set(f"Download failed: {err}"),
+                        status_var.set(f"Download failed: {err}"),  # type: ignore[func-returns-value]  # StringVar.set() returns None; tuple used as side-effect expression in lambda body
                         install_btn.config(state="normal"),
                     ),
                 )

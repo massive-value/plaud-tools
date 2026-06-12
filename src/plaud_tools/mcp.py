@@ -99,7 +99,7 @@ def _emit_session_expired(reason: str) -> None:
 
 
 def _json_result(value: Any, is_error: bool = False) -> dict[str, Any]:
-    result = {"content": [{"type": "text", "text": json.dumps(value, indent=2)}]}
+    result: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(value, indent=2)}]}
     if is_error:
         result["isError"] = True
     return result

@@ -308,7 +308,7 @@ def _force_kill(pid: int) -> None:
             ctypes.windll.kernel32.CloseHandle(handle)
     else:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]  # SIGKILL is POSIX-only; this branch is only reached on non-nt
         except ProcessLookupError:
             pass
 

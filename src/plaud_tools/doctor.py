@@ -87,8 +87,9 @@ def _executables_section() -> dict[str, Any]:
             "on_path": cli_on_path,
         },
         "plaud-mcp": {
-            "path": str(mcp),
-            "exists": mcp.exists(),
+            # mcp may be None when no plaud-mcp is on PATH (dev channel)
+            "path": str(mcp) if mcp is not None else None,
+            "exists": mcp.exists() if mcp is not None else False,
         },
         "ffmpeg": {
             "path": str(ffmpeg),
