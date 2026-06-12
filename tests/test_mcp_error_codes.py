@@ -440,3 +440,121 @@ class TestTraySessionExpiredToast:
         # The events file should be cleared after processing
         remaining = events_file.read_text(encoding="utf-8").strip()
         assert remaining == ""
+
+
+# ---------------------------------------------------------------------------
+# _write_event size-based rotation (Wave 0 / A4)
+# ---------------------------------------------------------------------------
+
+class TestWriteEventRotation:
+    """Verify that _write_event rotates events.jsonl → events.jsonl.1 past the cap.
+
+    All paths are pinned under tmp_path so the real user state is never touched.
+    """
+
+    def test_rotation_occurs_when_file_exceeds_cap(self, tmp_path, monkeypatch):
+        """After crossing _EVENTS_MAX_BYTES, the next write rotates the file.
+
+        Pre-create a file that is exactly at the cap, write one event, and
+        assert that:
+        - events.jsonl.1 now exists (the old file was renamed there)
+        - events.jsonl exists and contains exactly the new event
+        - no exception escaped _write_event
+        """
+        from plaud_tools import mcp as mcp_mod
+
+        events_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)
+
+        # Pre-fill the file to exactly the rotation threshold so the next
+        # write triggers rotation.
+        events_file.write_bytes(b"x" * mcp_mod._EVENTS_MAX_BYTES)
+
+        # Must not raise
+        _write_event("session_expired", reason="rotation_test")
+
+        rotated = tmp_path / "events.jsonl.1"
+        assert rotated.exists(), "events.jsonl.1 should exist after rotation"
+        assert rotated.stat().st_size == mcp_mod._EVENTS_MAX_BYTES, (
+            "events.jsonl.1 should contain the original (pre-rotation) content"
+        )
+
+        assert events_file.exists(), "events.jsonl should exist after rotation"
+        lines = events_file.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1, "new events.jsonl should contain exactly the new event"
+        record = json.loads(lines[0])
+        assert record["type"] == "session_expired"
+        assert record["reason"] == "rotation_test"
+
+    def test_rotation_replaces_existing_dot_one(self, tmp_path, monkeypatch):
+        """If events.jsonl.1 already exists it is silently overwritten.
+
+        On Windows Path.rename raises FileExistsError when the destination is
+        present; os.replace must be used instead.  This test confirms no
+        exception escapes and the stale .1 is replaced.
+        """
+        from plaud_tools import mcp as mcp_mod
+
+        events_file = tmp_path / "events.jsonl"
+        rotated = tmp_path / "events.jsonl.1"
+        monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)
+
+        # Existing .1 with distinct content so we can verify it was replaced.
+        stale_content = b"stale content from a previous rotation"
+        rotated.write_bytes(stale_content)
+
+        # events.jsonl at the cap so the next write triggers rotation.
+        events_file.write_bytes(b"y" * mcp_mod._EVENTS_MAX_BYTES)
+
+        _write_event("session_expired", reason="replace_test")
+
+        assert rotated.exists()
+        # The stale content must be gone — .1 now holds the pre-rotation file.
+        assert rotated.read_bytes() != stale_content, (
+            "events.jsonl.1 should have been replaced by os.replace"
+        )
+        assert rotated.stat().st_size == mcp_mod._EVENTS_MAX_BYTES
+
+        lines = events_file.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["reason"] == "replace_test"
+
+    def test_failed_rotation_does_not_raise(self, tmp_path, monkeypatch):
+        """A broken os.replace (e.g. locked file, read-only dir) must not propagate.
+
+        The outer try/except in _write_event wraps both rotation and append, so
+        even if the rotation fails the append can still succeed.  But the key
+        guarantee — no exception escapes — must hold regardless.
+        """
+        from plaud_tools import mcp as mcp_mod
+        import plaud_tools.mcp as _mcp_module
+
+        events_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)
+
+        # File at cap so rotation is attempted.
+        events_file.write_bytes(b"z" * mcp_mod._EVENTS_MAX_BYTES)
+
+        def _boom(*args, **kwargs):
+            raise OSError("simulated locked file")
+
+        monkeypatch.setattr(_mcp_module.os, "replace", _boom)
+
+        # Must not raise even though os.replace is broken.
+        _write_event("session_expired", reason="never_raises_test")
+
+    def test_no_rotation_below_cap(self, tmp_path, monkeypatch):
+        """Files smaller than _EVENTS_MAX_BYTES must not be rotated."""
+        from plaud_tools import mcp as mcp_mod
+
+        events_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)
+
+        # Write initial event without hitting the cap.
+        events_file.write_bytes(b"a" * (mcp_mod._EVENTS_MAX_BYTES - 1))
+
+        _write_event("session_expired", reason="no_rotation_test")
+
+        rotated = tmp_path / "events.jsonl.1"
+        assert not rotated.exists(), "events.jsonl.1 must NOT exist below cap"

@@ -16,12 +16,38 @@ from .session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
 
+# Rotate events.jsonl → events.jsonl.1 once the file exceeds this size.
+# Keeps the reader's per-poll read_text() call small and prevents unbounded
+# growth in deployments where the tray is not running to consume events.
+# The tray's _event_poll_loop truncates the file every 5 s, so rotation
+# should be rare in normal operation (issue audit / Wave 0 / A4).
+_EVENTS_MAX_BYTES = 1_000_000  # ~1 MB
+
 
 def _write_event(event_type: str, **kwargs: Any) -> None:
-    """Append a structured event to the events file; never raises."""
+    """Append a structured event to the events file; never raises.
+
+    If the file exceeds ``_EVENTS_MAX_BYTES`` before appending, it is rotated
+    to ``events.jsonl.1`` (replacing any prior ``.1``) via ``os.replace`` —
+    which is atomic on POSIX and as close as Windows gets.  ``Path.rename``
+    is intentionally avoided: it raises ``FileExistsError`` on Windows when
+    the destination already exists.  The rotation itself is wrapped in the same
+    defensive try/except so a failure (read-only dir, locked file, etc.) cannot
+    propagate — we fall through and still attempt the append.
+    """
     try:
         path = _events_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # --- size-based rotation -------------------------------------------
+        # Check size before opening for append so we keep the hot path (no
+        # rotation needed) to a single stat call.
+        try:
+            if path.exists() and path.stat().st_size >= _EVENTS_MAX_BYTES:
+                os.replace(path, str(path) + ".1")
+        except Exception:
+            # A failed rotation is not fatal — fall through and append anyway.
+            log.debug("Failed to rotate events file", exc_info=True)
+        # --- append --------------------------------------------------------
         record = {"type": event_type, "ts": time.time(), **kwargs}
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
