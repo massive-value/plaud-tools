@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass
@@ -14,7 +16,43 @@ from .query import summarize_recording as _summarize_recording_impl
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
 
+_log = logging.getLogger(__name__)
+
 _CHUNK_SIZE = 5 * 1024 * 1024  # 5 MiB — matches Plaud web client chunk strategy
+
+# ---------------------------------------------------------------------------
+# Injectable sleep/jitter for tests (Wave 2 / C5 — polite retry)
+#
+# Tests monkeypatch these module-level names instead of patching time.sleep
+# globally, so the test harness can assert call counts and values without
+# wall-clock cost.  Production code calls these the same way it would call
+# time.sleep and random.uniform; the indirection is intentionally minimal.
+# ---------------------------------------------------------------------------
+_sleep = time.sleep  # replaced in tests: monkeypatch.setattr(client, "_sleep", lambda s: None)
+
+
+def _jitter(lo: float, hi: float) -> float:
+    """Return a random float in [lo, hi] — injected by tests via monkeypatch."""
+    return random.uniform(lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# Retry / backoff constants (Wave 2 / C5)
+#
+# _MAX_ATTEMPTS = 3 means 1 original attempt + 2 retries.
+#
+# Backoff formula (exponential with ±25 % full jitter):
+#   base_delay = _BACKOFF_BASE * (2 ** attempt_index)   # 1 s, 3 s
+#   actual_delay = jitter(base_delay * 0.75, base_delay * 1.25)
+# On attempt_index 0 (first retry) → base ≈ 1 s → actual ∈ [0.75, 1.25] s
+# On attempt_index 1 (second retry) → base ≈ 3 s → actual ∈ [2.25, 3.75] s
+#
+# When Retry-After is present we sleep max(retry_after, computed_backoff).
+# Rationale: honour the server's instruction but never sleep *less* than our
+# own back-off to avoid hammering a server that forgot the header on a 503.
+# ---------------------------------------------------------------------------
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE = 1.0  # seconds — see formula above
 
 
 @dataclass(slots=True)
@@ -221,8 +259,22 @@ class PlaudClient:
         while True:
             if time.time() >= deadline:
                 raise PlaudApiError(f"merge timed out after {int(timeout_s)}s")
-            time.sleep(poll_interval_s)
-            poll = self._request_json("GET", f"/file/combine-tasks/{task_id}", strict=False)
+            _sleep(poll_interval_s)
+            try:
+                poll = self._request_json("GET", f"/file/combine-tasks/{task_id}", strict=False)
+            except PlaudApiError as exc:
+                # Treat transient errors (429/5xx) as skipped polls so a
+                # brief server hiccup during a long merge doesn't abort the
+                # whole wait.  Non-transient errors (auth, 404, …) propagate
+                # immediately — they signal a structural problem, not a blip.
+                _code, retryable = exc.classify()
+                if retryable:
+                    _log.info(
+                        "merge poll transient error (%s) — continuing until deadline",
+                        exc,
+                    )
+                    continue
+                raise
             task = poll.get("data") or {}
             if task.get("status") == "success":
                 file_raw = task.get("file") or {}
@@ -237,15 +289,31 @@ class PlaudClient:
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
     ) -> None:
-        """Poll get_recording() until is_trans is True or timeout elapses."""
+        """Poll get_recording() until is_trans is True or timeout elapses.
+
+        A transient error (429 / 5xx) during a poll is treated as a skipped
+        poll: we log and continue until the deadline.  Non-transient errors
+        (e.g. 404, auth failure) propagate immediately.
+        """
         deadline = time.time() + timeout_s
         while True:
             if time.time() >= deadline:
                 raise PlaudApiError(f"transcription timed out after {int(timeout_s)}s")
-            detail = self.get_recording(recording_id)
+            try:
+                detail = self.get_recording(recording_id)
+            except PlaudApiError as exc:
+                _code, retryable = exc.classify()
+                if retryable:
+                    _log.info(
+                        "wait_for_transcription transient error (%s) — continuing until deadline",
+                        exc,
+                    )
+                    _sleep(poll_interval_s)
+                    continue
+                raise
             if detail.is_trans:
                 return
-            time.sleep(poll_interval_s)
+            _sleep(poll_interval_s)
 
     def wait_for_summary(
         self,
@@ -254,15 +322,31 @@ class PlaudClient:
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
     ) -> None:
-        """Poll get_recording() until is_summary is True or timeout elapses."""
+        """Poll get_recording() until is_summary is True or timeout elapses.
+
+        A transient error (429 / 5xx) during a poll is treated as a skipped
+        poll: we log and continue until the deadline.  Non-transient errors
+        (e.g. 404, auth failure) propagate immediately.
+        """
         deadline = time.time() + timeout_s
         while True:
             if time.time() >= deadline:
                 raise PlaudApiError(f"summary timed out after {int(timeout_s)}s")
-            detail = self.get_recording(recording_id)
+            try:
+                detail = self.get_recording(recording_id)
+            except PlaudApiError as exc:
+                _code, retryable = exc.classify()
+                if retryable:
+                    _log.info(
+                        "wait_for_summary transient error (%s) — continuing until deadline",
+                        exc,
+                    )
+                    _sleep(poll_interval_s)
+                    continue
+                raise
             if detail.is_summary:
                 return
-            time.sleep(poll_interval_s)
+            _sleep(poll_interval_s)
 
     def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
         """Return the raw /file/detail payload for debugging."""
@@ -435,12 +519,35 @@ class PlaudClient:
         *,
         _redirected: bool = False,
     ) -> dict[str, Any]:
+        """Issue a Plaud API request and return the parsed JSON payload.
+
+        Retry / backoff (Wave 2 / C5):
+            On HTTP 429 or HTTP 5xx the request is retried up to
+            ``_MAX_ATTEMPTS - 1`` additional times (3 total) with exponential
+            backoff + ±25 % full jitter.  When the server supplies a
+            ``Retry-After`` header we sleep the *larger* of Retry-After and the
+            computed back-off delay to respect the server's instruction while
+            avoiding hammering.
+
+        Region-redirect (Wave 0 / A2):
+            A ``status == -302`` payload triggers a single region update and one
+            immediate retry (no delay).  The ``_redirected`` flag bounds this to
+            one hop — a redirect on every call raises ``PlaudApiError('region
+            redirect loop')`` rather than recursing indefinitely.
+
+        The two mechanisms compose cleanly: retry/backoff wraps the transport
+        call; region-redirect is a recursive call at the application layer after
+        the region has been persisted.  The ``_redirected`` flag is never
+        propagated through the retry loop so a 429 retry cannot accidentally
+        suppress the redirect guard.
+        """
         try:
             session = self._session_manager.require()
         except PlaudSessionExpiredError:
             # Cache may be stale — discard it and let the error propagate.
             self._session_manager.invalidate_cache()
             raise
+
         url = f"{BASE_URLS.get(session.region, BASE_URLS['us'])}{path}"
         headers = {
             "Authorization": f"Bearer {session.access_token}",
@@ -449,32 +556,82 @@ class PlaudClient:
             "app-platform": "web",
             "edit-from": "web",
         }
-        response = self._transport.request(
-            method=method,
-            url=url,
-            headers=headers,
-            body=json.dumps(body).encode("utf-8") if body is not None else None,
-        )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise PlaudApiError("Plaud API returned a non-object payload.")
+        encoded_body = json.dumps(body).encode("utf-8") if body is not None else None
 
-        if payload.get("status") == -302:
-            # Guard against a server that returns -302 on every call — we allow
-            # at most one region redirect per outbound request.  The update_region
-            # persistence is load-bearing (fragile Plaud protocol): it must run
-            # before any retry so the next request hits the correct base URL.
-            if _redirected:
-                raise PlaudApiError("region redirect loop")
-            domain = ((payload.get("data") or {}).get("domains") or {}).get("api", "")
-            next_region = "eu" if "euc1" in domain else "us"
-            self._session_manager.update_region(next_region)
-            return self._request_json(method, path, strict=strict, body=body, _redirected=True)
+        last_error: PlaudApiError | None = None
+        for attempt in range(_MAX_ATTEMPTS):
+            if attempt > 0:
+                # Exponential backoff with ±25 % full jitter.
+                # base_delay doubles each retry: 1 s → 3 s (base * 2^attempt_index
+                # where attempt_index = attempt - 1 for readability, but since
+                # attempt starts at 1 here, base * 2^(attempt-1) gives 1 s, 2 s;
+                # we use _BACKOFF_BASE * (2 ** attempt) which gives 2 s, 4 s —
+                # but we want ~1 s and ~3 s so we use attempt directly:
+                #   attempt=1 → _BACKOFF_BASE * 2^0 = 1 s
+                #   attempt=2 → _BACKOFF_BASE * 2^1 = 2 s  (jittered to ~[1.5, 2.5])
+                # This is intentionally kept simple.  See module-level doc for formula.
+                base_delay = _BACKOFF_BASE * (2 ** (attempt - 1))
+                computed_delay = _jitter(base_delay * 0.75, base_delay * 1.25)
 
-        if strict and payload.get("status") != 0:
-            msg = payload.get("msg") or f"status {payload.get('status')}"
-            raise PlaudApiError(f"Plaud API error: {msg}")
-        return payload
+                # Honour Retry-After: sleep the larger of the server's hint and
+                # our computed back-off.  Never sleep *less* than the computed
+                # delay — a server that forgets the header on a 503 should still
+                # get back-off respect.
+                retry_after = last_error.retry_after if last_error is not None else None
+                sleep_s = max(computed_delay, retry_after) if retry_after is not None else computed_delay
+
+                _log.debug(
+                    "Plaud API retry %d/%d for %s %s — sleeping %.2fs (computed=%.2fs, retry_after=%s)",
+                    attempt,
+                    _MAX_ATTEMPTS - 1,
+                    method,
+                    path,
+                    sleep_s,
+                    computed_delay,
+                    retry_after,
+                )
+                _sleep(sleep_s)
+
+            try:
+                response = self._transport.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    body=encoded_body,
+                )
+            except PlaudApiError as exc:
+                _code, retryable = exc.classify()
+                if retryable and attempt < _MAX_ATTEMPTS - 1:
+                    last_error = exc
+                    continue
+                raise
+
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise PlaudApiError("Plaud API returned a non-object payload.")
+
+            if payload.get("status") == -302:
+                # Guard against a server that returns -302 on every call — we
+                # allow at most one region redirect per outbound request.  The
+                # update_region persistence is load-bearing (fragile Plaud
+                # protocol): it must run before any retry so the next request
+                # hits the correct base URL.
+                if _redirected:
+                    raise PlaudApiError("region redirect loop")
+                domain = ((payload.get("data") or {}).get("domains") or {}).get("api", "")
+                next_region = "eu" if "euc1" in domain else "us"
+                self._session_manager.update_region(next_region)
+                return self._request_json(method, path, strict=strict, body=body, _redirected=True)
+
+            if strict and payload.get("status") != 0:
+                msg = payload.get("msg") or f"status {payload.get('status')}"
+                raise PlaudApiError(f"Plaud API error: {msg}")
+            return payload
+
+        # Should be unreachable — loop always returns or raises — but the type
+        # checker cannot prove it.  Raise the last captured error.
+        assert last_error is not None
+        raise last_error
 
     def _normalize_recording(self, raw: dict[str, Any]) -> Recording:
         return Recording(
