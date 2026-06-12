@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -39,10 +40,12 @@ def _version_gt(a: str, b: str) -> bool:
         return False
 
 
-def _check_for_update() -> tuple[str, str, str | None] | None:
-    """Return (latest_version, release_url, zip_asset_url) if an update is available, else None.
+def _check_for_update() -> tuple[str, str, str | None, str | None] | None:
+    """Return (latest_version, release_url, zip_url, sums_url) if an update is available, else None.
 
-    zip_asset_url is the browser_download_url of the PlaudTools.zip asset, or None if not found.
+    zip_url is the browser_download_url of the PlaudTools.zip asset, or None if not found.
+    sums_url is the browser_download_url of the SHA256SUMS asset, or None if not published
+    (older releases pre-dating task A3 have no SHA256SUMS asset).
     """
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -52,14 +55,93 @@ def _check_for_update() -> tuple[str, str, str | None] | None:
         latest = data["tag_name"].lstrip("v")
         if _version_gt(latest, APP_VERSION):
             zip_url: str | None = None
+            sums_url: str | None = None
             for asset in data.get("assets", []):
-                if asset.get("name") == "PlaudTools.zip":
+                name = asset.get("name", "")
+                if name == "PlaudTools.zip":
                     zip_url = asset.get("browser_download_url")
-                    break
-            return latest, data["html_url"], zip_url
+                elif name == "SHA256SUMS":
+                    sums_url = asset.get("browser_download_url")
+            return latest, data["html_url"], zip_url, sums_url
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Hash verification
+# ---------------------------------------------------------------------------
+
+
+class ChecksumMismatch(ValueError):
+    """Raised when the downloaded zip's SHA-256 does not match SHA256SUMS."""
+
+
+def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
+    """Verify *zip_path* against the SHA256SUMS asset at *sums_url*.
+
+    Rollout behavior (critical — older releases have no SHA256SUMS asset):
+    - sums_url is not None  →  download the asset, parse the expected hash,
+      compute the actual hash, and raise :exc:`ChecksumMismatch` on mismatch.
+      FAIL CLOSED: the caller must not install a zip that fails this check.
+    - sums_url is None      →  log a warning and return normally so installs
+      against older releases still work.
+
+    # TODO: remove the soft-fail (sums_url is None) branch two releases after
+    # SHA256SUMS ships to all supported release branches.  Track via:
+    #   https://github.com/massive-value/plaud-tools/issues  (open a "remove soft-fail" issue)
+
+    The SHA256SUMS format is the standard sha256sum two-space format::
+
+        <lowercase-hex>  PlaudTools.zip
+
+    Only the first whitespace-separated token on the first non-empty line is
+    used, so the filename column is ignored.
+
+    Parameters
+    ----------
+    zip_path:
+        Local path to the downloaded zip to verify.
+    sums_url:
+        ``browser_download_url`` of the SHA256SUMS release asset, or ``None``
+        when the asset is absent (pre-A3 release).
+
+    Raises
+    ------
+    ChecksumMismatch
+        When *sums_url* is present but the computed hash does not match.
+    """
+    if sums_url is None:
+        # Older release: SHA256SUMS not published yet — warn and proceed.
+        logging.warning(
+            "verify_zip_checksum: SHA256SUMS asset absent for this release; "
+            "integrity could not be verified. Proceeding without checksum check."
+        )
+        return
+
+    # Download the SHA256SUMS file.
+    req = urllib.request.Request(sums_url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        sums_text = resp.read().decode("utf-8")
+
+    # Parse the expected hash: first whitespace-delimited token.
+    expected = sums_text.strip().split()[0].lower()
+
+    # Compute SHA-256 of the local zip.
+    sha256 = hashlib.sha256()
+    with zip_path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            sha256.update(chunk)
+    actual = sha256.hexdigest().lower()
+
+    if actual != expected:
+        raise ChecksumMismatch(
+            f"SHA256 mismatch — the downloaded zip may be corrupt or tampered.\n"
+            f"  Expected: {expected}\n"
+            f"  Actual:   {actual}\n"
+            "Refusing to install. Please retry; if the mismatch persists, "
+            "report it at https://github.com/massive-value/plaud-tools/issues"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +166,7 @@ class UpdateDialog:
         update_info = self._app._update_info
         if update_info is None:
             return
-        latest, url, zip_url = update_info
+        latest, url, zip_url, sums_url = update_info
 
         win = tk.Toplevel(self._root)
         _set_app_icon(win)
@@ -123,17 +205,18 @@ class UpdateDialog:
             install_btn = ttk.Button(btn_frame, text="Install update and restart")
             install_btn.pack(side="left")
 
-            def _start_install(zu: str) -> None:
+            def _start_install(zu: str, su: str | None) -> None:
                 install_btn.config(state="disabled")
                 status_var.set("Downloading…")
                 threading.Thread(
                     target=self._install_worker,
-                    args=(zu, status_var, install_btn),
+                    args=(zu, su, status_var, install_btn),
                     daemon=True,
                 ).start()
 
             if zip_url:
-                install_btn.config(command=lambda zu=zip_url: _start_install(zu))  # type: ignore[misc]  # default-arg lambda; tkinter stubs cannot infer type
+                _cmd = lambda zu=zip_url, su=sums_url: _start_install(zu, su)  # noqa: E731  # default-arg lambda; tkinter stubs cannot infer type  # type: ignore[misc]
+                install_btn.config(command=_cmd)
             else:
                 # zip_url was cached as None (poller ran before CI finished uploading).
                 # Re-fetch once; enable the button if the asset is now available.
@@ -142,17 +225,18 @@ class UpdateDialog:
                 def _refetch() -> None:
                     fresh = _check_for_update()
                     fresh_zip = fresh[2] if fresh else None
+                    fresh_sums = fresh[3] if fresh else None
                     if self._root:
 
-                        def _apply(zu: str | None = fresh_zip) -> None:
+                        def _apply(zu: str | None = fresh_zip, su: str | None = fresh_sums) -> None:
                             if not win.winfo_exists():
                                 return
                             if zu:
-                                self._app._update_info = (fresh[0], fresh[1], zu)  # type: ignore[index]  # fresh is non-None when zu is truthy (zu = fresh[2] if fresh else None)
+                                self._app._update_info = (fresh[0], fresh[1], zu, su)  # type: ignore[index]  # fresh is non-None when zu is truthy (zu = fresh[2] if fresh else None)
                                 install_btn.config(
                                     state="normal",
                                     text="Install update and restart",
-                                    command=lambda: _start_install(zu),
+                                    command=lambda: _start_install(zu, su),
                                 )
                             else:
                                 install_btn.config(
@@ -179,10 +263,11 @@ class UpdateDialog:
     def _install_worker(
         self,
         zip_url: str,
+        sums_url: str | None,
         status_var: tk.StringVar,
         install_btn: ttk.Button,
     ) -> None:
-        """Download the zip, write the .bat helper, launch it, then quit the tray."""
+        """Download the zip, verify its checksum, write the PS1 helper, launch it, then quit the tray."""
         import time as _time
 
         def _set_status(text: str) -> None:
@@ -229,6 +314,18 @@ class UpdateDialog:
 
             zip_path = Path(tmp.name)
         except Exception as exc:
+            _on_error(exc)
+            return
+
+        # --- Hash verification (MUST happen before writing dispatcher/sentinel) ---
+        # verify_zip_checksum is fail-closed when SHA256SUMS is present and the
+        # hash mismatches; it warns-and-proceeds when the asset is absent.
+        try:
+            _set_status("Verifying…")
+            verify_zip_checksum(zip_path, sums_url)
+        except Exception as exc:
+            # ChecksumMismatch or network error fetching SHA256SUMS — refuse to proceed.
+            zip_path.unlink(missing_ok=True)
             _on_error(exc)
             return
 
@@ -324,5 +421,7 @@ __all__ = [
     "GITHUB_REPO",
     "_version_gt",
     "_check_for_update",
+    "ChecksumMismatch",
+    "verify_zip_checksum",
     "UpdateDialog",
 ]

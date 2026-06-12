@@ -65,7 +65,7 @@ class TrayApp(_BackgroundMixin):
         self._session: PlaudSession | None = None
         self._icon: pystray.Icon | None = None
         self._root: tk.Tk | None = None
-        self._update_info: tuple[str, str, str | None] | None = None
+        self._update_info: tuple[str, str, str | None, str | None] | None = None
         self._env_status: EnvStatus | None = None
         self._login_win: LoginWindow | None = None
         self._wizard_win: WizardWindow | None = None
@@ -111,7 +111,7 @@ class TrayApp(_BackgroundMixin):
         ]
 
         if self._update_info:
-            version, url, _zip_url = self._update_info
+            version, url, _zip_url, _sums_url = self._update_info
             if getattr(sys, "frozen", False):
                 items.append(
                     pystray.MenuItem(
