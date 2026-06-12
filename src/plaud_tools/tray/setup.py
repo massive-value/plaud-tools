@@ -113,27 +113,70 @@ def _apply_theme(root: tk.Tk) -> None:
 
 # Single-instance lock (Windows only)
 
-_MUTEX_HANDLE = None
+_MUTEX_HANDLE: object = None
 _ACTIVATE_EVENT = "Global\\PlaudToolsActivate"
 
+# Win32 error code returned by GetLastError when a named mutex already exists.
+_ERROR_ALREADY_EXISTS = 183
 
-def _acquire_instance_lock() -> bool:
+
+def _acquire_instance_lock(
+    _kernel32: object = None,
+) -> bool:
+    """Acquire the single-instance named mutex and return True if the lock was obtained.
+
+    Returns False when another instance already holds the mutex (ERROR_ALREADY_EXISTS),
+    which also triggers a focus signal to the running instance.
+
+    If ``CreateMutexW`` returns a NULL handle (API failure) the function logs a
+    warning and returns True — fail-open — so the tray still starts rather than
+    silently blocking the user due to an unrelated OS error.
+
+    Parameters
+    ----------
+    _kernel32:
+        Override for the kernel32 WinDLL object.  Accepted so tests can inject a
+        fake without touching ``ctypes`` globally.  Pass ``None`` (default) in
+        production.
+    """
     global _MUTEX_HANDLE
     if sys.platform != "win32":
         return True
     import ctypes
 
-    # "Global\" prefix is required so the named mutex is visible across user sessions (e.g. UAC elevation).
-    _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(
-        None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance"
-    )
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    if _kernel32 is None:
+        # use_last_error=True keeps the Win32 error code thread-local and readable
+        # via ctypes.get_last_error() rather than re-querying GetLastError() after
+        # a Python-level call that might clobber the value.
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    else:
+        k32 = _kernel32  # type: ignore[assignment]
+
+    # "Global\" prefix is required so the named mutex is visible across user
+    # sessions (e.g. UAC elevation).
+    handle = k32.CreateMutexW(None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance")
+    last_err = ctypes.get_last_error()
+
+    if not handle:
+        # CreateMutexW returned NULL — OS-level failure unrelated to mutex
+        # ownership.  Fail-open: allow the tray to start so the user is not
+        # silently blocked.
+        logging.warning(
+            "CreateMutexW returned NULL (error=%d); proceeding without single-instance lock",
+            last_err,
+        )
+        return True
+
+    _MUTEX_HANDLE = handle
+
+    if last_err == _ERROR_ALREADY_EXISTS:
         # Signal the running instance to surface its window, then exit.
-        h = ctypes.windll.kernel32.OpenEventW(0x0002, False, _ACTIVATE_EVENT)  # EVENT_MODIFY_STATE
+        h = k32.OpenEventW(0x0002, False, _ACTIVATE_EVENT)  # EVENT_MODIFY_STATE
         if h:
-            ctypes.windll.kernel32.SetEvent(h)
-            ctypes.windll.kernel32.CloseHandle(h)
+            k32.SetEvent(h)
+            k32.CloseHandle(h)
         return False
+
     return True
 
 
