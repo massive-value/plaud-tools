@@ -5,7 +5,7 @@ import getpass
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -159,123 +159,101 @@ def _build_runtime_client(store: SessionStore) -> PlaudClient:
     return PlaudClient(SessionManager(store))
 
 
-def run_cli(
-    argv: Sequence[str],
-    client: PlaudClient | None = None,
-    session_store: SessionStore | None = None,
-    auth: PlaudAuth | None = None,
+# ---------------------------------------------------------------------------
+# Per-command handler functions
+# ---------------------------------------------------------------------------
+# Handlers that do NOT need a PlaudClient (pre-client dispatch).
+
+
+def _handle_login(
+    args: argparse.Namespace,
+    store: SessionStore,
+    auth: PlaudAuth | None,
 ) -> str:
-    args = build_parser().parse_args(list(argv))
-    store = session_store or SessionStore()
-    if args.command == "login":
-        password = args.password or getpass.getpass("Plaud password: ")
-        login_auth = auth or PlaudAuth(store)
-        session = login_auth.login(args.email, password, args.region)
+    password = args.password or getpass.getpass("Plaud password: ")
+    login_auth = auth or PlaudAuth(store)
+    session = login_auth.login(args.email, password, args.region)
+    return json.dumps(
+        {
+            "ok": True,
+            "email": session.email,
+            "region": session.region,
+            "status": "stored",
+        },
+        indent=2,
+    )
+
+
+def _handle_session(args: argparse.Namespace, store: SessionStore) -> str:
+    if args.session_command == "set":
+        store.save(PlaudSession(access_token=args.token, region=args.region, email=args.email))
         return json.dumps(
             {
                 "ok": True,
-                "email": session.email,
-                "region": session.region,
-                "status": "stored",
-            },
-            indent=2,
-        )
-
-    if args.command == "session":
-        if args.session_command == "set":
-            store.save(PlaudSession(access_token=args.token, region=args.region, email=args.email))
-            return json.dumps(
-                {
-                    "ok": True,
-                    "path": str(store.file_store.path),
-                    "region": args.region,
-                    "email": args.email,
-                },
-                indent=2,
-            )
-        if args.session_command == "clear":
-            store.clear()
-            return json.dumps({"ok": True}, indent=2)
-
-        session2, source = store.load_with_source()
-        if session2 is None:
-            return json.dumps(
-                {"session": None, "path": str(store.file_store.path), "source": source}, indent=2
-            )
-        manager = SessionManager(store)
-        try:
-            manager.require()
-            status = "valid"
-        except PlaudSessionExpiredError as exc:
-            status = exc.code
-        days = manager.days_until_expiry()
-        return json.dumps(
-            {
                 "path": str(store.file_store.path),
-                "source": source,
-                "region": session2.region,
-                "email": session2.email,
-                "status": status,
-                "days_until_expiry": days,
-                "token": session2.access_token if args.show_token else _mask_token(session2.access_token),
+                "region": args.region,
+                "email": args.email,
             },
             indent=2,
         )
+    if args.session_command == "clear":
+        store.clear()
+        return json.dumps({"ok": True}, indent=2)
 
-    if args.command == "update":
-        import subprocess
+    session2, source = store.load_with_source()
+    if session2 is None:
+        return json.dumps({"session": None, "path": str(store.file_store.path), "source": source}, indent=2)
+    manager = SessionManager(store)
+    try:
+        manager.require()
+        status = "valid"
+    except PlaudSessionExpiredError as exc:
+        status = exc.code
+    days = manager.days_until_expiry()
+    return json.dumps(
+        {
+            "path": str(store.file_store.path),
+            "source": source,
+            "region": session2.region,
+            "email": session2.email,
+            "status": status,
+            "days_until_expiry": days,
+            "token": session2.access_token if args.show_token else _mask_token(session2.access_token),
+        },
+        indent=2,
+    )
 
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "plaud-tools"],
-            stdout=None,
-            stderr=None,
+
+def _handle_update(args: argparse.Namespace) -> str:  # noqa: ARG001  # never returns — calls sys.exit
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "plaud-tools"],
+        stdout=None,
+        stderr=None,
+    )
+    if result.returncode == 0:
+        print(
+            "\nNote: pipx, uv, and conda users should use their own package manager's"
+            " upgrade command, not this one."
         )
-        if result.returncode == 0:
-            print(
-                "\nNote: pipx, uv, and conda users should use their own package manager's"
-                " upgrade command, not this one."
-            )
-        sys.exit(result.returncode)
+    sys.exit(result.returncode)
 
-    if args.command == "doctor":
-        from .doctor import run_doctor_json
 
-        return run_doctor_json(store)
+def _handle_doctor(args: argparse.Namespace, store: SessionStore) -> str:  # noqa: ARG001
+    from .doctor import run_doctor_json
 
-    client = client or _build_runtime_client(store)
+    return run_doctor_json(store)
 
-    if args.command == "list":
-        has_filters = bool(args.since or args.until or args.query or args.folder_id or args.unfiled)
-        since_ms = parse_isoish(args.since, "--since") if args.since else None
-        until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
-        if has_filters:
-            recordings, _ = collect_filtered_paged(
-                lambda skip, page_size: client.list_recordings(
-                    PlaudRecordingQuery(
-                        skip=skip,
-                        limit=page_size,
-                        is_trash=0,
-                        sort_by="start_time",
-                        is_desc=True,
-                    )
-                ),
-                BROWSE_PAGE_SIZE,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                query=args.query,
-                folder_id=args.folder_id,
-                unfiled=args.unfiled,
-                after=0,
-                limit=args.limit,
-            )
-        else:
-            recordings = client.list_recordings(
-                PlaudRecordingQuery(limit=args.limit, is_trash=0, sort_by="start_time", is_desc=True)
-            )
-        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
-    if args.command == "search":
-        since_ms = parse_isoish(args.since, "--since") if args.since else None
-        until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
+
+# Handlers that DO need a PlaudClient (post-client dispatch).
+
+
+def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
+    has_filters = bool(args.since or args.until or args.query or args.folder_id or args.unfiled)
+    since_ms = parse_isoish(args.since, "--since") if args.since else None
+    until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
+    if has_filters:
         recordings, _ = collect_filtered_paged(
             lambda skip, page_size: client.list_recordings(
                 PlaudRecordingQuery(
@@ -291,221 +269,353 @@ def run_cli(
             until_ms=until_ms,
             query=args.query,
             folder_id=args.folder_id,
-            unfiled=False,
+            unfiled=args.unfiled,
             after=0,
             limit=args.limit,
         )
-        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
-    if args.command == "detail":
-        detail = client.get_recording(args.recording_id, include_transcript=args.include_transcript)
-        return json.dumps(
-            {
-                "id": detail.id,
-                "filename": detail.filename,
-                "is_trans": detail.is_trans,
-                "is_summary": detail.is_summary,
-                "transcript": detail.transcript if args.include_transcript else None,
-                "summary": detail.ai_content,
-            },
-            indent=2,
+    else:
+        recordings = client.list_recordings(
+            PlaudRecordingQuery(limit=args.limit, is_trash=0, sort_by="start_time", is_desc=True)
         )
-    if args.command == "show":
-        detail = client.get_recording(args.recording_id, include_transcript=True)
-        extra = detail.extra_data or {}
-        headline = (extra.get("aiContentHeader") or {}).get("headline")
-        return json.dumps(
-            {
-                "id": detail.id,
-                "title": detail.filename,
-                "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
-                "duration_minutes": round(detail.duration / 60000),
-                "folder_id": detail.folder_id,
-                "is_trans": detail.is_trans,
-                "is_summary": detail.is_summary,
-                "speakers": detail.speakers,
-                "headline": headline,
-            },
-            indent=2,
-        )
-    if args.command == "summary":
-        detail = client.get_recording(args.recording_id, include_summary=True)
-        if not detail.ai_content:
-            return json.dumps(
-                {"recording_id": args.recording_id, "summary": None, "note": "No summary available."},
-                indent=2,
+    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+
+
+def _handle_search(args: argparse.Namespace, client: PlaudClient) -> str:
+    since_ms = parse_isoish(args.since, "--since") if args.since else None
+    until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
+    recordings, _ = collect_filtered_paged(
+        lambda skip, page_size: client.list_recordings(
+            PlaudRecordingQuery(
+                skip=skip,
+                limit=page_size,
+                is_trash=0,
+                sort_by="start_time",
+                is_desc=True,
             )
-        return json.dumps({"recording_id": args.recording_id, "summary": detail.ai_content}, indent=2)
-    if args.command == "rename":
-        client.rename_recording(args.recording_id, args.new_name)
-        return json.dumps(
-            {"ok": True, "recording_id": args.recording_id, "new_name": args.new_name},
-            indent=2,
-        )
-    if args.command == "folders":
-        tags = client.list_file_tags()
-        return json.dumps(
-            [{"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon} for tag in tags],
-            indent=2,
-        )
-    if args.command in ("move-to-folder", "move"):
-        folder_id = None if args.folder_id == "-" else args.folder_id
-        client.set_recording_folder(args.recording_id, folder_id)
-        return json.dumps(
-            {"ok": True, "recording_id": args.recording_id, "folder_id": folder_id},
-            indent=2,
-        )
-    if args.command == "trash":
-        if args.recording_id is not None:
-            client.move_to_trash([args.recording_id])
-            return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "trash"}, indent=2)
-        recordings = client.list_trash()
-        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
-    if args.command == "restore":
-        client.restore_from_trash([args.recording_id])
-        return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "restore"}, indent=2)
-    if args.command == "delete":
-        if not args.yes:
-            raise ValueError(
-                f"Permanent deletion of {args.recording_id!r} cannot be undone. Re-run with --yes to confirm."
-            )
-        client.delete_recordings([args.recording_id])
-        return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "delete"}, indent=2)
-    if args.command == "trash-move":
-        client.move_to_trash(args.recording_ids)
-        return json.dumps(
-            {"ok": True, "count": len(args.recording_ids), "recording_ids": args.recording_ids},
-            indent=2,
-        )
-    if args.command == "trash-restore":
-        client.restore_from_trash(args.recording_ids)
-        return json.dumps(
-            {"ok": True, "count": len(args.recording_ids), "recording_ids": args.recording_ids},
-            indent=2,
-        )
-    if args.command == "rename-speaker":
-        rename_result = client.rename_speaker(args.recording_id, args.original_label, args.new_name)
-        return json.dumps(
-            {
-                "ok": True,
-                "recording_id": args.recording_id,
-                "original_label": args.original_label,
-                "new_name": args.new_name,
-                "segments_updated": rename_result["segments_updated"],
-            },
-            indent=2,
-        )
-    if args.command == "upload":
-        import tempfile
+        ),
+        BROWSE_PAGE_SIZE,
+        since_ms=since_ms,
+        until_ms=until_ms,
+        query=args.query,
+        folder_id=args.folder_id,
+        unfiled=False,
+        after=0,
+        limit=args.limit,
+    )
+    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
 
-        from .transcode import get_file_type, transcode_to_mp3_path
 
-        path = Path(args.file)
-        if not path.exists():
-            raise ValueError(f"file not found: {args.file}")
-        file_type, needs_transcode = get_file_type(path)
-        title = args.title or path.stem
-        start_ms: int | None = None
-        if args.start_time is not None:
-            raw_st = str(args.start_time)
-            if "-" in raw_st or "T" in raw_st:
-                start_ms = parse_isoish(raw_st, "--start-time")
-            else:
-                try:
-                    start_ms = int(raw_st)
-                except ValueError as exc:
-                    raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
+def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
+    detail = client.get_recording(args.recording_id, include_transcript=args.include_transcript)
+    return json.dumps(
+        {
+            "id": detail.id,
+            "filename": detail.filename,
+            "is_trans": detail.is_trans,
+            "is_summary": detail.is_summary,
+            "transcript": detail.transcript if args.include_transcript else None,
+            "summary": detail.ai_content,
+        },
+        indent=2,
+    )
 
-        if needs_transcode:
-            # Transcode to a temp MP3 on disk, then upload from that path
-            # so the transcoded bytes never round-trip through Python memory.
-            tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
-            os.close(tmp_fd)
-            tmp_mp3_path = Path(tmp_mp3)
-            try:
-                try:
-                    transcode_to_mp3_path(path, tmp_mp3_path)
-                except RuntimeError as exc:
-                    raise ValueError(str(exc)) from exc
-                recording = client.upload_recording(
-                    tmp_mp3_path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
-                )
-            finally:
-                try:
-                    tmp_mp3_path.unlink()
-                except OSError:
-                    pass
-        else:
-            recording = client.upload_recording(
-                path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
-            )
 
-        if args.folder_id:
-            client.set_recording_folder(recording.id, args.folder_id)
-        upload_result: dict[str, Any] = {
+def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
+    detail = client.get_recording(args.recording_id, include_transcript=True)
+    extra = detail.extra_data or {}
+    headline = (extra.get("aiContentHeader") or {}).get("headline")
+    return json.dumps(
+        {
+            "id": detail.id,
+            "title": detail.filename,
+            "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
+            "duration_minutes": round(detail.duration / 60000),
+            "folder_id": detail.folder_id,
+            "is_trans": detail.is_trans,
+            "is_summary": detail.is_summary,
+            "speakers": detail.speakers,
+            "headline": headline,
+        },
+        indent=2,
+    )
+
+
+def _handle_summary(args: argparse.Namespace, client: PlaudClient) -> str:
+    detail = client.get_recording(args.recording_id, include_summary=True)
+    if not detail.ai_content:
+        return json.dumps(
+            {"recording_id": args.recording_id, "summary": None, "note": "No summary available."},
+            indent=2,
+        )
+    return json.dumps({"recording_id": args.recording_id, "summary": detail.ai_content}, indent=2)
+
+
+def _handle_rename(args: argparse.Namespace, client: PlaudClient) -> str:
+    client.rename_recording(args.recording_id, args.new_name)
+    return json.dumps(
+        {"ok": True, "recording_id": args.recording_id, "new_name": args.new_name},
+        indent=2,
+    )
+
+
+def _handle_folders(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
+    tags = client.list_file_tags()
+    return json.dumps(
+        [{"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon} for tag in tags],
+        indent=2,
+    )
+
+
+def _handle_move(args: argparse.Namespace, client: PlaudClient) -> str:
+    folder_id = None if args.folder_id == "-" else args.folder_id
+    client.set_recording_folder(args.recording_id, folder_id)
+    return json.dumps(
+        {"ok": True, "recording_id": args.recording_id, "folder_id": folder_id},
+        indent=2,
+    )
+
+
+def _handle_trash(args: argparse.Namespace, client: PlaudClient) -> str:
+    if args.recording_id is not None:
+        client.move_to_trash([args.recording_id])
+        return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "trash"}, indent=2)
+    recordings = client.list_trash()
+    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+
+
+def _handle_restore(args: argparse.Namespace, client: PlaudClient) -> str:
+    client.restore_from_trash([args.recording_id])
+    return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "restore"}, indent=2)
+
+
+def _handle_delete(args: argparse.Namespace, client: PlaudClient) -> str:
+    if not args.yes:
+        raise ValueError(
+            f"Permanent deletion of {args.recording_id!r} cannot be undone. Re-run with --yes to confirm."
+        )
+    client.delete_recordings([args.recording_id])
+    return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "delete"}, indent=2)
+
+
+def _handle_trash_move(args: argparse.Namespace, client: PlaudClient) -> str:
+    client.move_to_trash(args.recording_ids)
+    return json.dumps(
+        {"ok": True, "count": len(args.recording_ids), "recording_ids": args.recording_ids},
+        indent=2,
+    )
+
+
+def _handle_trash_restore(args: argparse.Namespace, client: PlaudClient) -> str:
+    client.restore_from_trash(args.recording_ids)
+    return json.dumps(
+        {"ok": True, "count": len(args.recording_ids), "recording_ids": args.recording_ids},
+        indent=2,
+    )
+
+
+def _handle_rename_speaker(args: argparse.Namespace, client: PlaudClient) -> str:
+    rename_result = client.rename_speaker(args.recording_id, args.original_label, args.new_name)
+    return json.dumps(
+        {
             "ok": True,
-            "recording_id": recording.id,
-            "filename": recording.filename,
-            "transcoded": needs_transcode,
-        }
-        if not args.detach:
-            client.transcribe_and_summarize(recording.id)
-            client.wait_for_transcription(recording.id)
-            if not args.skip_summary:
-                client.wait_for_summary(recording.id)
-            upload_result["transcribed"] = True
+            "recording_id": args.recording_id,
+            "original_label": args.original_label,
+            "new_name": args.new_name,
+            "segments_updated": rename_result["segments_updated"],
+        },
+        indent=2,
+    )
+
+
+def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
+    import tempfile
+
+    from .transcode import get_file_type, transcode_to_mp3_path
+
+    path = Path(args.file)
+    if not path.exists():
+        raise ValueError(f"file not found: {args.file}")
+    file_type, needs_transcode = get_file_type(path)
+    title = args.title or path.stem
+    start_ms: int | None = None
+    if args.start_time is not None:
+        raw_st = str(args.start_time)
+        if "-" in raw_st or "T" in raw_st:
+            start_ms = parse_isoish(raw_st, "--start-time")
         else:
-            upload_result["detached"] = True
-        return json.dumps(upload_result, indent=2)
+            try:
+                start_ms = int(raw_st)
+            except ValueError as exc:
+                raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
 
-    if args.command == "merge":
-        detail = client.merge_recordings(args.recording_ids, args.title)
-        return json.dumps(
+    if needs_transcode:
+        # Transcode to a temp MP3 on disk, then upload from that path
+        # so the transcoded bytes never round-trip through Python memory.
+        tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
+        os.close(tmp_fd)
+        tmp_mp3_path = Path(tmp_mp3)
+        try:
+            try:
+                transcode_to_mp3_path(path, tmp_mp3_path)
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
+            recording = client.upload_recording(
+                tmp_mp3_path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
+            )
+        finally:
+            try:
+                tmp_mp3_path.unlink()
+            except OSError:
+                pass
+    else:
+        recording = client.upload_recording(
+            path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
+        )
+
+    if args.folder_id:
+        client.set_recording_folder(recording.id, args.folder_id)
+    upload_result: dict[str, Any] = {
+        "ok": True,
+        "recording_id": recording.id,
+        "filename": recording.filename,
+        "transcoded": needs_transcode,
+    }
+    if not args.detach:
+        client.transcribe_and_summarize(recording.id)
+        client.wait_for_transcription(recording.id)
+        if not args.skip_summary:
+            client.wait_for_summary(recording.id)
+        upload_result["transcribed"] = True
+    else:
+        upload_result["detached"] = True
+    return json.dumps(upload_result, indent=2)
+
+
+def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
+    detail = client.merge_recordings(args.recording_ids, args.title)
+    return json.dumps(
+        {
+            "ok": True,
+            "recording_id": detail.id,
+            "filename": detail.filename,
+            "source_ids": args.recording_ids,
+        },
+        indent=2,
+    )
+
+
+def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
+    client.transcribe_and_summarize(args.recording_id, template_type=args.template)
+    return json.dumps(
+        {
+            "accepted": True,
+            "recording_id": args.recording_id,
+            "template_type": args.template or "AUTO-SELECT",
+        },
+        indent=2,
+    )
+
+
+def _handle_status(args: argparse.Namespace, client: PlaudClient) -> str:
+    tasks = client.get_task_status(args.recording_id)
+    return json.dumps(
+        [
             {
-                "ok": True,
-                "recording_id": detail.id,
-                "filename": detail.filename,
-                "source_ids": args.recording_ids,
-            },
-            indent=2,
-        )
+                "file_id": task.file_id,
+                "task_id": task.task_id,
+                "task_type": task.task_type,
+                "task_status": task.task_status,
+                "is_complete": task.is_complete,
+                "sum_type": task.sum_type,
+                "sum_type_type": task.sum_type_type,
+            }
+            for task in tasks
+        ],
+        indent=2,
+    )
 
-    if args.command == "transcribe":
-        client.transcribe_and_summarize(args.recording_id, template_type=args.template)
-        return json.dumps(
-            {
-                "accepted": True,
-                "recording_id": args.recording_id,
-                "template_type": args.template or "AUTO-SELECT",
-            },
-            indent=2,
-        )
-    if args.command == "status":
-        tasks = client.get_task_status(args.recording_id)
-        return json.dumps(
-            [
-                {
-                    "file_id": task.file_id,
-                    "task_id": task.task_id,
-                    "task_type": task.task_type,
-                    "task_status": task.task_status,
-                    "is_complete": task.is_complete,
-                    "sum_type": task.sum_type,
-                    "sum_type_type": task.sum_type_type,
-                }
-                for task in tasks
-            ],
-            indent=2,
-        )
-    if args.command == "dump":
-        raw = client.dump_raw_detail(args.recording_id)
-        return json.dumps(raw, indent=2)
 
-    if args.command == "transcript":
-        return client.fetch_transcript(args.recording_id)
+def _handle_dump(args: argparse.Namespace, client: PlaudClient) -> str:
+    raw = client.dump_raw_detail(args.recording_id)
+    return json.dumps(raw, indent=2)
 
-    if args.command == "ping":
-        client.get_user_info()
-        return json.dumps({"ok": True}, indent=2)
+
+def _handle_transcript(args: argparse.Namespace, client: PlaudClient) -> str:
+    return client.fetch_transcript(args.recording_id)
+
+
+def _handle_ping(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
+    client.get_user_info()
+    return json.dumps({"ok": True}, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch registries
+# ---------------------------------------------------------------------------
+
+# Commands that do not require a PlaudClient.
+# Signature: (args, store, auth) -> str  (auth is only used by login)
+_PRE_CLIENT_HANDLERS: dict[str, Callable[..., str]] = {
+    "login": _handle_login,
+    "session": _handle_session,
+    "update": _handle_update,
+    "doctor": _handle_doctor,
+}
+
+# Commands that DO require a PlaudClient.
+# Signature: (args, client) -> str
+_CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = {
+    "list": _handle_list,
+    "search": _handle_search,
+    "detail": _handle_detail,
+    "show": _handle_show,
+    "summary": _handle_summary,
+    "rename": _handle_rename,
+    "folders": _handle_folders,
+    "move-to-folder": _handle_move,
+    "move": _handle_move,
+    "trash": _handle_trash,
+    "restore": _handle_restore,
+    "delete": _handle_delete,
+    "trash-move": _handle_trash_move,
+    "trash-restore": _handle_trash_restore,
+    "rename-speaker": _handle_rename_speaker,
+    "upload": _handle_upload,
+    "merge": _handle_merge,
+    "transcribe": _handle_transcribe,
+    "status": _handle_status,
+    "dump": _handle_dump,
+    "transcript": _handle_transcript,
+    "ping": _handle_ping,
+}
+
+
+def run_cli(
+    argv: Sequence[str],
+    client: PlaudClient | None = None,
+    session_store: SessionStore | None = None,
+    auth: PlaudAuth | None = None,
+) -> str:
+    args = build_parser().parse_args(list(argv))
+    store = session_store or SessionStore()
+
+    # --- Pre-client commands (no PlaudClient needed) ---
+    if args.command == "login":
+        return _handle_login(args, store, auth)
+    if args.command == "session":
+        return _handle_session(args, store)
+    if args.command == "update":
+        return _handle_update(args)  # never returns — calls sys.exit
+    if args.command == "doctor":
+        return _handle_doctor(args, store)
+
+    # Build the client for all remaining commands.
+    client = client or _build_runtime_client(store)
+
+    # --- Client-requiring commands ---
+    handler = _CLIENT_HANDLERS.get(args.command)
+    if handler is not None:
+        return handler(args, client)
 
     raise AssertionError(f"unhandled CLI command: {args.command}")
 
