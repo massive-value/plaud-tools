@@ -147,17 +147,29 @@ try {
 
     Write-Host "    Latest: v$latestVersion — PlaudTools.zip ($([math]::Round($asset.size / 1MB, 1)) MB)"
 
+    # Strip any pre-release suffix (e.g. "0.3.0-rc1" → "0.3.0") before casting
+    # to [version] so that numeric comparison is always used and a pre-release tag
+    # is never ranked above or equal to the same numeric release.
+    function Get-NumericVersion {
+        param([string]$v)
+        # Remove leading 'v', then strip everything from the first '-' onward.
+        $numeric = $v.TrimStart('v') -replace '-.*$', ''
+        return [version]$numeric
+    }
+
     # --- Guard: handle existing installs ---
     if (Test-Path $exePath) {
         $installedVersion = (Get-Item $exePath).VersionInfo.FileVersion.Trim()
-        if ($installedVersion -eq $latestVersion -and -not $Force) {
+        $installedVerNum  = Get-NumericVersion $installedVersion
+        $latestVerNum     = Get-NumericVersion $latestVersion
+        if ($installedVerNum -eq $latestVerNum -and -not $Force) {
             Write-Host ''
             Write-Host "PlaudTools v$installedVersion is already installed and up to date." -ForegroundColor Green
             Write-Host ''
             Write-Host 'Press Enter to close...' -ForegroundColor Gray
             try { Read-Host } catch { }
             exit 0
-        } elseif (-not $Force) {
+        } elseif ($latestVerNum -gt $installedVerNum -and -not $Force) {
             Write-Host ''
             Write-Host "PlaudTools v$installedVersion is installed; v$latestVersion is available." -ForegroundColor Yellow
             Write-Host 'Open PlaudTools from the system tray and click Check for Updates to upgrade.' -ForegroundColor Yellow
