@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collected to answer `has_more` honestly — no more pulling the entire
   library into memory to filter client-side. Response shape (`items`,
   `next_after`) unchanged. (#117)
+- **Uploads stream from disk instead of buffering whole files in memory.**
+  `upload_recording` now accepts a filesystem `Path` and reads 5 MiB chunks
+  from disk per multipart part (the `bytes` form is preserved for compat),
+  and transcoding writes the MP3 straight to a temp file
+  (`transcode_to_mp3_path`) rather than holding it in memory — so large
+  recordings no longer scale memory with file size. The presign → multipart
+  → complete protocol is unchanged. (#118)
 - **Config TOML editing no longer corrupts sections with arrays.** AI-client
   connect/disconnect now edits `mcp_servers.plaud` via `tomlkit` (style- and
   comment-preserving) instead of a `[^\[]*` regex that truncated sections
