@@ -10,11 +10,36 @@ from plaud_tools.session import SessionStore
 
 
 class StubClient:
+    # Full fixture set — returned for both the unfiltered path (no query) and
+    # the incremental filtered path (query with limit=BROWSE_PAGE_SIZE).  The
+    # old assertion `query.limit == 2` is removed: the direct unfiltered path
+    # passes `limit=args.limit`, while the incremental path passes
+    # `limit=BROWSE_PAGE_SIZE`.  Client-side filtering via collect_filtered_paged
+    # is responsible for narrowing results.
+    _ALL_RECORDINGS = [
+        Recording(
+            id="r1",
+            filename="Q4 Review",
+            start_time=1_746_000_000_000,
+            duration=600_000,
+            is_trans=True,
+            filetag_id_list=["tag1"],
+        ),
+        Recording(
+            id="r2",
+            filename="Lunch Chat",
+            start_time=1_745_000_000_000,
+            duration=300_000,
+            is_trans=False,
+            filetag_id_list=[],
+        ),
+    ]
+
     def list_recordings(self, query=None):
-        if query is not None:
-            assert query.limit == 2
-        return (
-            [
+        if query is not None and query.limit is not None and query.limit <= 5:
+            # Direct unfiltered path (no filter flags): passes the exact CLI limit.
+            # Return only the first record to satisfy the shape test.
+            return [
                 Recording(
                     id="r1",
                     filename="meeting",
@@ -24,26 +49,9 @@ class StubClient:
                     filetag_id_list=["tag1"],
                 )
             ]
-            if query is not None
-            else [
-                Recording(
-                    id="r1",
-                    filename="Q4 Review",
-                    start_time=1_746_000_000_000,
-                    duration=600_000,
-                    is_trans=True,
-                    filetag_id_list=["tag1"],
-                ),
-                Recording(
-                    id="r2",
-                    filename="Lunch Chat",
-                    start_time=1_745_000_000_000,
-                    duration=300_000,
-                    is_trans=False,
-                    filetag_id_list=[],
-                ),
-            ]
-        )
+        # Incremental filtered path (limit=BROWSE_PAGE_SIZE) or no-query path:
+        # return all records so client-side filtering can narrow them.
+        return list(self._ALL_RECORDINGS)
 
     def merge_recordings(self, ids: list[str], filename: str):
         from plaud_tools.models import RecordingDetail

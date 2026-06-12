@@ -6,6 +6,7 @@ differences; the canonical versions below reconcile those differences.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -64,6 +65,60 @@ def filter_recordings(
         filtered = [item for item in filtered if folder_id in item.filetag_id_list]
     filtered.sort(key=lambda item: item.start_time, reverse=True)
     return filtered
+
+
+# Upstream page size for incremental filtered browse (shared by cli.py and mcp.py).
+BROWSE_PAGE_SIZE = 200
+
+
+def collect_filtered_paged(
+    fetch_page: Callable[[int, int], list[Any]],
+    page_size: int,
+    *,
+    since_ms: int | None,
+    until_ms: int | None,
+    query: str | None,
+    folder_id: str | None,
+    unfiled: bool = False,
+    after: int = 0,
+    limit: int,
+) -> tuple[list[Any], bool]:
+    """Incrementally fetch upstream pages, filter each one, and stop early.
+
+    ``fetch_page(skip, page_size)`` must return a list of Recording-like objects
+    for the given upstream window.  Paging stops when either:
+    - ``after + limit + 1`` filtered matches have been collected (enough to
+      resolve ``has_more`` without over-fetching), or
+    - the upstream returns fewer than ``page_size`` items (list exhausted).
+
+    Returns ``(page, has_more)`` where ``page`` is the slice
+    ``matched[after:after+limit]`` and ``has_more`` is True when a subsequent
+    page would be non-empty.
+    """
+    need = after + limit + 1
+    matched: list[Any] = []
+    upstream_skip = 0
+
+    while len(matched) < need:
+        batch = fetch_page(upstream_skip, page_size)
+        if not batch:
+            break
+        filtered = filter_recordings(
+            batch,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            query=query,
+            folder_id=folder_id,
+            unfiled=unfiled,
+        )
+        matched.extend(filtered)
+        if len(batch) < page_size:
+            break
+        upstream_skip += page_size
+
+    page = matched[after : after + limit]
+    has_more = len(matched) > after + limit
+    return page, has_more
 
 
 def summarize_recording(item: Any) -> dict[str, Any]:

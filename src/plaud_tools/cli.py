@@ -13,7 +13,7 @@ from . import __version__
 from .auth import PlaudAuth
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import filter_recordings, parse_isoish, summarize_recording
+from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, parse_isoish, summarize_recording
 from .session import PlaudSession, SessionManager, SessionStore
 
 
@@ -248,16 +248,25 @@ def run_cli(
         since_ms = parse_isoish(args.since, "--since") if args.since else None
         until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
         if has_filters:
-            recordings = client.list_recordings()
-            recordings = filter_recordings(
-                recordings,
+            recordings, _ = collect_filtered_paged(
+                lambda skip, page_size: client.list_recordings(
+                    PlaudRecordingQuery(
+                        skip=skip,
+                        limit=page_size,
+                        is_trash=0,
+                        sort_by="start_time",
+                        is_desc=True,
+                    )
+                ),
+                BROWSE_PAGE_SIZE,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 query=args.query,
                 folder_id=args.folder_id,
                 unfiled=args.unfiled,
+                after=0,
+                limit=args.limit,
             )
-            recordings = recordings[: args.limit]
         else:
             recordings = client.list_recordings(
                 PlaudRecordingQuery(limit=args.limit, is_trash=0, sort_by="start_time", is_desc=True)
@@ -266,16 +275,25 @@ def run_cli(
     if args.command == "search":
         since_ms = parse_isoish(args.since, "--since") if args.since else None
         until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
-        recordings = client.list_recordings()
-        recordings = filter_recordings(
-            recordings,
+        recordings, _ = collect_filtered_paged(
+            lambda skip, page_size: client.list_recordings(
+                PlaudRecordingQuery(
+                    skip=skip,
+                    limit=page_size,
+                    is_trash=0,
+                    sort_by="start_time",
+                    is_desc=True,
+                )
+            ),
+            BROWSE_PAGE_SIZE,
             since_ms=since_ms,
             until_ms=until_ms,
             query=args.query,
             folder_id=args.folder_id,
             unfiled=False,
+            after=0,
+            limit=args.limit,
         )
-        recordings = recordings[: args.limit]
         return json.dumps([summarize_recording(r) for r in recordings], indent=2)
     if args.command == "detail":
         detail = client.get_recording(args.recording_id, include_transcript=args.include_transcript)

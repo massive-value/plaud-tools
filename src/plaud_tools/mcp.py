@@ -12,7 +12,7 @@ from typing import Any
 from .appdata import events_path as _events_path
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import filter_recordings, parse_isoish, summarize_recording
+from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, parse_isoish, summarize_recording
 from .session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
@@ -189,16 +189,24 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             until_ms = parse_isoish(until, "until", end_of_day=True) if until else None
             has_filters = any(value is not None for value in (since, until, query, folder))
             if has_filters:
-                all_items = client.list_recordings()
-                all_items = filter_recordings(
-                    all_items,
+                page, has_more = collect_filtered_paged(
+                    lambda skip, page_size: client.list_recordings(
+                        PlaudRecordingQuery(
+                            skip=skip,
+                            limit=page_size,
+                            is_trash=0,
+                            sort_by="start_time",
+                            is_desc=True,
+                        )
+                    ),
+                    BROWSE_PAGE_SIZE,
                     since_ms=since_ms,
                     until_ms=until_ms,
                     query=query,
                     folder_id=folder,
+                    after=after,
+                    limit=limit,
                 )
-                page = all_items[after : after + limit]
-                has_more = len(all_items) > after + limit
             else:
                 page = client.list_recordings(
                     PlaudRecordingQuery(
