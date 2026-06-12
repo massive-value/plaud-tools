@@ -390,7 +390,17 @@ def _make_server() -> Server:
         if handler is None:
             return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
         try:
-            result = handler(**arguments)
+            # Wave 2 / C2: run the synchronous handler in a worker thread so
+            # blocking network I/O (PlaudClient HTTP calls, keyring reads,
+            # wait_for_transcription polling) does not stall the asyncio event
+            # loop.  Other in-flight requests (e.g. list_tools) remain
+            # responsive while a long upload or transcode waits in its thread.
+            #
+            # TypeError propagation: a TypeError raised *inside* the thread
+            # (bad kwargs forwarded by the MCP framework) propagates out of the
+            # ``await`` and is caught by the except clause below — identical
+            # behaviour to the previous synchronous call.
+            result = await asyncio.to_thread(handler, **arguments)
             text = result["content"][0]["text"]
         except TypeError as exc:
             # The MCP framework or a misbehaving client passed unexpected / missing
