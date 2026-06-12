@@ -544,7 +544,8 @@ class TestDeleteLogFiles:
         log2.write_text("rotated", encoding="utf-8")
 
         # appdata.data_dir() branches on sys.platform; pin to win32 so the
-        # LOCALAPPDATA env-var override is honoured on Linux CI as well.
+        # LOCALAPPDATA env-var override is honoured on all platforms (Linux and
+        # macOS otherwise use platformdirs which ignores LOCALAPPDATA).
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
@@ -558,6 +559,9 @@ class TestDeleteLogFiles:
         log_file = log_dir / "tray.log"
         log_file.write_text("log", encoding="utf-8")
 
+        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
+        # platforms; without this macOS would resolve to ~/Library/... and the
+        # log file under tmp_path would never be found and deleted.
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
@@ -570,6 +574,9 @@ class TestDeleteLogFiles:
             d.mkdir()
             (d / "tray.log").write_text("x", encoding="utf-8")
 
+        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
+        # platforms; without this macOS would resolve to ~/Library/... and the
+        # log files under tmp_path would never be found and deleted.
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
@@ -584,12 +591,19 @@ class TestDeleteLogFiles:
         keeper.write_text("{}", encoding="utf-8")
         (log_dir / "tray.log").write_text("x", encoding="utf-8")
 
+        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
+        # platforms (macOS would otherwise use platformdirs and skip tmp_path).
+        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         tray_helpers._delete_log_files()
 
         assert keeper.exists()
 
     def test_noop_when_log_dirs_absent(self, tray_helpers, tmp_path, monkeypatch):
+        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
+        # platforms; the test verifies no exception is raised regardless of
+        # whether the directories exist.
+        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         # Neither Plaud nor PlaudTools directories exist — should not raise
         tray_helpers._delete_log_files()

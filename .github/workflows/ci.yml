@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
         python-version: ['3.11', '3.12', '3.13']
 
     steps:
@@ -46,6 +46,9 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  # bundle-smoke is Windows-only for now because the PyInstaller bundle targets
+  # Win32 PE executables.  macOS and Linux bundle jobs will be added as separate
+  # sibling jobs here once macOS/Linux bundle support is implemented (B4 scope).
   bundle-smoke:
     runs-on: windows-latest
 
