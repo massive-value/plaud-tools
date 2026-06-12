@@ -112,3 +112,34 @@ jobs:
 
       - name: Run ffmpeg transcode smoke
         run: python scripts/ffmpeg_smoke.py
+
+  # Wave 2 / C3: verify that each platform's constraint file is installable.
+  # This job is intentionally separate from the existing test/lint/bundle-smoke
+  # jobs so concurrent agents can own those job definitions independently.
+  constraints-install:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            constraints: constraints/windows.txt
+            extras: ".[tray,dev]"
+          - os: ubuntu-latest
+            constraints: constraints/linux.txt
+            extras: ".[dev]"
+          - os: macos-latest
+            constraints: constraints/macos.txt
+            extras: ".[dev]"
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify constraint file installs cleanly
+        # -c enforces the pinned constraint file; any version conflict or missing
+        # wheel causes pip to fail here rather than silently drifting at build time.
+        run: pip install -c ${{ matrix.constraints }} ${{ matrix.extras }}
