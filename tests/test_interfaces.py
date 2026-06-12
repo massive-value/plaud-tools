@@ -737,9 +737,10 @@ def test_mcp_mutate_recording_delete_is_unknown_mutation():
 
 
 def test_mcp_delete_recording_calls_client_and_returns_ok():
+    # D4: confirm=True is required; pass it explicitly to exercise the happy path.
     client = StubClient()
     handlers = build_handlers(lambda: client)
-    result = handlers["delete_recording"]("rec1")
+    result = handlers["delete_recording"]("rec1", confirm=True)
     payload = json.loads(result["content"][0]["text"])
     assert payload == {"ok": True, "recording_id": "rec1"}
     assert client.delete_call == ["rec1"]

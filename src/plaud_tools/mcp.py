@@ -290,7 +290,22 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
     def delete_recording(
         recording_id: str,
+        confirm: bool = False,
     ) -> dict[str, Any]:
+        # D4: destructive-op confirm gate — the MCP surface cannot show
+        # interactive prompts over stdio, so we require the caller to pass
+        # confirm=True only after the human has acknowledged the irreversibility.
+        # This mirrors the CLI's --yes flag but is enforced server-side so that
+        # even clients that ignore ToolAnnotations cannot silently hard-delete.
+        if not confirm:
+            return _error_result(
+                "delete_recording requires explicit confirmation. "
+                "Re-invoke with confirm=true only after the human has confirmed "
+                "they want to permanently and irreversibly delete this recording.",
+                error_code="validation",
+                retryable=False,
+            )
+
         def inner(client: PlaudClient) -> dict[str, Any]:
             client.delete_recordings([recording_id])
             return _json_result({"ok": True, "recording_id": recording_id})
