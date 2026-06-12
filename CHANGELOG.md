@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### High-leverage (audit remediation, wave 3)
+
+- **Config TOML editing no longer corrupts sections with arrays.** AI-client
+  connect/disconnect now edits `mcp_servers.plaud` via `tomlkit` (style- and
+  comment-preserving) instead of a `[^\[]*` regex that truncated sections
+  containing inline arrays such as `args = ["-m", "x"]`. (#114)
+- **Session cache revalidates when the store changes.** `SessionManager`
+  now detects an out-of-band session update — via a cheap mtime probe on the
+  backing file when available, or a 5-minute TTL otherwise — instead of
+  serving a stale in-memory session indefinitely. The within-window hot path
+  stays allocation-free and skips keyring reads. (#116)
+- **Tray updater/toasts hardening.** Update downloads are restricted to an
+  allowlist of `github.com` / `objects.githubusercontent.com` (exact host
+  match), and PowerShell is invoked by absolute path
+  (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`) across the
+  tray and lifecycle helpers. (#115)
+
 ### Reliability & supply chain (audit remediation, wave 2)
 
 - **MCP server no longer blocks on slow tools.** Tool handlers run via
