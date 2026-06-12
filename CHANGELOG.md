@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Polish & low-priority (audit remediation, wave 4)
+
+- **`layout.py` honors its documented contract.** Bundle `mcp_exe` /
+  `ffmpeg_exe` now return `None` when the candidate path doesn't exist
+  (previously returned the path regardless); `doctor` still reports the
+  expected path with `exists: false` for diagnostics. (#122)
+- **Tray single-instance mutex hardened.** Uses
+  `WinDLL(use_last_error=True)` + `get_last_error()` (no longer vulnerable
+  to the last-error being clobbered between calls), and a NULL
+  `CreateMutexW` handle now fails open so an OS-level mutex error can't
+  block the tray from launching. (#120)
+- **Keyring retry delays cleaned up (internal).** Replaced the
+  `_KEYRING_RETRY_DELAY_S` truthiness hack with an explicit
+  `_KEYRING_RETRY_DELAYS_S` sequence; retry shape (attempt counts) is
+  unchanged. (#124)
+- **Installer version comparison is pre-release-safe.** `install.ps1`
+  compares the numeric version prefix via `[version]` casts (stripping any
+  `-suffix`), so a pre-release tag is never reported as newer than its
+  release. (#121)
+- **`login --password` warns about exposure.** Its help text now flags that
+  passing a password on the command line leaks via process listings and
+  shell history, and points to `PLAUD_ACCESS_TOKEN` and `session set
+  --token` for scripting/CI. The flag is unchanged. (#123)
+
 ### High-leverage (audit remediation, wave 3)
 
 - **Filtered browse pages incrementally instead of fetching everything.**
