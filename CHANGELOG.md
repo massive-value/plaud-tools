@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### MCP & release (audit remediation, wave 2 — partial)
+### Reliability & supply chain (audit remediation, wave 2)
+
+- **MCP server no longer blocks on slow tools.** Tool handlers run via
+  `asyncio.to_thread`, so a long upload/transcribe/merge wait no longer
+  freezes the whole server — concurrent requests (e.g. `list_tools`) stay
+  responsive. (#111)
+- **Install/update integrity verification.** The installer and the in-app
+  updater now download the release `SHA256SUMS` and verify `PlaudTools.zip`
+  before extracting or launching — fail-closed on mismatch when the sums
+  asset is present, warn-and-proceed when absent (older releases). Pairs
+  with the publisher-side hashes from wave 0. (#110)
+- **`psutil` bundled for reliable process scoping (decision C4).** `psutil`
+  is now a real `[tray]` dependency and bundled into the frozen tray
+  (proven by a CI frozen-import check), rather than relied upon
+  opportunistically; the PowerShell enumeration fallback remains as
+  defense-in-depth. ADR 003 amended. (#112)
+- **Polite retry/backoff on the API client (owner decision D3).** Transient
+  failures (HTTP 429 and 5xx) are retried up to twice with exponential
+  backoff + jitter, honoring a `Retry-After` header when present; the
+  transcription/summary/merge poll loops now treat a transient error as a
+  skipped poll and keep waiting until their deadline instead of aborting.
+  (#109)
+
+### MCP & release (audit remediation, wave 2)
 
 - **MCP tool annotations + delete confirmation (owner decision D4).** All
   nine MCP tools now carry `ToolAnnotations` capability hints
