@@ -168,12 +168,20 @@ class PlaudClient:
         return self._normalize_recording(confirm.get("data") or {})
 
     def _s3_put(self, url: str, chunk: bytes) -> HttpResponse:
-        """PUT a chunk to a presigned S3 URL. No Plaud auth — signature is in the URL."""
+        """PUT a chunk to a presigned S3 URL. No Plaud auth — signature is in the URL.
+
+        S3 multipart chunks are up to 5 MiB (see _CHUNK_SIZE) and must fully
+        transfer before the presigned URL expires.  On a poor link this can
+        take well over the default 30 s transport budget, so we use a
+        dedicated 120 s ceiling here.  The longer timeout is scoped to this
+        call only — all other Plaud API traffic keeps the 30 s default.
+        """
         return self._transport.request(
             method="PUT",
             url=url,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             body=chunk,
+            timeout=120.0,
         )
 
     def merge_recordings(
