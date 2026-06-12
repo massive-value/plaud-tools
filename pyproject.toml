@@ -111,6 +111,17 @@ force-sort-within-sections = false
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
+# Pin the analysis platform to win32.  plaud-tools is a Windows-first bundle:
+# the tray/, ctypes (windll/WinError), and subprocess-flag code targets win32,
+# and many call sites guard on `sys.platform == "win32"`.  Pinning the platform
+# makes type-checking DETERMINISTIC across runners — a local Windows machine and
+# the Linux CI runner now evaluate `sys.platform` conditionals and platform-only
+# stubs (ctypes.windll, subprocess.CREATE_*, comtypes) identically, so
+# "passes locally" == "passes in CI".
+# Trade-off: POSIX-only branches are treated as unreachable and are NOT
+# type-checked under this setting.  Revisit (e.g. add a second `--platform linux`
+# mypy pass) when the Mac/Linux bundles land in D2.
+platform = "win32"
 # ignore_missing_imports covers optional extras (pystray, comtypes, winrt,
 # sv_ttk) and stubs that do not exist on the CI runner's platform.
 ignore_missing_imports = true
