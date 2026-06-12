@@ -25,6 +25,19 @@ jobs:
       - name: Format check (ruff format)
         run: python -m ruff format --check .
 
+      - name: Install mypy and package stubs
+        # Install mypy plus the project itself (needed so mypy can resolve
+        # intra-package imports).  mcp and platformdirs ship py.typed markers
+        # so their types resolve automatically; pystray/comtypes/winrt do not
+        # (ignore_missing_imports = true covers them).
+        run: pip install mypy ".[dev]"
+
+      - name: Type check (mypy)
+        # Run against the source tree rather than the installed package so
+        # edits on the branch are checked without a reinstall.  Exit 0 is the
+        # only acceptable outcome — any error fails the lint job.
+        run: python -m mypy src/plaud_tools
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:

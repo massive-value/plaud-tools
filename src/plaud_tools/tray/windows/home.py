@@ -336,13 +336,15 @@ class HomeWindow:
                         hint = " — see logs for details."
                     self._setup_failure_label.configure(
                         text=f"Repair failed: {msg}{hint}",
-                        cursor="hand2" if self._on_open_log_folder else "",
+                        cursor="hand2" if self._on_open_log_folder is not None else "",
                     )
                     if self._on_open_log_folder is not None:
                         # Rebind click to open log folder when repair failed.
                         self._setup_failure_label.bind(
                             "<Button-1>",
-                            lambda _e: self._on_open_log_folder() if self._on_open_log_folder else None,
+                            lambda _e: (
+                                self._on_open_log_folder() if self._on_open_log_folder is not None else None
+                            ),
                         )
                     self._setup_failure_row.pack(fill="x", pady=(0, 10))
             self._set_status(msg, ok)

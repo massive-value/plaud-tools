@@ -94,20 +94,36 @@ class WizardWindow:
         if not widgets:
             return
         text, color = _STATUS_BADGE.get(status, ("unknown", "#6b7280"))
-        widgets["badge_var"].set(text)  # type: ignore[union-attr]
-        widgets["badge"].configure(foreground=color)  # type: ignore[union-attr]
+        widgets["badge_var"].set(text)  # type: ignore[union-attr,attr-defined]  # widgets dict is untyped; values are tkinter StringVar / Label
+        widgets["badge"].configure(foreground=color)  # type: ignore[union-attr,attr-defined]  # same
 
         btn: ttk.Button = widgets["btn"]  # type: ignore[assignment]
+        # Default-argument lambdas (lambda c=cid: ...) let each iteration
+        # capture its own value of cid, avoiding the classic closure-over-loop-var
+        # bug.  The # type: ignore[misc] suppresses mypy's "Cannot infer type of
+        # lambda" — tkinter Button command stubs expect no-arg callables but the
+        # default arg makes the lambda unambiguously callable with zero args at
+        # runtime.  This is a well-known mypy limitation with default-arg lambdas.
         if status == "not-detected":
             btn.configure(text="—", state="disabled", command=lambda: None)
         elif status == "connected":
-            btn.configure(
-                text="Disconnect", state="normal", command=lambda c=cid: self._do(c, "disconnect", mcp)
+            btn.configure(  # type: ignore[misc]
+                text="Disconnect",
+                state="normal",
+                command=lambda c=cid: self._do(c, "disconnect", mcp),  # type: ignore[misc]
             )
         elif status == "stale":
-            btn.configure(text="Reconnect", state="normal", command=lambda c=cid: self._do(c, "connect", mcp))
+            btn.configure(  # type: ignore[misc]
+                text="Reconnect",
+                state="normal",
+                command=lambda c=cid: self._do(c, "connect", mcp),  # type: ignore[misc]
+            )
         else:  # not-connected
-            btn.configure(text="Connect", state="normal", command=lambda c=cid: self._do(c, "connect", mcp))
+            btn.configure(  # type: ignore[misc]
+                text="Connect",
+                state="normal",
+                command=lambda c=cid: self._do(c, "connect", mcp),  # type: ignore[misc]
+            )
 
     def _do(self, cid: str, action: str, mcp: str) -> None:
         widgets = self._row_widgets[cid]

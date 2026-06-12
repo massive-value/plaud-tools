@@ -14,10 +14,12 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..ai_clients import connect_all, status_all
 from .setup import (
     _ACTIVATE_EVENT,
+    EnvStatus,
     _autostart_enabled,
     _events_path,
     _mcp_exe,
@@ -28,6 +30,13 @@ from .setup import (
 )
 from .toasts import _show_session_expired_toast, _show_update_available_toast
 from .updater import _check_for_update
+
+if TYPE_CHECKING:
+    import tkinter as tk
+
+    from ..session import PlaudSession
+    from .windows.home import HomeWindow
+    from .windows.login import LoginWindow
 
 
 def _format_session_expired_diag(event: dict) -> str:
@@ -41,7 +50,26 @@ def _format_session_expired_diag(event: dict) -> str:
 
 
 class _BackgroundMixin:
-    """Background-thread helpers for TrayApp.  No __init__ — relies on TrayApp's."""
+    """Background-thread helpers for TrayApp.  No __init__ — relies on TrayApp's.
+
+    The attribute stubs below are not assigned here — they exist solely to
+    satisfy the type checker.  All attributes are initialised by TrayApp.__init__.
+    Declaring them on the mixin avoids per-line ``# type: ignore[attr-defined]``
+    spam across every self-access without contorting the runtime code.
+    """
+
+    if TYPE_CHECKING:
+        # Attributes provided by TrayApp; typed here so mypy can resolve them
+        # in the mixin methods without a circular import at runtime.
+        _root: tk.Tk | None
+        _session: PlaudSession | None
+        _home_win: HomeWindow | None
+        _login_win: LoginWindow | None
+        _update_info: tuple[str, str, str | None] | None
+        _env_status: EnvStatus | None
+
+        def _refresh(self) -> None: ...
+        def _open_login(self) -> None: ...
 
     def _watch_activate_event(self) -> None:
         """Show the appropriate window whenever a second instance signals us."""

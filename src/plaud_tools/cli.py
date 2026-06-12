@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .auth import PlaudAuth
@@ -195,8 +196,8 @@ def run_cli(
             store.clear()
             return json.dumps({"ok": True}, indent=2)
 
-        session, source = store.load_with_source()
-        if session is None:
+        session2, source = store.load_with_source()
+        if session2 is None:
             return json.dumps(
                 {"session": None, "path": str(store.file_store.path), "source": source}, indent=2
             )
@@ -211,11 +212,11 @@ def run_cli(
             {
                 "path": str(store.file_store.path),
                 "source": source,
-                "region": session.region,
-                "email": session.email,
+                "region": session2.region,
+                "email": session2.email,
                 "status": status,
                 "days_until_expiry": days,
-                "token": session.access_token if args.show_token else _mask_token(session.access_token),
+                "token": session2.access_token if args.show_token else _mask_token(session2.access_token),
             },
             indent=2,
         )
@@ -363,14 +364,14 @@ def run_cli(
             indent=2,
         )
     if args.command == "rename-speaker":
-        result = client.rename_speaker(args.recording_id, args.original_label, args.new_name)
+        rename_result = client.rename_speaker(args.recording_id, args.original_label, args.new_name)
         return json.dumps(
             {
                 "ok": True,
                 "recording_id": args.recording_id,
                 "original_label": args.original_label,
                 "new_name": args.new_name,
-                "segments_updated": result["segments_updated"],
+                "segments_updated": rename_result["segments_updated"],
             },
             indent=2,
         )
@@ -402,7 +403,7 @@ def run_cli(
         )
         if args.folder_id:
             client.set_recording_folder(recording.id, args.folder_id)
-        result: dict = {
+        upload_result: dict[str, Any] = {
             "ok": True,
             "recording_id": recording.id,
             "filename": recording.filename,
@@ -413,10 +414,10 @@ def run_cli(
             client.wait_for_transcription(recording.id)
             if not args.skip_summary:
                 client.wait_for_summary(recording.id)
-            result["transcribed"] = True
+            upload_result["transcribed"] = True
         else:
-            result["detached"] = True
-        return json.dumps(result, indent=2)
+            upload_result["detached"] = True
+        return json.dumps(upload_result, indent=2)
 
     if args.command == "merge":
         detail = client.merge_recordings(args.recording_ids, args.title)

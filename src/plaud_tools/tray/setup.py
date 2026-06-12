@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import re
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -343,8 +344,6 @@ def _stale_sourcing_re() -> re.Pattern[str] | None:
     Returns None for pip/dev channels where there is no install directory to
     anchor the pattern to.  Callers must handle the None case.
     """
-    import re
-
     completions_dir = _install_completions_dir()
     if completions_dir is None:
         return None

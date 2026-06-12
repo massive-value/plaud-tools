@@ -267,7 +267,10 @@ class PlaudClient:
     def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
         """Return the raw /file/detail payload for debugging."""
         data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
-        return data.get("data", data)
+        raw = data.get("data", data)
+        # .get() returns Any (the dict value type); the Plaud API always returns
+        # a dict here but the annotation is Any — cast to satisfy warn_return_any.
+        return raw if isinstance(raw, dict) else data
 
     def edit_transcript(self, recording_id: str, segments: list[dict[str, Any]]) -> None:
         self._request_json(
@@ -492,7 +495,10 @@ class PlaudClient:
         def find_item(data_type: str) -> dict[str, Any] | None:
             for item in content_list:
                 if item.get("data_type") == data_type:
-                    return item
+                    # item comes from raw["content_list"] which is list[Any];
+                    # return type is narrowed here — the Plaud API always
+                    # returns dicts in this list.
+                    return item if isinstance(item, dict) else None
             return None
 
         def is_complete(data_type: str) -> bool:

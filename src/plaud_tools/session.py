@@ -233,7 +233,8 @@ class SessionStore:
         # Windows box where DPAPI is broken too).
         self.file_store.save(session)
 
-    def _load_keyring_module(self):
+    def _load_keyring_module(self) -> Any:
+        """Import the keyring module lazily; returns the module or None on ImportError."""
         try:
             return importlib.import_module("keyring")
         except ImportError:
@@ -270,7 +271,7 @@ class SessionStore:
         """Total reads attempted before giving up (delays length + 1)."""
         return len(self._KEYRING_RETRY_DELAYS_S) + 1
 
-    def _get_password_with_retry(self, keyring) -> str | None:
+    def _get_password_with_retry(self, keyring: Any) -> str | None:
         from time import sleep
 
         delays = self._KEYRING_RETRY_DELAYS_S
@@ -304,7 +305,7 @@ class SessionStore:
                 )
                 return None
             if result is not None:
-                return result
+                return str(result)  # keyring.get_password returns Any; we know it's a str here
             if attempt < total:
                 delay = delays[attempt - 1] if self._KEYRING_RETRY_DELAY_S else 0.0
                 log.warning(
