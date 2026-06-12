@@ -84,8 +84,75 @@ def _default_process_enumerator() -> Iterator[ProcessInfo]:
         )
         return
 
-    _creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    yield from _windows_fallback_enumerator()
+
+
+def _parse_wmic_csv(out: str) -> list[ProcessInfo]:
+    """Parse ``wmic process get ProcessId,ExecutablePath /FORMAT:CSV`` output.
+
+    WMIC CSV rows look like ``Node,ExecutablePath,ProcessId`` (a leading Node
+    column), so the exe path is field[1] and the pid is field[2]. Rows without
+    an executable path (system processes) are skipped.
+    """
     collected: list[ProcessInfo] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 3:
+            exe_path, pid_str = parts[1], parts[2]
+            if not exe_path:
+                continue
+            try:
+                collected.append(ProcessInfo(pid=int(pid_str), exe_path=exe_path))
+            except ValueError:
+                continue
+    return collected
+
+
+def _parse_powershell_csv(out: str) -> list[ProcessInfo]:
+    """Parse PowerShell ``Get-Process | Select Id,Path | ConvertTo-Csv`` output.
+
+    ``ConvertTo-Csv -NoTypeInformation`` wraps every field in double-quotes and
+    emits a header row (``"Id","Path"``) we skip. Splitting on the ``","``
+    delimiter between quoted fields tolerates embedded commas in paths.
+    """
+    collected: list[ProcessInfo] = []
+    lines = out.splitlines()
+    # First line is the CSV header: "Id","Path" — skip it.
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        # ConvertTo-Csv wraps every field in double-quotes; strip the outer pair
+        # then split on the inter-field delimiter `","`.
+        stripped = line.strip('"')
+        parts = stripped.split('","', 1)
+        if len(parts) != 2:
+            continue
+        pid_str, exe_path = parts
+        if not exe_path:
+            continue
+        try:
+            collected.append(ProcessInfo(pid=int(pid_str), exe_path=exe_path))
+        except ValueError:
+            continue
+    return collected
+
+
+def _windows_fallback_enumerator() -> Iterator[ProcessInfo]:
+    """Yield ProcessInfo via Windows subprocess fallbacks (WMIC → PowerShell).
+
+    Split out from ``_default_process_enumerator`` so the subprocess + parsing
+    logic can be unit-tested by injecting canned ``subprocess.check_output``
+    output WITHOUT mutating the global ``os.name`` (which would poison
+    ``pathlib``'s flavour on non-Windows CI runners — see PR #96). This helper
+    is reached only after ``_default_process_enumerator`` confirms
+    ``os.name == "nt"``, so it does not re-check the gate.
+
+    Emits a WARNING when both fallbacks yield zero entries, so the silent
+    failure (psutil absent + WMIC removed + PowerShell empty/broken) is
+    observable in logs.
+    """
+    _creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 
     # --- Fallback 1: WMIC (removed on Win11 22H2+, kept for legacy compat) ---
     try:
@@ -96,16 +163,7 @@ def _default_process_enumerator() -> Iterator[ProcessInfo]:
             stderr=subprocess.DEVNULL,
             timeout=10,
         )
-        for line in out.splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 3:
-                exe_path, pid_str = parts[1], parts[2]
-                if not exe_path:
-                    continue
-                try:
-                    collected.append(ProcessInfo(pid=int(pid_str), exe_path=exe_path))
-                except ValueError:
-                    continue
+        collected = _parse_wmic_csv(out)
         if collected:
             logger.debug("_default_process_enumerator: WMIC yielded %d entries", len(collected))
             yield from collected
@@ -135,27 +193,7 @@ def _default_process_enumerator() -> Iterator[ProcessInfo]:
             stderr=subprocess.DEVNULL,
             timeout=15,
         )
-        # First line is the CSV header: "Id","Path" — skip it.
-        lines = out.splitlines()
-        for line in lines[1:]:
-            line = line.strip()
-            if not line:
-                continue
-            # Strip surrounding quotes and split on `","` to handle embedded commas in paths.
-            # ConvertTo-Csv wraps every field in double-quotes.
-            stripped = line.strip('"')
-            # Split on `","` — the delimiter between quoted fields.
-            parts = stripped.split('","', 1)
-            if len(parts) != 2:
-                continue
-            pid_str, exe_path = parts
-            if not exe_path:
-                continue
-            try:
-                collected.append(ProcessInfo(pid=int(pid_str), exe_path=exe_path))
-            except ValueError:
-                continue
-
+        collected = _parse_powershell_csv(out)
         if collected:
             logger.debug(
                 "_default_process_enumerator: PowerShell Get-Process yielded %d entries",
@@ -169,7 +207,6 @@ def _default_process_enumerator() -> Iterator[ProcessInfo]:
                 "(WMIC, PowerShell Get-Process) returned zero process entries. "
                 "MCP child detection is disabled for this run."
             )
-
         yield from collected
     except Exception:
         logger.warning(
