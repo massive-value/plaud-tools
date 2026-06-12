@@ -15,11 +15,21 @@ every toast on bundles without ``winrt``.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from collections.abc import Callable
 
 from .setup import APP_NAME
+
+# Absolute path to PowerShell to prevent PATH-hijacking attacks.
+# %SystemRoot% is typically C:\Windows; fall back to the hard-coded canonical
+# path if the env var is absent (should never happen on a standard Windows
+# install, but defensive is better).
+_POWERSHELL_EXE: str = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"),
+    r"System32\WindowsPowerShell\v1.0\powershell.exe",
+)
 
 # ---------------------------------------------------------------------------
 # One-shot winrt detection
@@ -94,7 +104,7 @@ def _show_powershell_toast(title: str, message: str, info_log: str) -> None:
             "$notifier.Show($toast)\n"
         )
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+            [_POWERSHELL_EXE, "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
         logging.info(info_log)

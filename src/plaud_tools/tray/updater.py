@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import tkinter as tk
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from tkinter import ttk
@@ -26,6 +27,52 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 GITHUB_REPO = "massive-value/plaud-tools"
+
+# Absolute path to PowerShell to prevent PATH-hijacking attacks.
+# %SystemRoot% is typically C:\Windows; fall back to the hard-coded canonical
+# path if the env var is absent (should never happen on a standard Windows
+# install, but defensive is better).
+_POWERSHELL_EXE: str = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"),
+    r"System32\WindowsPowerShell\v1.0\powershell.exe",
+)
+
+# Hosts from which update downloads are permitted.  Any other host is refused
+# before a network connection is made.
+_ALLOWED_UPDATE_HOSTS: frozenset[str] = frozenset(
+    {
+        "github.com",
+        "objects.githubusercontent.com",
+    }
+)
+
+
+def _check_download_host(url: str) -> None:
+    """Raise :exc:`ValueError` if *url* does not parse to an allowed update host.
+
+    The check is exact: the parsed ``netloc`` (host[:port]) must equal one of
+    the entries in :data:`_ALLOWED_UPDATE_HOSTS`.  A host that merely *contains*
+    ``github.com`` as a substring (e.g. ``github.com.evil.com``) is refused.
+
+    Parameters
+    ----------
+    url:
+        The download URL to validate before any network connection is made.
+
+    Raises
+    ------
+    ValueError
+        When the host is not in :data:`_ALLOWED_UPDATE_HOSTS`.
+    """
+    parsed = urllib.parse.urlparse(url)
+    # netloc includes an optional port (e.g. "github.com:443"); strip the port
+    # for the host comparison so "github.com:443" is still accepted.
+    host = parsed.hostname or ""
+    if host not in _ALLOWED_UPDATE_HOSTS:
+        raise ValueError(
+            f"Refusing to download update from untrusted host {host!r}. "
+            f"Allowed hosts: {sorted(_ALLOWED_UPDATE_HOSTS)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +333,9 @@ class UpdateDialog:
                 )
 
         try:
+            # Allowlist check — must happen before any network connection.
+            _check_download_host(zip_url)
+
             req = urllib.request.Request(
                 zip_url,
                 headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
@@ -366,7 +416,7 @@ class UpdateDialog:
             # detaching, and DEVNULL handles are always valid.
             proc = subprocess.Popen(
                 [
-                    "powershell",
+                    _POWERSHELL_EXE,
                     "-NoProfile",
                     "-NonInteractive",
                     "-ExecutionPolicy",
@@ -419,6 +469,9 @@ class UpdateDialog:
 
 __all__ = [
     "GITHUB_REPO",
+    "_ALLOWED_UPDATE_HOSTS",
+    "_POWERSHELL_EXE",
+    "_check_download_host",
     "_version_gt",
     "_check_for_update",
     "ChecksumMismatch",

@@ -35,6 +35,15 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# Absolute path to PowerShell to prevent PATH-hijacking attacks.
+# %SystemRoot% is typically C:\Windows; fall back to the hard-coded canonical
+# path if the env var is absent (should never happen on a standard Windows
+# install, but defensive is better).
+_POWERSHELL_EXE: str = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"),
+    r"System32\WindowsPowerShell\v1.0\powershell.exe",
+)
+
 
 # ---------------------------------------------------------------------------
 # Process enumeration
@@ -189,7 +198,7 @@ def _windows_fallback_enumerator() -> Iterator[ProcessInfo]:
     )
     try:
         out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_CMD],
+            [_POWERSHELL_EXE, "-NoProfile", "-NonInteractive", "-Command", _PS_CMD],
             text=True,
             creationflags=_creationflags,
             stderr=subprocess.DEVNULL,
