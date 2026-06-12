@@ -46,9 +46,21 @@ class ProcessInfo(NamedTuple):
 def _default_process_enumerator() -> Iterator[ProcessInfo]:
     """Yield (pid, exe_path) for every running process.
 
-    Uses ``psutil`` when available for broad OS support, falls back to a
-    Windows-only WMI query via ``subprocess``, and finally to parsing the
-    output of ``tasklist /FO CSV /V``.
+    Fallback chain (Windows):
+    1. ``psutil`` — preferred, cross-platform, full exe paths.
+    2. WMIC — kept as a first Windows fallback for legacy compatibility, but
+       WMIC was removed from Windows 11 22H2+ so this will silently fail on
+       modern systems.
+    3. PowerShell ``Get-Process`` — reliable on all modern Win11 installs.
+       Yields full exe ``Path`` values, satisfying the ADR 003 path-scoping
+       requirement (consumers filter by ``Path.resolve().relative_to(install_dir)``).
+
+    On non-Windows systems, only psutil is attempted; when psutil is absent
+    the enumerator yields nothing (non-Windows bundles are expected to include
+    psutil — see task C4).
+
+    When psutil is unavailable AND Windows enumeration yields zero results, a
+    WARNING is emitted so silent failures are observable in logs.
     """
     try:
         import psutil  # type: ignore[import]
@@ -63,26 +75,145 @@ def _default_process_enumerator() -> Iterator[ProcessInfo]:
     except ImportError:
         pass
 
-    # Fallback: WMIC on Windows
-    if os.name == "nt":
+    # psutil is absent — attempt Windows-only fallbacks.
+    if os.name != "nt":
+        # Non-Windows without psutil: nothing we can do; C4 should bundle psutil.
+        logger.warning(
+            "_default_process_enumerator: psutil not available on non-Windows platform; "
+            "no processes can be enumerated. Install psutil to fix."
+        )
+        return
+
+    yield from _windows_fallback_enumerator()
+
+
+def _parse_wmic_csv(out: str) -> list[ProcessInfo]:
+    """Parse ``wmic process get ProcessId,ExecutablePath /FORMAT:CSV`` output.
+
+    WMIC CSV rows look like ``Node,ExecutablePath,ProcessId`` (a leading Node
+    column), so the exe path is field[1] and the pid is field[2]. Rows without
+    an executable path (system processes) are skipped.
+    """
+    collected: list[ProcessInfo] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 3:
+            exe_path, pid_str = parts[1], parts[2]
+            if not exe_path:
+                continue
+            try:
+                collected.append(ProcessInfo(pid=int(pid_str), exe_path=exe_path))
+            except ValueError:
+                continue
+    return collected
+
+
+def _parse_powershell_csv(out: str) -> list[ProcessInfo]:
+    """Parse PowerShell ``Get-Process | Select Id,Path | ConvertTo-Csv`` output.
+
+    ``ConvertTo-Csv -NoTypeInformation`` wraps every field in double-quotes and
+    emits a header row (``"Id","Path"``) we skip. Splitting on the ``","``
+    delimiter between quoted fields tolerates embedded commas in paths.
+    """
+    collected: list[ProcessInfo] = []
+    lines = out.splitlines()
+    # First line is the CSV header: "Id","Path" — skip it.
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        # ConvertTo-Csv wraps every field in double-quotes; strip the outer pair
+        # then split on the inter-field delimiter `","`.
+        stripped = line.strip('"')
+        parts = stripped.split('","', 1)
+        if len(parts) != 2:
+            continue
+        pid_str, exe_path = parts
+        if not exe_path:
+            continue
         try:
-            out = subprocess.check_output(
-                ["wmic", "process", "get", "ProcessId,ExecutablePath", "/FORMAT:CSV"],
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
+            collected.append(ProcessInfo(pid=int(pid_str), exe_path=exe_path))
+        except ValueError:
+            continue
+    return collected
+
+
+def _windows_fallback_enumerator() -> Iterator[ProcessInfo]:
+    """Yield ProcessInfo via Windows subprocess fallbacks (WMIC → PowerShell).
+
+    Split out from ``_default_process_enumerator`` so the subprocess + parsing
+    logic can be unit-tested by injecting canned ``subprocess.check_output``
+    output WITHOUT mutating the global ``os.name`` (which would poison
+    ``pathlib``'s flavour on non-Windows CI runners — see PR #96). This helper
+    is reached only after ``_default_process_enumerator`` confirms
+    ``os.name == "nt"``, so it does not re-check the gate.
+
+    Emits a WARNING when both fallbacks yield zero entries, so the silent
+    failure (psutil absent + WMIC removed + PowerShell empty/broken) is
+    observable in logs.
+    """
+    _creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+    # --- Fallback 1: WMIC (removed on Win11 22H2+, kept for legacy compat) ---
+    try:
+        out = subprocess.check_output(
+            ["wmic", "process", "get", "ProcessId,ExecutablePath", "/FORMAT:CSV"],
+            text=True,
+            creationflags=_creationflags,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        collected = _parse_wmic_csv(out)
+        if collected:
+            logger.debug("_default_process_enumerator: WMIC yielded %d entries", len(collected))
+            yield from collected
+            return
+        # WMIC ran but returned no entries — fall through to PowerShell.
+        logger.debug("_default_process_enumerator: WMIC returned no entries, trying PowerShell")
+    except Exception:
+        logger.debug("_default_process_enumerator: WMIC fallback failed, trying PowerShell", exc_info=True)
+
+    # --- Fallback 2: PowerShell Get-Process (available on all modern Win11) ---
+    # We request Id and Path as CSV so we can parse full exe paths, satisfying
+    # the ADR 003 path-scoping requirement.  Processes without a Path property
+    # (system/kernel processes) are silently excluded — they are never plaud-mcp.
+    #
+    # Command emits CSV lines: "Id","Path"
+    # e.g.: "1234","C:\Programs\PlaudTools\mcp\plaud-mcp.exe"
+    _PS_CMD = (
+        "Get-Process | Where-Object { $_.Path } | "
+        "Select-Object Id,Path | "
+        "ConvertTo-Csv -NoTypeInformation"
+    )
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_CMD],
+            text=True,
+            creationflags=_creationflags,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        collected = _parse_powershell_csv(out)
+        if collected:
+            logger.debug(
+                "_default_process_enumerator: PowerShell Get-Process yielded %d entries",
+                len(collected),
             )
-            for line in out.splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 3:
-                    exe_path, pid_str = parts[1], parts[2]
-                    try:
-                        yield ProcessInfo(pid=int(pid_str), exe_path=exe_path)
-                    except ValueError:
-                        continue
-        except Exception:
-            logger.debug("WMIC fallback failed", exc_info=True)
+        else:
+            # Zero results with no psutil — likely a permissions or environment issue;
+            # warn so operators can see the silent-failure in logs.
+            logger.warning(
+                "_default_process_enumerator: psutil unavailable and all Windows fallbacks "
+                "(WMIC, PowerShell Get-Process) returned zero process entries. "
+                "MCP child detection is disabled for this run."
+            )
+        yield from collected
+    except Exception:
+        logger.warning(
+            "_default_process_enumerator: PowerShell Get-Process fallback failed; "
+            "psutil is unavailable. MCP child detection is disabled for this run.",
+            exc_info=True,
+        )
 
 
 def enumerate_mcp_processes(

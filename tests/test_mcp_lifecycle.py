@@ -240,3 +240,196 @@ def test_ps1_snippet_contains_scoped_stop_process():
     assert "Stop-Process" in snippet
     # Should be preceded by a pipe or applied to $mcpProcs, not a standalone Name filter
     assert "Stop-Process -Name plaud-mcp -Force\n" not in snippet
+
+
+# ---------------------------------------------------------------------------
+# Windows fallback parsing tests
+#
+# These exercise the WMIC / PowerShell CSV PARSING and the subprocess fallback
+# chain WITHOUT pretending the host is Windows. The production gate
+# (`os.name == "nt"`) lives only in `_default_process_enumerator`; the parsing
+# and subprocess plumbing live in `_windows_fallback_enumerator` and the two
+# pure `_parse_*_csv` helpers, which are platform-agnostic.
+#
+# We deliberately DO NOT mutate `os.name`. Mutating the global `os.name` to
+# "nt" on a Linux runner makes `pathlib.Path(...)` resolve to `WindowsPath`,
+# which later crashes pytest's end-of-session cache write with
+# "cannot instantiate 'WindowsPath' on your system" — the PR #96 CI failure.
+# ---------------------------------------------------------------------------
+
+from plaud_tools.mcp_lifecycle import (  # noqa: E402  (grouped with fallback tests)
+    _parse_powershell_csv,
+    _parse_wmic_csv,
+    _windows_fallback_enumerator,
+)
+
+# Fixture: canned ConvertTo-Csv output from PowerShell Get-Process
+_PS_CSV_OUTPUT = '''"Id","Path"
+"1234","C:\\Programs\\PlaudTools\\mcp\\plaud-mcp.exe"
+"5678","C:\\Programs\\PlaudTools\\mcp\\plaud-mcp.exe"
+"9999","C:\\Windows\\System32\\svchost.exe"
+'''
+
+# Fixture: empty output — no processes with a Path property
+_PS_CSV_EMPTY = '"Id","Path"\n'
+
+
+@pytest.fixture(autouse=True)
+def _assert_os_name_not_leaked():
+    """Trip-wire: fail loudly if any test leaks a mutated global ``os.name``.
+
+    Guards against re-introducing the global ``os.name = "nt"`` pattern that
+    poisons ``pathlib`` flavour on non-Windows CI (PR #96).
+    """
+    import os as _os
+
+    original = _os.name
+    yield
+    assert _os.name == original, (
+        f"global os.name leaked: was {original!r}, now {_os.name!r}; "
+        "do not mutate os.name — test the platform-agnostic fallback helpers instead"
+    )
+
+
+def _wmic_unavailable(out_for_powershell):
+    """Return a fake ``subprocess.check_output`` where WMIC raises (Win11 22H2+).
+
+    PowerShell calls return *out_for_powershell* (a str or a callable raising).
+    """
+    def fake_check_output(cmd, **kwargs):
+        if "wmic" in cmd[0].lower():
+            raise FileNotFoundError("wmic not found")
+        if callable(out_for_powershell):
+            return out_for_powershell()
+        return out_for_powershell
+
+    return fake_check_output
+
+
+# --- Pure parser tests (no subprocess, no os.name) -------------------------
+
+def test_parse_powershell_csv_extracts_pid_and_path():
+    results = _parse_powershell_csv(_PS_CSV_OUTPUT)
+    assert len(results) == 3
+    assert {r.pid for r in results} == {1234, 5678, 9999}
+    paths = {r.exe_path for r in results}
+    assert r"C:\Programs\PlaudTools\mcp\plaud-mcp.exe" in paths
+    assert r"C:\Windows\System32\svchost.exe" in paths
+
+
+def test_parse_powershell_csv_header_only_yields_nothing():
+    assert _parse_powershell_csv(_PS_CSV_EMPTY) == []
+
+
+def test_parse_powershell_csv_skips_non_integer_pid():
+    bad = '"Id","Path"\n"notanint","C:\\x\\plaud-mcp.exe"\n"42","C:\\y\\plaud-mcp.exe"\n'
+    results = _parse_powershell_csv(bad)
+    assert [r.pid for r in results] == [42]
+
+
+def test_parse_wmic_csv_extracts_pid_and_path():
+    # WMIC CSV: Node,ExecutablePath,ProcessId
+    out = "Node,ExecutablePath,ProcessId\nHOST,C:\\a\\plaud-mcp.exe,1234\nHOST,,5678\n"
+    results = _parse_wmic_csv(out)
+    # Row with empty ExecutablePath is skipped.
+    assert len(results) == 1
+    assert results[0].pid == 1234
+    assert results[0].exe_path == r"C:\a\plaud-mcp.exe"
+
+
+# --- Subprocess fallback-chain tests (stub check_output, no os.name) -------
+
+def test_windows_fallback_parses_pid_and_exe_path(monkeypatch):
+    """WMIC absent → PowerShell CSV parsed into ProcessInfo with full paths."""
+    monkeypatch.setattr("subprocess.check_output", _wmic_unavailable(_PS_CSV_OUTPUT))
+
+    results = list(_windows_fallback_enumerator())
+
+    assert len(results) == 3
+    assert {r.pid for r in results} == {1234, 5678, 9999}
+    paths = {r.exe_path for r in results}
+    assert r"C:\Programs\PlaudTools\mcp\plaud-mcp.exe" in paths
+    assert r"C:\Windows\System32\svchost.exe" in paths
+
+
+def test_windows_fallback_prefers_wmic_when_it_returns_entries(monkeypatch):
+    """When WMIC yields entries, PowerShell is not consulted."""
+    wmic_out = "Node,ExecutablePath,ProcessId\nHOST,C:\\a\\plaud-mcp.exe,7000\n"
+    ps_called = {"hit": False}
+
+    def fake_check_output(cmd, **kwargs):
+        if "wmic" in cmd[0].lower():
+            return wmic_out
+        ps_called["hit"] = True
+        return _PS_CSV_OUTPUT
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
+
+    results = list(_windows_fallback_enumerator())
+    assert [r.pid for r in results] == [7000]
+    assert ps_called["hit"] is False, "PowerShell should not run when WMIC succeeds"
+
+
+def test_windows_fallback_filters_via_enumerate_mcp_processes(tmp_path, monkeypatch):
+    """End-to-end: fallback output flows through enumerate_mcp_processes scoping.
+
+    We inject ``_windows_fallback_enumerator`` directly as the ``enumerator``
+    stub — this drives the real fallback + parsing code WITHOUT touching the
+    ``os.name`` gate (the gate lives only in ``_default_process_enumerator``).
+    """
+    # Create a plaud-mcp.exe inside tmp_path so path-resolve works on this host.
+    mcp_exe = tmp_path / "mcp" / "plaud-mcp.exe"
+    mcp_exe.parent.mkdir()
+    mcp_exe.touch()
+
+    # Reference the real tmp_path exe (native flavour) + an unrelated outside path.
+    outside_exe = str(tmp_path.parent / "other" / "plaud-mcp.exe")
+    csv_output = (
+        '"Id","Path"\n'
+        f'"1001","{str(mcp_exe)}"\n'
+        f'"2002","{outside_exe}"\n'
+    )
+    monkeypatch.setattr("subprocess.check_output", _wmic_unavailable(csv_output))
+
+    results = enumerate_mcp_processes(tmp_path, enumerator=_windows_fallback_enumerator)
+    assert len(results) == 1
+    assert results[0].pid == 1001
+
+
+def test_warning_logged_when_zero_results(monkeypatch, caplog):
+    """WARNING fires when WMIC is absent and PowerShell yields zero rows.
+
+    Mirrors the production silent-failure path (psutil absent + WMIC removed +
+    PowerShell empty); we test the fallback helper directly so no os.name churn.
+    """
+    import logging
+
+    monkeypatch.setattr("subprocess.check_output", _wmic_unavailable(_PS_CSV_EMPTY))
+
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.mcp_lifecycle"):
+        results = list(_windows_fallback_enumerator())
+
+    assert results == []
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        "zero process entries" in msg or "disabled" in msg for msg in warning_messages
+    ), f"Expected a WARNING about zero results, got: {warning_messages}"
+
+
+def test_warning_logged_when_powershell_raises(monkeypatch, caplog):
+    """WARNING fires when WMIC is absent and PowerShell itself raises."""
+    import logging
+
+    def _raise():
+        raise OSError("subprocess totally broken")
+
+    monkeypatch.setattr("subprocess.check_output", _wmic_unavailable(_raise))
+
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.mcp_lifecycle"):
+        results = list(_windows_fallback_enumerator())
+
+    assert results == []
+    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        "disabled" in msg or "fallback failed" in msg for msg in warning_messages
+    ), f"Expected a WARNING about fallback failure, got: {warning_messages}"
