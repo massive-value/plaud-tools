@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime
@@ -394,17 +395,14 @@ def run_cli(
             indent=2,
         )
     if args.command == "upload":
-        from .transcode import get_file_type, transcode_to_mp3
+        import tempfile
+
+        from .transcode import get_file_type, transcode_to_mp3_path
 
         path = Path(args.file)
         if not path.exists():
             raise ValueError(f"file not found: {args.file}")
         file_type, needs_transcode = get_file_type(path)
-        raw_bytes = path.read_bytes()
-        try:
-            audio_data = transcode_to_mp3(raw_bytes, path.suffix) if needs_transcode else raw_bytes
-        except RuntimeError as exc:
-            raise ValueError(str(exc)) from exc
         title = args.title or path.stem
         start_ms: int | None = None
         if args.start_time is not None:
@@ -416,9 +414,31 @@ def run_cli(
                     start_ms = int(raw_st)
                 except ValueError as exc:
                     raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
-        recording = client.upload_recording(
-            audio_data, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
-        )
+
+        if needs_transcode:
+            # Transcode to a temp MP3 on disk, then upload from that path
+            # so the transcoded bytes never round-trip through Python memory.
+            tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
+            os.close(tmp_fd)
+            tmp_mp3_path = Path(tmp_mp3)
+            try:
+                try:
+                    transcode_to_mp3_path(path, tmp_mp3_path)
+                except RuntimeError as exc:
+                    raise ValueError(str(exc)) from exc
+                recording = client.upload_recording(
+                    tmp_mp3_path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
+                )
+            finally:
+                try:
+                    tmp_mp3_path.unlink()
+                except OSError:
+                    pass
+        else:
+            recording = client.upload_recording(
+                path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
+            )
+
         if args.folder_id:
             client.set_recording_folder(recording.id, args.folder_id)
         upload_result: dict[str, Any] = {

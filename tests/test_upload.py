@@ -10,7 +10,7 @@ import pytest
 from plaud_tools.client import _CHUNK_SIZE, PlaudClient
 from plaud_tools.errors import PlaudApiError
 from plaud_tools.session import FileSessionStore, PlaudSession, SessionManager
-from plaud_tools.transcode import get_file_type, transcode_to_mp3
+from plaud_tools.transcode import get_file_type, transcode_to_mp3, transcode_to_mp3_path
 from plaud_tools.transport import HttpResponse
 
 # ---------------------------------------------------------------------------
@@ -745,6 +745,180 @@ def test_transcode_cleans_up_temp_files(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Path-based (streaming) upload tests
+# ---------------------------------------------------------------------------
+
+
+def _make_presign_response(
+    n_parts: int, upload_id: str = "uid", object_name: str = "obj.mp3"
+) -> HttpResponse:
+    """Return a presign HttpResponse for *n_parts* part URLs."""
+    return HttpResponse(
+        200,
+        json.dumps(
+            {
+                "status": 0,
+                "data": {
+                    "part_urls": [f"https://s3.fake/part{i + 1}" for i in range(n_parts)],
+                    "upload_id": upload_id,
+                    "object_name": object_name,
+                },
+            }
+        ).encode(),
+        {},
+    )
+
+
+def test_upload_path_reads_from_disk(tmp_path):
+    """Path variant: bytes are never loaded into Python memory — chunks come from disk."""
+    manager = _make_manager(tmp_path)
+    # Write a 7 MiB file to disk; a bytes overload would load all 7 MiB into Python.
+    # The Path variant should open-and-read in two chunks (5 MiB + 2 MiB).
+    audio_file = tmp_path / "recording.mp3"
+    audio_file.write_bytes(b"A" * (7 * 1024 * 1024))
+
+    transport = StubTransport(
+        [
+            _make_presign_response(2),
+            _s3_ok("etag1"),
+            _s3_ok("etag2"),
+            _ok({}),
+            _ok({"data": {"id": "rec1", "filename": "recording"}}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    recording = client.upload_recording(audio_file, "recording", "MP3")
+
+    assert recording.id == "rec1"
+    s3_calls = [c for c in transport.calls if "s3.fake" in c["url"]]
+    assert len(s3_calls) == 2
+    assert len(s3_calls[0]["body"]) == _CHUNK_SIZE  # 5 MiB
+    assert len(s3_calls[1]["body"]) == 2 * 1024 * 1024  # 2 MiB remainder
+
+
+def test_upload_path_presign_uses_stat_filesize(tmp_path):
+    """Path variant: presign body must report the on-disk file size via stat()."""
+    manager = _make_manager(tmp_path)
+    audio_file = tmp_path / "clip.mp3"
+    file_content = b"Z" * 4321
+    audio_file.write_bytes(file_content)
+
+    transport = StubTransport(
+        [
+            _make_presign_response(1, object_name="clip.mp3"),
+            _s3_ok(),
+            _ok({}),
+            _ok({"data": {"id": "r1", "filename": "clip"}}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.upload_recording(audio_file, "clip", "MP3")
+
+    presign_call = transport.calls[0]
+    body = json.loads(presign_call["body"])
+    assert body["filesize"] == len(file_content)
+
+
+def test_upload_path_rejects_empty_file(tmp_path):
+    """Path variant: zero-byte file must raise ValueError('data cannot be empty')."""
+    manager = _make_manager(tmp_path)
+    empty = tmp_path / "empty.mp3"
+    empty.write_bytes(b"")
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="data cannot be empty"):
+        client.upload_recording(empty, "empty", "MP3")
+
+
+def test_upload_large_sparse_file_chunk_count(tmp_path):
+    """20 MiB sparse file uploads in ceil(20 MiB / 5 MiB) = 4 chunks, each ≤ 5 MiB.
+
+    This is the key D2 acceptance test: a large file must be sent in the
+    correct number of parts without holding the full file in memory.  We verify
+    the chunk count and that no individual part body exceeds _CHUNK_SIZE.
+    """
+    import math
+
+    manager = _make_manager(tmp_path)
+    total_size = 20 * 1024 * 1024  # 20 MiB exactly
+    expected_parts = math.ceil(total_size / _CHUNK_SIZE)  # 4
+
+    audio_file = tmp_path / "large.mp3"
+    # Write a sparse-ish file: alternating 1 MiB slabs so it isn't fully zero.
+    with audio_file.open("wb") as fh:
+        for i in range(total_size // (1024 * 1024)):
+            fh.write(bytes([i % 256]) * (1024 * 1024))
+
+    responses: list[HttpResponse] = [
+        _make_presign_response(expected_parts),
+        *[_s3_ok(f"etag{i}") for i in range(expected_parts)],
+        _ok({}),
+        _ok({"data": {"id": "big1", "filename": "large"}}),
+    ]
+    transport = StubTransport(responses)
+    client = PlaudClient(manager, transport=transport)
+    client.upload_recording(audio_file, "large", "MP3")
+
+    s3_calls = [c for c in transport.calls if "s3.fake" in c["url"]]
+    assert len(s3_calls) == expected_parts, (
+        f"Expected {expected_parts} S3 PUTs for {total_size} bytes at "
+        f"{_CHUNK_SIZE}-byte chunks, got {len(s3_calls)}"
+    )
+    for idx, call in enumerate(s3_calls):
+        part_size = len(call["body"])
+        assert part_size <= _CHUNK_SIZE, (
+            f"Part {idx + 1} body size {part_size} exceeds _CHUNK_SIZE {_CHUNK_SIZE}"
+        )
+    # All 4 parts fill the chunk size exactly (20 MiB / 5 MiB = 4 with no remainder)
+    for idx, call in enumerate(s3_calls):
+        assert len(call["body"]) == _CHUNK_SIZE, (
+            f"Part {idx + 1} should be exactly {_CHUNK_SIZE} bytes, got {len(call['body'])}"
+        )
+
+
+def test_transcode_to_mp3_path_writes_output(tmp_path, monkeypatch):
+    """transcode_to_mp3_path writes ffmpeg output directly to dest_path."""
+    fake_ff = tmp_path / "ffmpeg"
+    fake_ff.write_bytes(b"")
+    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
+
+    expected_output = b"streamed mp3 bytes"
+
+    def fake_run(cmd, capture_output):
+        # cmd[-1] is the dest_path argument
+        Path(cmd[-1]).write_bytes(expected_output)
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+
+    src = tmp_path / "audio.m4a"
+    src.write_bytes(b"source audio")
+    dest = tmp_path / "out.mp3"
+
+    transcode_to_mp3_path(src, dest)
+
+    assert dest.read_bytes() == expected_output
+
+
+def test_transcode_to_mp3_path_raises_on_ffmpeg_failure(tmp_path, monkeypatch):
+    """transcode_to_mp3_path raises RuntimeError when ffmpeg exits non-zero."""
+    fake_ff = tmp_path / "ffmpeg"
+    fake_ff.write_bytes(b"")
+    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
+
+    def fake_run(cmd, capture_output):
+        return type("R", (), {"returncode": 1, "stderr": b"bad input"})()
+
+    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+
+    src = tmp_path / "audio.m4a"
+    src.write_bytes(b"bad audio")
+    dest = tmp_path / "out.mp3"
+
+    with pytest.raises(RuntimeError, match="ffmpeg exited 1"):
+        transcode_to_mp3_path(src, dest)
+
+
+# ---------------------------------------------------------------------------
 # Opt-in live integration test
 # ---------------------------------------------------------------------------
 
@@ -764,16 +938,15 @@ def test_live_upload_small_mp3():
     if not session_path or not audio_path:
         pytest.skip("Set PLAUD_SESSION_PATH and PLAUD_TEST_AUDIO_PATH to run this test.")
 
-    from plaud_tools.transcode import get_file_type, transcode_to_mp3
+    from plaud_tools.transcode import get_file_type
 
     store = session_mod.FileSessionStore(session_path)
     client = PlaudClient(SessionManager(store))
 
     audio = Path(audio_path)
     file_type, needs_transcode = get_file_type(audio)
-    data = transcode_to_mp3(audio.read_bytes(), audio.suffix) if needs_transcode else audio.read_bytes()
-
-    recording = client.upload_recording(data, f"plaud-tools-live-test-{int(time.time())}", file_type)
+    # Use path-based upload to exercise the streaming code path in the live test.
+    recording = client.upload_recording(audio, f"plaud-tools-live-test-{int(time.time())}", file_type)
     assert recording.id, "Upload should return a recording ID"
 
     client.transcribe_and_summarize(recording.id)

@@ -347,7 +347,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         timezone_offset: float | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
-            from .transcode import get_file_type, transcode_to_mp3
+            import tempfile
+
+            from .transcode import get_file_type, transcode_to_mp3_path
 
             path = Path(file_path)
             if not path.exists():
@@ -360,21 +362,43 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 file_type, needs_transcode = get_file_type(path)
             except ValueError as exc:
                 return _error_result(str(exc), error_code="validation", retryable=False)
-            raw_bytes = path.read_bytes()
-            try:
-                audio_data = transcode_to_mp3(raw_bytes, path.suffix) if needs_transcode else raw_bytes
-            except RuntimeError as exc:
-                # transcode_to_mp3 raises RuntimeError when ffmpeg fails.
-                return _json_result({"error": str(exc)}, is_error=True)
+
             rec_title = title or path.stem
             start_ms: int | None = None
             if isinstance(start_time, str):
                 start_ms = parse_isoish(start_time, "start_time")
             elif isinstance(start_time, int):
                 start_ms = start_time
-            recording = client.upload_recording(
-                audio_data, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset
-            )
+
+            if needs_transcode:
+                # Transcode to a temp MP3 on disk, then upload from that path
+                # so the transcoded bytes never round-trip through Python memory.
+                tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
+                os.close(tmp_fd)
+                tmp_mp3_path = Path(tmp_mp3)
+                try:
+                    try:
+                        transcode_to_mp3_path(path, tmp_mp3_path)
+                    except RuntimeError as exc:
+                        # transcode_to_mp3_path raises RuntimeError when ffmpeg fails.
+                        return _json_result({"error": str(exc)}, is_error=True)
+                    recording = client.upload_recording(
+                        tmp_mp3_path,
+                        rec_title,
+                        file_type,
+                        start_time=start_ms,
+                        timezone_offset=timezone_offset,
+                    )
+                finally:
+                    try:
+                        tmp_mp3_path.unlink()
+                    except OSError:
+                        pass
+            else:
+                recording = client.upload_recording(
+                    path, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset
+                )
+
             if folder_id:
                 client.set_recording_folder(recording.id, folder_id)
             return _json_result(
