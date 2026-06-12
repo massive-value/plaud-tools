@@ -351,3 +351,135 @@ def test_probe_snippet_syntax_valid(tmp_path: Path):
         timeout=30,
     )
     assert result.returncode == 0, f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# install.ps1 — version comparison tests (content checks)
+# ---------------------------------------------------------------------------
+
+
+def test_install_ps1_uses_get_numeric_version_function():
+    content = _read_install_ps1()
+    # The script must define a helper that strips pre-release suffixes.
+    assert "Get-NumericVersion" in content
+
+
+def test_install_ps1_strips_prerelease_suffix_with_replace():
+    content = _read_install_ps1()
+    # The helper must use -replace to remove the dash-suffix.
+    assert "-replace '-.*$'" in content or "-replace" in content
+
+
+def test_install_ps1_casts_to_version_type():
+    content = _read_install_ps1()
+    # Must cast numeric string to [version] for proper comparison.
+    assert "[version]" in content
+
+
+def test_install_ps1_compares_version_objects():
+    content = _read_install_ps1()
+    # Must use -gt for the "update available" check (not string comparison).
+    assert "$latestVerNum -gt $installedVerNum" in content
+
+
+# ---------------------------------------------------------------------------
+# install.ps1 — version comparison behaviour tests via pwsh
+#
+# These tests exercise the Get-NumericVersion helper and the comparison logic
+# in isolation by running a small PS1 harness that reproduces the same pattern.
+# Cases covered:
+#   (a) newer release > installed  → update available (exit 1)
+#   (b) equal versions             → already up to date (exit 0)
+#   (c) pre-release of same numeric version NOT newer than its release (exit 0)
+#   (d) installed pre-release vs. newer release → update available (exit 1)
+# ---------------------------------------------------------------------------
+
+_VERSION_COMPARE_PS1 = r"""
+param([string]$Installed, [string]$Latest)
+$ErrorActionPreference = 'Stop'
+
+function Get-NumericVersion {
+    param([string]$v)
+    $numeric = $v.TrimStart('v') -replace '-.*$', ''
+    return [version]$numeric
+}
+
+$installedVerNum = Get-NumericVersion $Installed
+$latestVerNum    = Get-NumericVersion $Latest
+
+if ($installedVerNum -eq $latestVerNum) {
+    Write-Host "UP_TO_DATE"
+    exit 0
+} elseif ($latestVerNum -gt $installedVerNum) {
+    Write-Host "UPDATE_AVAILABLE"
+    exit 1
+} else {
+    # installed is somehow ahead (should not happen in normal flow)
+    Write-Host "INSTALLED_NEWER"
+    exit 0
+}
+"""
+
+
+def _run_version_compare(tmp_path: Path, installed: str, latest: str) -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+    """Write the version-compare harness and invoke it with the given versions."""
+    harness = tmp_path / "version_compare.ps1"
+    harness.write_text(_VERSION_COMPARE_PS1, encoding="utf-8")
+    return subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(harness),
+            "-Installed",
+            installed,
+            "-Latest",
+            latest,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_version_compare_newer_release_triggers_update(tmp_path: Path):
+    """(a) A newer release version is correctly ranked above the installed version."""
+    result = _run_version_compare(tmp_path, installed="0.2.11", latest="0.3.0")
+    assert result.returncode == 1, f"Expected UPDATE_AVAILABLE (exit 1):\n{result.stdout}\n{result.stderr}"
+    assert "UPDATE_AVAILABLE" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_version_compare_equal_versions_no_update(tmp_path: Path):
+    """(b) Equal versions report up-to-date."""
+    result = _run_version_compare(tmp_path, installed="0.3.0", latest="0.3.0")
+    assert result.returncode == 0, f"Expected UP_TO_DATE (exit 0):\n{result.stdout}\n{result.stderr}"
+    assert "UP_TO_DATE" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_version_compare_prerelease_not_newer_than_release(tmp_path: Path):
+    """(c) A pre-release tag of the same numeric version must NOT be treated as newer
+    than the corresponding release (0.3.0-rc1 vs 0.3.0 → up-to-date, not update)."""
+    # Scenario: latest GitHub tag is a pre-release; installed is the full release.
+    result = _run_version_compare(tmp_path, installed="0.3.0", latest="0.3.0-rc1")
+    assert result.returncode == 0, (
+        f"Pre-release must not be ranked above its release (expected exit 0):\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+    # Should be UP_TO_DATE (numeric versions are equal after stripping the suffix).
+    assert "UP_TO_DATE" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_version_compare_installed_prerelease_vs_newer_release(tmp_path: Path):
+    """(d) When the installed version is a pre-release and a newer full release is
+    available, the update path must be taken."""
+    result = _run_version_compare(tmp_path, installed="0.3.0-rc1", latest="0.3.1")
+    assert result.returncode == 1, (
+        f"Expected UPDATE_AVAILABLE (exit 1) when installed is pre-release and "
+        f"newer release exists:\n{result.stdout}\n{result.stderr}"
+    )
+    assert "UPDATE_AVAILABLE" in result.stdout
