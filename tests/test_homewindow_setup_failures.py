@@ -10,19 +10,20 @@ Covers:
 All tests are display-free (no real Tk window) — widgets are MagicMocks.
 ``conftest.py`` already stubs pystray / PIL so tray_app is importable in CI.
 """
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 from plaud_tools.tray_app import EnvStatus, HomeWindow
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_home_window(
-    env_status: "EnvStatus | None" = None,
+    env_status: EnvStatus | None = None,
     on_repair_setup=None,
     on_open_log_folder=None,
 ) -> HomeWindow:
@@ -55,6 +56,7 @@ def _make_home_window(
 # ---------------------------------------------------------------------------
 # _refresh_setup_failure_row — visibility rules
 # ---------------------------------------------------------------------------
+
 
 class TestRefreshSetupFailureRow:
     """Unit tests for the show/hide logic of the setup-failure banner."""
@@ -131,6 +133,7 @@ class TestRefreshSetupFailureRow:
 # _handle_repair_setup — state transitions
 # ---------------------------------------------------------------------------
 
+
 class TestHandleRepairSetup:
     """Test the repair button / banner state machine."""
 
@@ -144,8 +147,7 @@ class TestHandleRepairSetup:
 
         hw._setup_failure_label.configure.assert_called()
         all_calls = [c for c in hw._setup_failure_label.configure.call_args_list]
-        texts = [c.kwargs.get("text", "") or (c.args[0] if c.args else "")
-                 for c in all_calls]
+        texts = [c.kwargs.get("text", "") or (c.args[0] if c.args else "") for c in all_calls]
         assert any("repair" in t.lower() for t in texts)
 
     def test_no_op_when_no_repair_callback(self):
@@ -181,8 +183,7 @@ class TestHandleRepairSetup:
         )
         # Row background should switch to green
         row_configure_calls = hw._setup_failure_row.configure.call_args_list
-        bg_values = [c.kwargs.get("background", "") for c in row_configure_calls
-                     if "background" in c.kwargs]
+        bg_values = [c.kwargs.get("background", "") for c in row_configure_calls if "background" in c.kwargs]
         assert any("15803d" in bg for bg in bg_values), (
             f"Expected green (#15803d) background, got: {bg_values}"
         )
@@ -204,9 +205,7 @@ class TestHandleRepairSetup:
         hw._win.after.assert_called()
         after_calls = hw._win.after.call_args_list
         delays = [c.args[0] for c in after_calls if c.args]
-        assert any(d >= 3000 for d in delays), (
-            f"Expected at least one after(...) delay >= 3 s, got: {delays}"
-        )
+        assert any(d >= 3000 for d in delays), f"Expected at least one after(...) delay >= 3 s, got: {delays}"
 
     def test_on_failure_row_shows_error_message(self):
         """On failure the banner shows the error message."""
@@ -223,9 +222,7 @@ class TestHandleRepairSetup:
 
         configure_calls = hw._setup_failure_label.configure.call_args_list
         texts = [c.kwargs.get("text", "") for c in configure_calls if "text" in c.kwargs]
-        assert any("registry write failed" in t for t in texts), (
-            f"Expected error text in label, got: {texts}"
-        )
+        assert any("registry write failed" in t for t in texts), f"Expected error text in label, got: {texts}"
 
     def test_on_failure_with_log_folder_rebinds_click(self):
         """When on_open_log_folder is set and repair fails, the label is rebound."""
@@ -271,6 +268,7 @@ class TestHandleRepairSetup:
 # ---------------------------------------------------------------------------
 # _refresh_repair_btn integration (sanity)
 # ---------------------------------------------------------------------------
+
 
 class TestRefreshRepairBtnIntegration:
     """Verify _refresh_repair_btn and _refresh_setup_failure_row stay in sync."""

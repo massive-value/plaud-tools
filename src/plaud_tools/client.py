@@ -66,11 +66,13 @@ class PlaudClient:
         detail = self._normalize_recording_detail(raw, recording_id)
         if include_transcript:
             segments = self._fetch_transcript_segments(raw)
-            detail.speakers = list(dict.fromkeys(
-                s.get("speaker") or s.get("original_speaker") or ""
-                for s in segments
-                if s.get("speaker") or s.get("original_speaker")
-            ))
+            detail.speakers = list(
+                dict.fromkeys(
+                    s.get("speaker") or s.get("original_speaker") or ""
+                    for s in segments
+                    if s.get("speaker") or s.get("original_speaker")
+                )
+            )
             detail.transcript = self._format_transcript_from_segments(segments)
         if include_summary and detail.is_summary and not detail.ai_content:
             detail.ai_content = self._fetch_summary_from_data_link(raw)
@@ -116,7 +118,9 @@ class PlaudClient:
             tz = timezone_offset
 
         presign = self._request_json(
-            "POST", "/file/get_upload_presigned_url", strict=True,
+            "POST",
+            "/file/get_upload_presigned_url",
+            strict=True,
             body={"filesize": len(data), "file_type": file_type},
         )
         presign_data = presign.get("data") or {}
@@ -124,7 +128,8 @@ class PlaudClient:
         upload_id = presign_data.get("upload_id")
         object_name = presign_data.get("object_name")
         if (
-            not isinstance(part_urls, list) or not part_urls
+            not isinstance(part_urls, list)
+            or not part_urls
             or not isinstance(upload_id, str)
             or not isinstance(object_name, str)
         ):
@@ -145,12 +150,16 @@ class PlaudClient:
             parts.append({"Etag": etag, "PartNumber": i + 1})
 
         self._request_json(
-            "POST", "/file/merge_multipart", strict=True,
+            "POST",
+            "/file/merge_multipart",
+            strict=True,
             body={"upload_id": upload_id, "object_name": object_name, "parts": parts},
         )
 
         confirm = self._request_json(
-            "POST", "/file/confirm_upload", strict=True,
+            "POST",
+            "/file/confirm_upload",
+            strict=True,
             body={
                 "upload_id": upload_id,
                 "object_name": object_name,
@@ -199,7 +208,9 @@ class PlaudClient:
             raise ValueError("filename cannot be empty")
 
         start = self._request_json(
-            "POST", "/file/combine", strict=True,
+            "POST",
+            "/file/combine",
+            strict=True,
             body={"file_ids": ids, "filename": filename},
         )
         task_id = str(start.get("task_id") or "")
@@ -215,13 +226,9 @@ class PlaudClient:
             task = poll.get("data") or {}
             if task.get("status") == "success":
                 file_raw = task.get("file") or {}
-                return self._normalize_recording_detail(
-                    file_raw, str(file_raw.get("file_id") or "")
-                )
+                return self._normalize_recording_detail(file_raw, str(file_raw.get("file_id") or ""))
             if task.get("status") == "error":
-                raise PlaudApiError(
-                    f"merge failed: {task.get('error_message') or 'unknown error'}"
-                )
+                raise PlaudApiError(f"merge failed: {task.get('error_message') or 'unknown error'}")
 
     def wait_for_transcription(
         self,
@@ -366,7 +373,7 @@ class PlaudClient:
 
     def get_task_status(self, recording_id: str | None = None) -> list[TaskStatus]:
         data = self._request_json("GET", "/ai/file-task-status", strict=True)
-        raw = ((data.get("data") or {}).get("file_status_list"))
+        raw = (data.get("data") or {}).get("file_status_list")
         items = raw if isinstance(raw, list) else []
         tasks = [
             TaskStatus(
@@ -504,7 +511,9 @@ class PlaudClient:
             is_summary=is_complete("auto_sum_note"),
             scene=raw.get("scene"),
             transcript="",
-            ai_content=self._extract_inline_summary(raw, auto_sum_item.get("data_id") if auto_sum_item else None),
+            ai_content=self._extract_inline_summary(
+                raw, auto_sum_item.get("data_id") if auto_sum_item else None
+            ),
             extra_data=raw.get("extra_data") or {},
             raw=raw,
         )

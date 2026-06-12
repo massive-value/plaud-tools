@@ -3,16 +3,16 @@
 PS1 scripts are validated with string assertions (content checks) and a
 PowerShell syntax smoke test via ``pwsh -NoProfile -Command``.
 """
+
 from __future__ import annotations
 
-import subprocess
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from plaud_tools.mcp_lifecycle import zip_layout_probe_ps1_snippet
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -28,6 +28,7 @@ def _read_install_ps1() -> str:
 # ---------------------------------------------------------------------------
 # install.ps1 — structural / content tests
 # ---------------------------------------------------------------------------
+
 
 def test_install_ps1_declares_force_switch():
     content = _read_install_ps1()
@@ -93,21 +94,22 @@ def test_install_ps1_syntax_valid():
     """Smoke: pwsh can parse the script without syntax errors."""
     result = subprocess.run(
         [
-            "pwsh", "-NoProfile", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-Command",
             f"Get-Content '{INSTALL_PS1}' -Raw | Out-Null",
         ],
         capture_output=True,
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, (
-        f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
 
 
 # ---------------------------------------------------------------------------
 # zip_layout_probe_ps1_snippet — unit tests
 # ---------------------------------------------------------------------------
+
 
 def test_probe_snippet_references_zip_var():
     snippet = zip_layout_probe_ps1_snippet("myZip", "myInstall", "myDest")
@@ -178,9 +180,7 @@ def test_probe_snippet_syntax_valid(tmp_path: Path):
     snippet = zip_layout_probe_ps1_snippet("zipPath", "installDir", "extractDir")
     ps1 = tmp_path / "probe_test.ps1"
     ps1.write_text(
-        "$zipPath = 'dummy.zip'\n$installDir = 'C:\\\\Programs\\\\PlaudTools'\n"
-        + snippet
-        + "\n",
+        "$zipPath = 'dummy.zip'\n$installDir = 'C:\\\\Programs\\\\PlaudTools'\n" + snippet + "\n",
         encoding="utf-8",
     )
     result = subprocess.run(
@@ -189,6 +189,4 @@ def test_probe_snippet_syntax_valid(tmp_path: Path):
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, (
-        f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"

@@ -1,4 +1,5 @@
 """Update check, in-app update dialog, and the download/install worker."""
+
 from __future__ import annotations
 
 import json
@@ -69,7 +70,7 @@ def _check_for_update() -> tuple[str, str, str | None] | None:
 class UpdateDialog:
     """Dialog that shows an available update and allows in-app install (frozen only)."""
 
-    def __init__(self, root: tk.Tk, app: "TrayApp") -> None:
+    def __init__(self, root: tk.Tk, app: TrayApp) -> None:
         self._root = root
         self._app = app
         self._win: tk.Toplevel | None = None
@@ -95,8 +96,9 @@ class UpdateDialog:
         frame = ttk.Frame(win, padding=20)
         frame.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="A new version of Plaud Tools is available.",
-                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(
+            frame, text="A new version of Plaud Tools is available.", font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 8))
 
         ttk.Label(frame, text=f"Current version:    {APP_VERSION}").pack(anchor="w")
         ttk.Label(frame, text=f"Available version:  {latest}").pack(anchor="w", pady=(0, 12))
@@ -141,6 +143,7 @@ class UpdateDialog:
                     fresh = _check_for_update()
                     fresh_zip = fresh[2] if fresh else None
                     if self._root:
+
                         def _apply(zu: str | None = fresh_zip) -> None:
                             if not win.winfo_exists():
                                 return
@@ -157,6 +160,7 @@ class UpdateDialog:
                                     state="normal",
                                     command=lambda: self._app._open_url(url),
                                 )
+
                         self._root.after(0, _apply)
 
                 threading.Thread(target=_refetch, daemon=True).start()
@@ -188,10 +192,13 @@ class UpdateDialog:
         def _on_error(err: Exception) -> None:
             logging.exception("in-app update download failed")
             if self._root:
-                self._root.after(0, lambda: (
-                    status_var.set(f"Download failed: {err}"),
-                    install_btn.config(state="normal"),
-                ))
+                self._root.after(
+                    0,
+                    lambda: (
+                        status_var.set(f"Download failed: {err}"),
+                        install_btn.config(state="normal"),
+                    ),
+                )
 
         try:
             req = urllib.request.Request(
@@ -200,12 +207,8 @@ class UpdateDialog:
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 content_length = resp.headers.get("Content-Length")
-                total_mb: float | None = (
-                    int(content_length) / (1024 * 1024) if content_length else None
-                )
-                tmp = tempfile.NamedTemporaryFile(
-                    suffix=".zip", delete=False, prefix="plaud_update_"
-                )
+                total_mb: float | None = int(content_length) / (1024 * 1024) if content_length else None
+                tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix="plaud_update_")
                 try:
                     downloaded = 0
                     chunk_size = 65536
@@ -252,9 +255,11 @@ class UpdateDialog:
             sentinel.write_text(new_version, encoding="utf-8")
 
             logging.info(
-                "in-app update: launching updater for v%s "
-                "(tray_pid=%s zip=%s dispatcher=%s)",
-                new_version, tray_pid, zip_path, ps_path,
+                "in-app update: launching updater for v%s (tray_pid=%s zip=%s dispatcher=%s)",
+                new_version,
+                tray_pid,
+                zip_path,
+                ps_path,
             )
 
             # CREATE_NO_WINDOW (not DETACHED_PROCESS) + explicit DEVNULL handles:
@@ -264,10 +269,15 @@ class UpdateDialog:
             # detaching, and DEVNULL handles are always valid.
             proc = subprocess.Popen(
                 [
-                    "powershell", "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass",
-                    "-WindowStyle", "Hidden",
-                    "-File", str(ps_path),
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    str(ps_path),
                 ],
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
                 stdin=subprocess.DEVNULL,
@@ -283,6 +293,7 @@ class UpdateDialog:
             rc = proc.poll()
             if rc is not None:
                 import json as _json
+
                 fail_msg = (
                     f"PowerShell exited immediately with code {rc} — "
                     "the update script may have been blocked by an enterprise "
@@ -290,12 +301,14 @@ class UpdateDialog:
                 )
                 logging.error("in-app update: %s", fail_msg)
                 fail_sentinel.write_text(
-                    _json.dumps({
-                        "reason": fail_msg,
-                        "log": str(ps_path),
-                        "time": "",
-                        "tray_pid": tray_pid,
-                    }),
+                    _json.dumps(
+                        {
+                            "reason": fail_msg,
+                            "log": str(ps_path),
+                            "time": "",
+                            "tray_pid": tray_pid,
+                        }
+                    ),
                     encoding="utf-8",
                 )
                 sentinel.unlink(missing_ok=True)

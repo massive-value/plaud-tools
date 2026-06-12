@@ -1,9 +1,10 @@
 """HomeWindow — tray left-click target with sign-out, test, repair, etc."""
+
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import ttk
-from typing import Callable
 
 from ... import __version__ as APP_VERSION
 from ..setup import APP_NAME, EnvStatus, _set_app_icon
@@ -19,10 +20,10 @@ class HomeWindow:
         on_open_wizard: Callable[[], None],
         on_sign_out: Callable[[], None],
         on_open_uninstall: Callable[[], None],
-        on_repair_setup: "Callable[[Callable[[bool, str], None]], None] | None",
+        on_repair_setup: Callable[[Callable[[bool, str], None]], None] | None,
         get_session_label: Callable[[], str],
-        get_update_info: Callable[[], "tuple[str, str, str | None] | None"],
-        get_env_status: "Callable[[], EnvStatus | None]",
+        get_update_info: Callable[[], tuple[str, str, str | None] | None],
+        get_env_status: Callable[[], EnvStatus | None],
         on_open_log_folder: Callable[[], None] | None = None,
         on_open_help: Callable[[], None] | None = None,
     ) -> None:
@@ -110,8 +111,9 @@ class HomeWindow:
             self._welcome_banner = banner
 
         self._session_var = tk.StringVar()
-        ttk.Label(frame, textvariable=self._session_var,
-                  font=("", 10, "bold"), wraplength=360).pack(anchor="w")
+        ttk.Label(frame, textvariable=self._session_var, font=("", 10, "bold"), wraplength=360).pack(
+            anchor="w"
+        )
         self._refresh_session()
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
@@ -119,53 +121,49 @@ class HomeWindow:
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill="x")
 
-        ttk.Button(btn_frame, text="Configure AI Agents…",
-                   command=self._handle_open_wizard).pack(fill="x", pady=(0, 6))
+        ttk.Button(btn_frame, text="Configure AI Agents…", command=self._handle_open_wizard).pack(
+            fill="x", pady=(0, 6)
+        )
 
-        self._test_btn = ttk.Button(btn_frame, text="Test Connection",
-                                     command=self._handle_test)
+        self._test_btn = ttk.Button(btn_frame, text="Test Connection", command=self._handle_test)
         self._test_btn.pack(fill="x", pady=(0, 6))
 
-        self._update_btn = ttk.Button(btn_frame, text="Check for Updates",
-                                       command=self._handle_check_update)
+        self._update_btn = ttk.Button(btn_frame, text="Check for Updates", command=self._handle_check_update)
         self._update_btn.pack(fill="x", pady=(0, 6))
         self._refresh_update_btn()
 
         # Repair setup button — shown only when _verify_env detects missing entries
-        self._repair_btn = ttk.Button(btn_frame, text="Repair setup",
-                                       command=self._handle_repair_setup)
+        self._repair_btn = ttk.Button(btn_frame, text="Repair setup", command=self._handle_repair_setup)
         self._refresh_repair_btn()
         self._refresh_setup_failure_row()
 
         if self._on_open_log_folder is not None:
-            ttk.Button(btn_frame, text="View Logs",
-                       command=self._on_open_log_folder).pack(fill="x", pady=(0, 6))
+            ttk.Button(btn_frame, text="View Logs", command=self._on_open_log_folder).pack(
+                fill="x", pady=(0, 6)
+            )
 
         if self._on_open_help is not None:
-            ttk.Button(btn_frame, text="Help / Visit website",
-                       command=self._on_open_help).pack(fill="x")
+            ttk.Button(btn_frame, text="Help / Visit website", command=self._on_open_help).pack(fill="x")
 
         self._status_var = tk.StringVar()
-        self._status_label = ttk.Label(frame, textvariable=self._status_var,
-                                        foreground="#15803d",
-                                        font=("Segoe UI", 9), wraplength=360)
+        self._status_label = ttk.Label(
+            frame, textvariable=self._status_var, foreground="#15803d", font=("Segoe UI", 9), wraplength=360
+        )
         self._status_label.pack(anchor="w", pady=(6, 0))
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
 
-        ttk.Button(frame, text="Sign out",
-                   command=self._handle_sign_out).pack(fill="x", pady=(0, 6))
+        ttk.Button(frame, text="Sign out", command=self._handle_sign_out).pack(fill="x", pady=(0, 6))
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(0, 6))
 
-        ttk.Button(frame, text="Uninstall…",
-                   command=self._handle_uninstall).pack(fill="x")
+        ttk.Button(frame, text="Uninstall…", command=self._handle_uninstall).pack(fill="x")
 
         footer = ttk.Frame(frame)
         footer.pack(fill="x", pady=(10, 0))
-        ttk.Label(footer, text=f"v{APP_VERSION}",
-                  foreground="#6b7280",
-                  font=("Segoe UI", 8)).pack(side="right")
+        ttk.Label(footer, text=f"v{APP_VERSION}", foreground="#6b7280", font=("Segoe UI", 8)).pack(
+            side="right"
+        )
 
         win.update_idletasks()
         win.geometry(f"400x{win.winfo_reqheight()}")
@@ -320,6 +318,7 @@ class HomeWindow:
                     self._setup_failure_row.configure(background="#15803d")
                     self._setup_failure_row.pack(fill="x", pady=(0, 10))
                     if self._win and self._win.winfo_exists():
+
                         def _dismiss_row() -> None:
                             self._refresh_setup_failure_row()
                             # Reset colour for next time the row might be shown.
@@ -327,6 +326,7 @@ class HomeWindow:
                                 self._setup_failure_row.configure(background="#b45309")
                             if self._setup_failure_label is not None:
                                 self._setup_failure_label.configure(background="#b45309")
+
                         self._win.after(4000, _dismiss_row)
             else:
                 # On failure: show the error in the row; add log-folder hint.

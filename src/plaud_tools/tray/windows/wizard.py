@@ -1,9 +1,10 @@
 """WizardWindow — connects/disconnects AI clients (Claude Desktop, etc.)."""
+
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import ttk
-from typing import Callable
 
 from ...ai_clients import CLIENTS, connect, disconnect, status_all
 from ..setup import APP_NAME, _mcp_exe, _set_app_icon
@@ -45,8 +46,9 @@ class WizardWindow:
         frame = ttk.Frame(win, padding=16)
         frame.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="Connect Plaud to your AI clients:",
-                  font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(frame, text="Connect Plaud to your AI clients:", font=("", 9, "bold")).pack(
+            anchor="w", pady=(0, 4)
+        )
 
         rows_frame = ttk.Frame(frame)
         rows_frame.pack(fill="x")
@@ -64,16 +66,16 @@ class WizardWindow:
             self._row_widgets[cid] = {"badge": badge, "badge_var": badge_var, "btn": btn}
 
         self._help_var = tk.StringVar()
-        help_label = ttk.Label(frame, textvariable=self._help_var,
-                               foreground="#15803d", wraplength=420, justify="left")
+        help_label = ttk.Label(
+            frame, textvariable=self._help_var, foreground="#15803d", wraplength=420, justify="left"
+        )
         help_label.pack(anchor="w", pady=(8, 0))
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
 
         action_row = ttk.Frame(frame)
         action_row.pack(fill="x")
-        ttk.Button(action_row, text="Close",
-                   command=win.destroy).pack(side="right")
+        ttk.Button(action_row, text="Close", command=win.destroy).pack(side="right")
 
         win.lift()
         win.focus_force()
@@ -92,27 +94,25 @@ class WizardWindow:
         if not widgets:
             return
         text, color = _STATUS_BADGE.get(status, ("unknown", "#6b7280"))
-        widgets["badge_var"].set(text)        # type: ignore[union-attr]
+        widgets["badge_var"].set(text)  # type: ignore[union-attr]
         widgets["badge"].configure(foreground=color)  # type: ignore[union-attr]
 
-        btn: ttk.Button = widgets["btn"]      # type: ignore[assignment]
+        btn: ttk.Button = widgets["btn"]  # type: ignore[assignment]
         if status == "not-detected":
             btn.configure(text="—", state="disabled", command=lambda: None)
         elif status == "connected":
-            btn.configure(text="Disconnect", state="normal",
-                          command=lambda c=cid: self._do(c, "disconnect", mcp))
+            btn.configure(
+                text="Disconnect", state="normal", command=lambda c=cid: self._do(c, "disconnect", mcp)
+            )
         elif status == "stale":
-            btn.configure(text="Reconnect", state="normal",
-                          command=lambda c=cid: self._do(c, "connect", mcp))
+            btn.configure(text="Reconnect", state="normal", command=lambda c=cid: self._do(c, "connect", mcp))
         else:  # not-connected
-            btn.configure(text="Connect", state="normal",
-                          command=lambda c=cid: self._do(c, "connect", mcp))
+            btn.configure(text="Connect", state="normal", command=lambda c=cid: self._do(c, "connect", mcp))
 
     def _do(self, cid: str, action: str, mcp: str) -> None:
         widgets = self._row_widgets[cid]
-        btn: ttk.Button = widgets["btn"]      # type: ignore[assignment]
-        btn.configure(state="disabled",
-                      text="Connecting…" if action == "connect" else "Disconnecting…")
+        btn: ttk.Button = widgets["btn"]  # type: ignore[assignment]
+        btn.configure(state="disabled", text="Connecting…" if action == "connect" else "Disconnecting…")
         try:
             if action == "connect":
                 connect(cid, mcp)

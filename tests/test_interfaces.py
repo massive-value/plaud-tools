@@ -13,36 +13,41 @@ class StubClient:
     def list_recordings(self, query=None):
         if query is not None:
             assert query.limit == 2
-        return [
-            Recording(
-                id="r1",
-                filename="meeting",
-                start_time=1_746_000_000_000,
-                duration=600_000,
-                is_trans=True,
-                filetag_id_list=["tag1"],
-            )
-        ] if query is not None else [
-            Recording(
-                id="r1",
-                filename="Q4 Review",
-                start_time=1_746_000_000_000,
-                duration=600_000,
-                is_trans=True,
-                filetag_id_list=["tag1"],
-            ),
-            Recording(
-                id="r2",
-                filename="Lunch Chat",
-                start_time=1_745_000_000_000,
-                duration=300_000,
-                is_trans=False,
-                filetag_id_list=[],
-            ),
-        ]
+        return (
+            [
+                Recording(
+                    id="r1",
+                    filename="meeting",
+                    start_time=1_746_000_000_000,
+                    duration=600_000,
+                    is_trans=True,
+                    filetag_id_list=["tag1"],
+                )
+            ]
+            if query is not None
+            else [
+                Recording(
+                    id="r1",
+                    filename="Q4 Review",
+                    start_time=1_746_000_000_000,
+                    duration=600_000,
+                    is_trans=True,
+                    filetag_id_list=["tag1"],
+                ),
+                Recording(
+                    id="r2",
+                    filename="Lunch Chat",
+                    start_time=1_745_000_000_000,
+                    duration=300_000,
+                    is_trans=False,
+                    filetag_id_list=[],
+                ),
+            ]
+        )
 
     def merge_recordings(self, ids: list[str], filename: str):
         from plaud_tools.models import RecordingDetail
+
         return RecordingDetail(
             id="merged1",
             filename=filename,
@@ -61,7 +66,18 @@ class StubClient:
 
     def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
         from plaud_tools.models import Recording
-        return Recording(id="uploaded1", filename=filename, start_time=start_time or 0, duration=0, is_trash=False, is_trans=False, is_summary=False, filetag_id_list=[], raw={})
+
+        return Recording(
+            id="uploaded1",
+            filename=filename,
+            start_time=start_time or 0,
+            duration=0,
+            is_trash=False,
+            is_trans=False,
+            is_summary=False,
+            filetag_id_list=[],
+            raw={},
+        )
 
     def get_recording(self, recording_id, include_transcript=False, include_summary=False):
         return RecordingDetail(
@@ -123,7 +139,9 @@ class StubClient:
     def dump_raw_detail(self, recording_id):
         return {"file_id": recording_id, "file_name": "meeting", "content_list": [], "extra_data": {}}
 
-    def transcribe_and_summarize(self, recording_id, template_type=None, language=None, diarization=None, llm=None):
+    def transcribe_and_summarize(
+        self, recording_id, template_type=None, language=None, diarization=None, llm=None
+    ):
         self.transcribe_call = (recording_id, template_type, language, diarization, llm)
 
     def get_task_status(self, recording_id=None):
@@ -147,8 +165,10 @@ class StubClient:
 
 # --- CLI tests ---
 
+
 def test_cli_list_shapes_output():
     from datetime import datetime
+
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
     output = run_cli(["list", "--limit", "2"], StubClient())
     payload = json.loads(output)
@@ -201,6 +221,7 @@ def test_cli_list_filters_query_and_unfiled():
 
 def test_cli_trash_no_arg_lists_trash():
     from datetime import datetime
+
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
     output = run_cli(["trash"], StubClient())
     payload = json.loads(output)
@@ -234,6 +255,7 @@ def test_cli_restore_single_recording():
 
 def test_cli_delete_requires_yes_flag():
     import pytest
+
     with pytest.raises(ValueError, match="--yes"):
         run_cli(["delete", "rec1"], StubClient())
 
@@ -286,6 +308,7 @@ def test_cli_move_to_folder_supports_clear():
 
 def test_cli_trash_list_returns_curated_items():
     from datetime import datetime
+
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
     output = run_cli(["trash"], StubClient())
     payload = json.loads(output)
@@ -362,9 +385,20 @@ def test_cli_status_returns_task_list():
 
 
 def test_cli_session_set_and_show(tmp_path: Path):
-    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-cli", account_name="session")
+    store = SessionStore(
+        tmp_path / "session.json", service_name="plaud-tools-test-cli", account_name="session"
+    )
     set_output = run_cli(
-        ["session", "set", "--token", "header.payload.signature", "--region", "eu", "--email", "test@example.com"],
+        [
+            "session",
+            "set",
+            "--token",
+            "header.payload.signature",
+            "--region",
+            "eu",
+            "--email",
+            "test@example.com",
+        ],
         session_store=store,
     )
     set_payload = json.loads(set_output)
@@ -379,7 +413,9 @@ def test_cli_session_set_and_show(tmp_path: Path):
 
 
 def test_cli_session_show_returns_none_when_missing(tmp_path: Path):
-    store = SessionStore(tmp_path / "missing.json", service_name="plaud-tools-test-cli-missing", account_name="session")
+    store = SessionStore(
+        tmp_path / "missing.json", service_name="plaud-tools-test-cli-missing", account_name="session"
+    )
     output = run_cli(["session", "show"], session_store=store)
     payload = json.loads(output)
     assert payload["session"] is None
@@ -396,7 +432,9 @@ class StubAuth:
 
 def test_cli_login_uses_auth_and_returns_stored_shape(tmp_path: Path):
     auth = StubAuth()
-    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-login", account_name="session")
+    store = SessionStore(
+        tmp_path / "session.json", service_name="plaud-tools-test-login", account_name="session"
+    )
     output = run_cli(
         ["login", "--email", "user@example.com", "--password", "pw", "--region", "eu"],
         session_store=store,
@@ -438,7 +476,9 @@ def test_cli_main_returns_nonzero_on_missing_session(capsys, monkeypatch, tmp_pa
     monkeypatch.delenv("PLAUD_EMAIL", raising=False)
     monkeypatch.setattr(
         "plaud_tools.cli.SessionStore",
-        lambda: SessionStore(tmp_path / "missing.json", service_name="plaud-tools-test-main", account_name="session"),
+        lambda: SessionStore(
+            tmp_path / "missing.json", service_name="plaud-tools-test-main", account_name="session"
+        ),
     )
     code = main(["list"])
     assert code == 1
@@ -447,6 +487,7 @@ def test_cli_main_returns_nonzero_on_missing_session(capsys, monkeypatch, tmp_pa
 
 
 # --- MCP tests ---
+
 
 def test_mcp_browse_recordings_returns_curated_list():
     handlers = build_handlers(lambda: StubClient())
@@ -513,6 +554,7 @@ def test_mcp_browse_recordings_next_after_set_when_full_page():
         def list_recordings(self, query=None):
             # Return enough items to fill a limit=1 page when filtered by folder
             from plaud_tools.models import Recording
+
             return [
                 Recording(
                     id=f"r{i}",
@@ -538,6 +580,7 @@ def test_mcp_browse_recordings_pagination_cursor_advances():
     class ManyRecordingsClient(StubClient):
         def list_recordings(self, query=None):
             from plaud_tools.models import Recording
+
             return [
                 Recording(
                     id=f"r{i}",
@@ -743,6 +786,7 @@ def test_mcp_mutate_recording_rename_missing_new_name():
 
 # --- CLI upload / merge tests ---
 
+
 class UploadStubClient(StubClient):
     def __init__(self):
         self.upload_call = None
@@ -802,6 +846,7 @@ def test_cli_upload_with_title_and_detach(tmp_path):
 
 def test_cli_upload_missing_file_raises(tmp_path):
     import pytest
+
     client = UploadStubClient()
     with pytest.raises(ValueError, match="file not found"):
         run_cli(["upload", str(tmp_path / "missing.mp3")], client)
@@ -818,6 +863,7 @@ def test_cli_merge_calls_merge_and_returns_result(tmp_path):
 
 
 # --- MCP upload_recording / process_recording tests ---
+
 
 class MutateStub(StubClient):
     def __init__(self):
@@ -954,6 +1000,7 @@ def test_mcp_upload_recording_passes_timestamp(tmp_path):
 
 # --- new tests for items added this session ---
 
+
 def test_cli_upload_skip_summary_does_not_call_wait_for_summary(tmp_path):
     mp3_file = tmp_path / "test.mp3"
     mp3_file.write_bytes(b"fake mp3 data")
@@ -1019,7 +1066,7 @@ def test_cli_dump_returns_raw_json():
 
 def test_extract_inline_summary_handles_dict_data_content():
     from plaud_tools.client import PlaudClient
-    from plaud_tools.session import SessionStore, SessionManager
+    from plaud_tools.session import SessionManager, SessionStore
 
     client = PlaudClient(SessionManager(SessionStore()))
     raw = {
@@ -1034,14 +1081,18 @@ def test_extract_inline_summary_handles_dict_data_content():
 
 def test_extract_inline_summary_fallback_by_data_type():
     from plaud_tools.client import PlaudClient
-    from plaud_tools.session import SessionStore, SessionManager
+    from plaud_tools.session import SessionManager, SessionStore
 
     client = PlaudClient(SessionManager(SessionStore()))
     raw = {
         "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
         "pre_download_content_list": [
             # data_id doesn't match "d1" — should fall back to data_type match
-            {"data_id": "d99", "data_type": "auto_sum_note", "data_content": '{"ai_content": "fallback summary"}'}
+            {
+                "data_id": "d99",
+                "data_type": "auto_sum_note",
+                "data_content": '{"ai_content": "fallback summary"}',
+            }
         ],
     }
     result = client._extract_inline_summary(raw, "d1")
@@ -1050,7 +1101,7 @@ def test_extract_inline_summary_fallback_by_data_type():
 
 def test_fetch_summary_from_data_link_handles_plain_text():
     from plaud_tools.client import PlaudClient
-    from plaud_tools.session import SessionStore, SessionManager
+    from plaud_tools.session import SessionManager, SessionStore
     from plaud_tools.transport import HttpResponse
 
     class PlainTextTransport:
@@ -1059,7 +1110,13 @@ def test_fetch_summary_from_data_link_handles_plain_text():
 
     client = PlaudClient(SessionManager(SessionStore()), transport=PlainTextTransport())
     raw = {
-        "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_link": "https://cdn.example.com/summary.txt"}]
+        "content_list": [
+            {
+                "data_type": "auto_sum_note",
+                "task_status": 1,
+                "data_link": "https://cdn.example.com/summary.txt",
+            }
+        ]
     }
     result = client._fetch_summary_from_data_link(raw)
     assert result == "# My Summary\n\nContent here."

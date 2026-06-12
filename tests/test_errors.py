@@ -5,21 +5,19 @@ Acceptance criteria:
 - PlaudApiError.classify() -> tuple[str, bool] encodes 404/429/5xx mapping
 - Old _http_error_to_api_error and _classify_api_error symbols are completely removed
 """
+
 from __future__ import annotations
 
-import importlib
 import io
 import json
 from urllib.error import HTTPError
 
-import pytest
-
 from plaud_tools.errors import PlaudApiError
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a urllib.error.HTTPError with a readable body
 # ---------------------------------------------------------------------------
+
 
 def _make_http_error(status: int, body: bytes, content_type: str = "application/json") -> HTTPError:
     headers = {"Content-Type": content_type}
@@ -30,6 +28,7 @@ def _make_http_error(status: int, body: bytes, content_type: str = "application/
 # ---------------------------------------------------------------------------
 # PlaudApiError.from_http_error classmethod
 # ---------------------------------------------------------------------------
+
 
 class TestFromHttpError:
     def test_json_envelope_with_msg(self):
@@ -121,6 +120,7 @@ class TestFromHttpError:
 # PlaudApiError.classify() method
 # ---------------------------------------------------------------------------
 
+
 class TestClassify:
     def _make_err(self, http_status: int | None) -> PlaudApiError:
         return PlaudApiError("some error", http_status=http_status)
@@ -175,10 +175,12 @@ class TestClassify:
 # Deletion test: old symbols must NOT exist
 # ---------------------------------------------------------------------------
 
+
 class TestOldSymbolsDeleted:
     def test_http_error_to_api_error_gone_from_transport(self):
         """_http_error_to_api_error must not be importable from transport."""
         import plaud_tools.transport as transport_mod
+
         assert not hasattr(transport_mod, "_http_error_to_api_error"), (
             "_http_error_to_api_error still exists in transport — delete it"
         )
@@ -186,6 +188,7 @@ class TestOldSymbolsDeleted:
     def test_classify_api_error_gone_from_mcp(self):
         """_classify_api_error must not be importable from mcp."""
         import plaud_tools.mcp as mcp_mod
+
         assert not hasattr(mcp_mod, "_classify_api_error"), (
             "_classify_api_error still exists in mcp — delete it"
         )

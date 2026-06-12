@@ -11,21 +11,20 @@ Also covers snapshot tests for the rendered PS1 dispatcher output, asserting
 that rendered scripts reference only the supplied install directory and contain
 no stray install-dir references.
 """
+
 from __future__ import annotations
 
-import importlib
-import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helper: patch Path.home reliably across Python versions
 # ---------------------------------------------------------------------------
+
 
 def _patch_home(monkeypatch, tray_helpers, home_path: Path) -> Path:
     """Redirect ``Path.home()``, simulate a frozen bundle, and return the
@@ -69,6 +68,7 @@ def _patch_home(monkeypatch, tray_helpers, home_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Helpers: build a minimal winreg stub so tests run on non-Windows CI
 # ---------------------------------------------------------------------------
+
 
 class _FakeRegKey:
     """Minimal in-memory winreg key stub."""
@@ -125,6 +125,7 @@ def _make_winreg_stub(initial_path: str = "") -> types.ModuleType:
 # Fixture: import tray_app helpers without running the tray (no display needed)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def tray_helpers():
     """Return the tray_app module with heavy GUI deps stubbed out."""
@@ -138,12 +139,14 @@ def tray_helpers():
     }
     with patch.dict(sys.modules, stubs):
         import plaud_tools.tray_app as tray_app
+
         yield tray_app
 
 
 # ---------------------------------------------------------------------------
 # _cli_dir / _completions_dir  (dev-mode → None)
 # ---------------------------------------------------------------------------
+
 
 class TestCliDir:
     def test_returns_none_when_not_frozen(self, tray_helpers):
@@ -165,6 +168,7 @@ class TestCliDir:
 # ---------------------------------------------------------------------------
 # _setup_cli_path
 # ---------------------------------------------------------------------------
+
 
 class TestSetupCliPath:
     """Tests for _setup_cli_path — idempotent PATH injection via fake winreg."""
@@ -199,9 +203,7 @@ class TestSetupCliPath:
         assert cli in stored
 
     def test_adds_cli_to_existing_path(self, tray_helpers, tmp_path, monkeypatch):
-        stored, cli = self._run_setup(
-            tray_helpers, tmp_path, r"C:\Windows\system32", monkeypatch
-        )
+        stored, cli = self._run_setup(tray_helpers, tmp_path, r"C:\Windows\system32", monkeypatch)
         assert cli in stored
         assert r"C:\Windows\system32" in stored
 
@@ -209,9 +211,7 @@ class TestSetupCliPath:
         cli_dir = tmp_path / "cli"
         cli_dir.mkdir()
         # First call
-        stored1, cli = self._run_setup(
-            tray_helpers, tmp_path, "", monkeypatch
-        )
+        stored1, cli = self._run_setup(tray_helpers, tmp_path, "", monkeypatch)
         assert stored1.count(cli) == 1
         # Second call — should not double-add
         monkeypatch.setattr(tray_helpers, "_cli_dir", lambda: cli_dir)
@@ -257,6 +257,7 @@ class TestSetupCliPath:
 # ---------------------------------------------------------------------------
 # _remove_cli_path
 # ---------------------------------------------------------------------------
+
 
 class TestRemoveCliPath:
     """Tests for _remove_cli_path — removes cli entry from PATH via fake winreg."""
@@ -320,6 +321,7 @@ class TestRemoveCliPath:
 # ---------------------------------------------------------------------------
 # _setup_ps_completions
 # ---------------------------------------------------------------------------
+
 
 class TestSetupPsCompletions:
     """Tests for _setup_ps_completions — injects source line into PS profiles."""
@@ -410,6 +412,7 @@ class TestSetupPsCompletions:
 # _remove_ps_completions
 # ---------------------------------------------------------------------------
 
+
 class TestRemovePsCompletions:
     """Tests for _remove_ps_completions — removes all plaud sourcing lines."""
 
@@ -488,6 +491,7 @@ class TestRemovePsCompletions:
 # _delete_session_files
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteSessionFiles:
     """Tests for _delete_session_files — deletes stored credentials."""
 
@@ -526,6 +530,7 @@ class TestDeleteSessionFiles:
 # ---------------------------------------------------------------------------
 # _delete_log_files
 # ---------------------------------------------------------------------------
+
 
 class TestDeleteLogFiles:
     """Tests for _delete_log_files — removes tray.log* from both log dirs."""
@@ -593,6 +598,7 @@ class TestDeleteLogFiles:
 # ---------------------------------------------------------------------------
 # Snapshot / isolation tests for rendered PS1 dispatchers
 # ---------------------------------------------------------------------------
+
 
 class TestRenderedPs1NoStrayPaths:
     """Assert rendered dispatcher strings reference only the supplied install dir."""
@@ -675,11 +681,13 @@ class TestRenderedPs1NoStrayPaths:
 # Snapshot: rendered update dispatcher matches expected structure
 # ---------------------------------------------------------------------------
 
+
 class TestRenderUpdatePs1Snapshot:
     """Structural snapshot tests for the rendered update dispatcher."""
 
     def _render(self, **kwargs):
         from plaud_tools.ps1_templates import render_update_ps1
+
         defaults = dict(
             tray_pid=1234,
             install_dir=r"C:\Programs\PlaudTools",
@@ -692,7 +700,7 @@ class TestRenderUpdatePs1Snapshot:
     def test_rendered_is_single_line_invocation(self):
         result = self._render()
         # Dispatcher is a single & 'script' -Param value ... invocation
-        stripped_lines = [l for l in result.splitlines() if l.strip()]
+        stripped_lines = [line for line in result.splitlines() if line.strip()]
         assert len(stripped_lines) == 1
 
     def test_rendered_starts_with_call_operator(self):
@@ -726,6 +734,7 @@ class TestRenderUninstallPs1Snapshot:
 
     def _render(self, **kwargs):
         from plaud_tools.ps1_templates import render_uninstall_ps1
+
         defaults = dict(
             tray_pid=999,
             install_dir=r"C:\Programs\PlaudTools",

@@ -3,6 +3,7 @@
 Collects local install state and outputs a single JSON document useful for
 filing support issues. Token values are never included — only masked metadata.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,10 +21,10 @@ from .errors import PlaudSessionExpiredError
 from .layout import InstallLayout
 from .session import SessionManager, SessionStore
 
-
 # ---------------------------------------------------------------------------
 # Install-dir / executable resolution (delegated to InstallLayout)
 # ---------------------------------------------------------------------------
+
 
 def _install_dir() -> Path:
     """Return the root directory of the current installation.
@@ -50,9 +51,7 @@ def _mcp_exe_path() -> Path | None:
     if layout.mcp_exe is not None:
         return layout.mcp_exe
     # Dev fallback: PyInstaller onedir output next to repo root
-    return (
-        Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe"
-    )
+    return Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe"
 
 
 def _ffmpeg_path() -> Path:
@@ -70,6 +69,7 @@ def _ffmpeg_path() -> Path:
 # ---------------------------------------------------------------------------
 # Individual section builders
 # ---------------------------------------------------------------------------
+
 
 def _executables_section() -> dict[str, Any]:
     cli = _cli_exe_path()
@@ -165,6 +165,7 @@ def _ai_clients_section() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def run_doctor(store: SessionStore | None = None) -> dict[str, Any]:
     """Return the doctor JSON document as a dict (no I/O)."""

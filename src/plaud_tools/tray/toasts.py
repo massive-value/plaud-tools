@@ -11,26 +11,29 @@ versions attempted the import per call and logged the ImportError traceback
 at DEBUG level, which produced multi-line tracebacks in ``tray.log`` for
 every toast on bundles without ``winrt``.
 """
+
 from __future__ import annotations
 
 import logging
 import subprocess
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 from .setup import APP_NAME
-
 
 # ---------------------------------------------------------------------------
 # One-shot winrt detection
 # ---------------------------------------------------------------------------
 
 try:
-    from winrt.windows.ui.notifications import (  # type: ignore[import]
-        ToastNotificationManager as _WINRT_TNM,
+    from winrt.windows.data.xml.dom import XmlDocument as _WINRT_XML  # type: ignore[import]
+    from winrt.windows.ui.notifications import (
         ToastNotification as _WINRT_TN,
     )
-    from winrt.windows.data.xml.dom import XmlDocument as _WINRT_XML  # type: ignore[import]
+    from winrt.windows.ui.notifications import (  # type: ignore[import]
+        ToastNotificationManager as _WINRT_TNM,
+    )
+
     _WINRT_AVAILABLE = True
 except Exception:
     _WINRT_TNM = None  # type: ignore[assignment]
@@ -78,16 +81,16 @@ def _show_powershell_toast(title: str, message: str, info_log: str) -> None:
         return
     try:
         ps_script = (
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null\n"  # noqa: E501
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null\n"  # noqa: E501
             "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
             "$xml.LoadXml('<toast>"
-            "<visual><binding template=\"ToastGeneric\">"
+            '<visual><binding template="ToastGeneric">'
             f"<text>{title}</text>"
             f"<text>{message}</text>"
             "</binding></visual></toast>')\n"
             "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
-            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"
+            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PlaudTools.TrayApp')\n"  # noqa: E501
             "$notifier.Show($toast)\n"
         )
         subprocess.Popen(
@@ -104,7 +107,7 @@ def _show_powershell_toast(title: str, message: str, info_log: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
+def _show_session_expired_toast(on_click: Callable | None = None) -> None:
     """Show a Windows toast notifying the user their Plaud session expired.
 
     Clicking the toast invokes the COM activator (issue #83), which signals
@@ -121,10 +124,7 @@ def _show_session_expired_toast(on_click: "Callable | None" = None) -> None:
 def _show_install_toast() -> None:
     """Show a Windows 11 toast notification explaining the tray icon."""
     title = APP_NAME
-    message = (
-        "PlaudTools is now running in your system tray — "
-        "click the icon to sign in."
-    )
+    message = "PlaudTools is now running in your system tray — click the icon to sign in."
     if _show_winrt_toast(title, message, "First-run toast shown via winrt"):
         return
     _show_powershell_toast(title, message, "First-run toast dispatched via PowerShell")

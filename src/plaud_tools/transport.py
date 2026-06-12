@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import socket
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.error import HTTPError, URLError
@@ -81,7 +80,7 @@ class UrllibTransport:
                 )
         except HTTPError as exc:
             raise PlaudApiError.from_http_error(exc) from exc
-        except (TimeoutError, socket.timeout) as exc:
+        except TimeoutError as exc:
             # socket.timeout is a subclass of OSError on Python 3.11+ but may
             # NOT be a URLError — catch it explicitly so callers always get a
             # PlaudApiError rather than a raw socket exception.

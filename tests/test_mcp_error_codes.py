@@ -1,26 +1,25 @@
 """Tests for issue #33 — structured MCP error codes + session_expired tray toast."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
 from plaud_tools.mcp import (
     _diagnose_session_state,
-    _emit_session_expired,
     _error_result,
-    _json_result,
     _write_event,
     build_handlers,
 )
 
-
 # ---------------------------------------------------------------------------
 # PlaudApiError.classify() mapping (formerly _classify_api_error in mcp.py)
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyApiError:
     """Verify that HTTP status codes map to the correct error codes."""
@@ -73,6 +72,7 @@ class TestClassifyApiError:
 # _error_result structure
 # ---------------------------------------------------------------------------
 
+
 class TestErrorResult:
     def test_contains_error_code_and_retryable(self):
         result = _error_result("oops", error_code="not_found", retryable=False)
@@ -96,6 +96,7 @@ class TestErrorResult:
 # ---------------------------------------------------------------------------
 # Handler-level error propagation via _call
 # ---------------------------------------------------------------------------
+
 
 def _make_handlers(side_effect):
     """Build handlers with a get_client that always returns a client that raises side_effect."""
@@ -168,6 +169,7 @@ class TestCallErrorPropagation:
 # Inline validation errors in handlers use structured codes
 # ---------------------------------------------------------------------------
 
+
 class TestMutateRecordingValidation:
     def _handlers(self):
         mock_client = MagicMock()
@@ -204,6 +206,7 @@ class TestProcessRecordingValidation:
 # ---------------------------------------------------------------------------
 # _write_event writes session_expired events to file
 # ---------------------------------------------------------------------------
+
 
 class TestWriteEvent:
     def test_writes_session_expired_event(self, tmp_path, monkeypatch):
@@ -269,6 +272,7 @@ class TestWriteEvent:
 # Session diagnostics (issue #78) — _diagnose_session_state / _emit_session_expired
 # ---------------------------------------------------------------------------
 
+
 class TestDiagnoseSessionState:
     """The diagnostic snapshot must include identifying metadata without leaking the token."""
 
@@ -327,6 +331,7 @@ class TestDiagnoseSessionState:
 # Tray: _show_session_expired_toast is called when event is consumed
 # ---------------------------------------------------------------------------
 
+
 class TestTraySessionExpiredToast:
     """Verify that the tray event poll loop calls _show_session_expired_toast."""
 
@@ -350,6 +355,7 @@ class TestTraySessionExpiredToast:
         monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
 
         import plaud_tools.tray_app as tray_app
+
         tray_app._show_session_expired_toast()
 
         mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
@@ -358,10 +364,12 @@ class TestTraySessionExpiredToast:
     def test_show_session_expired_toast_powershell_fallback(self, monkeypatch):
         """Without winrt, a hidden PowerShell process is spawned."""
         import sys
+
         if sys.platform != "win32":
             pytest.skip("PowerShell fallback is Windows-only")
 
         from plaud_tools.tray import toasts
+
         monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         spawned: list[tuple] = []
@@ -373,6 +381,7 @@ class TestTraySessionExpiredToast:
         monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", fake_popen)
 
         import plaud_tools.tray_app as tray_app
+
         tray_app._show_session_expired_toast()
 
         assert any("powershell" in a[0].lower() for a in spawned)
@@ -380,10 +389,12 @@ class TestTraySessionExpiredToast:
     def test_show_session_expired_toast_no_exception_on_failure(self, monkeypatch):
         """_show_session_expired_toast must never propagate exceptions."""
         import sys
+
         if sys.platform != "win32":
             pytest.skip("PowerShell fallback is Windows-only")
 
         from plaud_tools.tray import toasts
+
         monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         def boom(*a, **kw):
@@ -392,15 +403,14 @@ class TestTraySessionExpiredToast:
         monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", boom)
 
         import plaud_tools.tray_app as tray_app
+
         # Should not raise
         tray_app._show_session_expired_toast()
 
     def test_event_poll_loop_calls_toast_on_session_expired(self, tmp_path, monkeypatch):
         """_event_poll_loop reads events.jsonl, fires toast, and opens LoginWindow."""
-        import sys
-        import time
         import json
-        import threading
+        import time
 
         # Write a session_expired event to a temp events file
         events_file = tmp_path / "events.jsonl"
@@ -445,6 +455,7 @@ class TestTraySessionExpiredToast:
 # ---------------------------------------------------------------------------
 # _write_event size-based rotation (Wave 0 / A4)
 # ---------------------------------------------------------------------------
+
 
 class TestWriteEventRotation:
     """Verify that _write_event rotates events.jsonl → events.jsonl.1 past the cap.
@@ -510,9 +521,7 @@ class TestWriteEventRotation:
 
         assert rotated.exists()
         # The stale content must be gone — .1 now holds the pre-rotation file.
-        assert rotated.read_bytes() != stale_content, (
-            "events.jsonl.1 should have been replaced by os.replace"
-        )
+        assert rotated.read_bytes() != stale_content, "events.jsonl.1 should have been replaced by os.replace"
         assert rotated.stat().st_size == mcp_mod._EVENTS_MAX_BYTES
 
         lines = events_file.read_text(encoding="utf-8").splitlines()
@@ -527,8 +536,8 @@ class TestWriteEventRotation:
         even if the rotation fails the append can still succeed.  But the key
         guarantee — no exception escapes — must hold regardless.
         """
-        from plaud_tools import mcp as mcp_mod
         import plaud_tools.mcp as _mcp_module
+        from plaud_tools import mcp as mcp_mod
 
         events_file = tmp_path / "events.jsonl"
         monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)

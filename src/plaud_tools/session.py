@@ -67,9 +67,7 @@ def _dpapi_protect(plaintext: bytes) -> bytes:
     buf = ctypes.create_string_buffer(plaintext, len(plaintext))
     blob_in = _DATA_BLOB(len(plaintext), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte)))
     blob_out = _DATA_BLOB()
-    if not crypt32.CryptProtectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
+    if not crypt32.CryptProtectData(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
         raise ctypes.WinError()
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
@@ -168,7 +166,11 @@ class SessionStore:
         session, _ = self.load_with_source()
         return session
 
-    def load_with_source(self) -> tuple[PlaudSession | None, Literal["env", "keyring", "legacy_keyring", "dpapi_file", "file", "missing"]]:
+    def load_with_source(
+        self,
+    ) -> tuple[
+        PlaudSession | None, Literal["env", "keyring", "legacy_keyring", "dpapi_file", "file", "missing"]
+    ]:
         env_token = os.getenv("PLAUD_ACCESS_TOKEN")
         if env_token:
             return (
@@ -282,7 +284,10 @@ class SessionStore:
                     log.warning(
                         "keyring.get_password raised on attempt %d of %d for service=%r "
                         "account=%r; retrying in %.3fs",
-                        attempt, total, self.service_name, self.account_name,
+                        attempt,
+                        total,
+                        self.service_name,
+                        self.account_name,
                         delay,
                         exc_info=True,
                     )
@@ -291,7 +296,10 @@ class SessionStore:
                 log.warning(
                     "keyring.get_password raised on final attempt %d of %d for service=%r "
                     "account=%r; giving up",
-                    attempt, total, self.service_name, self.account_name,
+                    attempt,
+                    total,
+                    self.service_name,
+                    self.account_name,
                     exc_info=True,
                 )
                 return None
@@ -302,7 +310,10 @@ class SessionStore:
                 log.warning(
                     "keyring.get_password returned None on attempt %d of %d for service=%r "
                     "account=%r; retrying in %.3fs",
-                    attempt, total, self.service_name, self.account_name,
+                    attempt,
+                    total,
+                    self.service_name,
+                    self.account_name,
                     delay,
                 )
                 sleep(delay)
@@ -407,7 +418,10 @@ class SessionStore:
                     )
         log.info(
             "Migrated plaud-toolkit credentials to service=%r account=%r (email=%s region=%s)",
-            self.service_name, self.account_name, session.email, session.region,
+            self.service_name,
+            self.account_name,
+            session.email,
+            session.region,
         )
 
     def _save_to_keyring(self, session: PlaudSession) -> bool:
@@ -424,7 +438,8 @@ class SessionStore:
             # log line tells us a keyring backend bug exists.
             log.warning(
                 "keyring.set_password failed for service=%r account=%r; falling back to file store",
-                self.service_name, self.account_name,
+                self.service_name,
+                self.account_name,
                 exc_info=True,
             )
             return False

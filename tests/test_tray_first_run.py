@@ -1,15 +1,16 @@
 """Tests for issue #27 — first-run welcome (HomeWindow banner + Windows toast)."""
+
 from __future__ import annotations
 
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # _show_install_toast
 # ---------------------------------------------------------------------------
+
 
 class TestShowInstallToast:
     """Unit tests for _show_install_toast() — the sentinel-driven toast helper."""
@@ -35,6 +36,7 @@ class TestShowInstallToast:
         monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
 
         from plaud_tools import tray_app
+
         tray_app._show_install_toast()
 
         mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
@@ -46,6 +48,7 @@ class TestShowInstallToast:
             return  # PowerShell fallback is Windows-only; skip on other platforms
 
         from plaud_tools.tray import toasts
+
         monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         spawned: list[tuple] = []
@@ -57,6 +60,7 @@ class TestShowInstallToast:
         monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", fake_popen)
 
         from plaud_tools import tray_app
+
         tray_app._show_install_toast()
 
         assert any("powershell" in args[0].lower() for args in spawned)
@@ -67,6 +71,7 @@ class TestShowInstallToast:
             return
 
         from plaud_tools.tray import toasts
+
         monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         def boom(*a, **kw):
@@ -75,6 +80,7 @@ class TestShowInstallToast:
         monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", boom)
 
         from plaud_tools import tray_app
+
         # Should not raise
         tray_app._show_install_toast()
 
@@ -82,6 +88,7 @@ class TestShowInstallToast:
 # ---------------------------------------------------------------------------
 # HomeWindow.arm_welcome_banner / _handle_open_wizard
 # ---------------------------------------------------------------------------
+
 
 class TestHomeWindowWelcomeBanner:
     """Unit tests for the HomeWindow welcome-banner logic.
@@ -93,8 +100,6 @@ class TestHomeWindowWelcomeBanner:
 
     def _make_home_window(self):
         """Construct a HomeWindow with all callable deps stubbed out."""
-        import tkinter as tk
-        import importlib
         import plaud_tools.tray_app as tray_app
 
         root = MagicMock()
@@ -114,39 +119,33 @@ class TestHomeWindowWelcomeBanner:
         return hw
 
     def test_initial_state_banner_not_armed(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         assert hw._welcome_banner_armed is False
 
     def test_arm_sets_flag(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         hw.arm_welcome_banner()
         assert hw._welcome_banner_armed is True
 
     def test_arm_is_idempotent(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         hw.arm_welcome_banner()
         hw.arm_welcome_banner()
         assert hw._welcome_banner_armed is True
 
     def test_handle_open_wizard_clears_armed_flag(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         hw.arm_welcome_banner()
         hw._handle_open_wizard()
         assert hw._welcome_banner_armed is False
 
     def test_handle_open_wizard_calls_on_open_wizard(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         hw.arm_welcome_banner()
         hw._handle_open_wizard()
         hw._on_open_wizard.assert_called_once()
 
     def test_handle_open_wizard_destroys_banner_widget(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         hw.arm_welcome_banner()
         # Simulate the banner widget being set
@@ -157,7 +156,6 @@ class TestHomeWindowWelcomeBanner:
         assert hw._welcome_banner is None
 
     def test_handle_open_wizard_without_banner_armed_still_calls_wizard(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         # banner not armed
         hw._handle_open_wizard()
@@ -165,7 +163,6 @@ class TestHomeWindowWelcomeBanner:
         assert hw._welcome_banner_armed is False
 
     def test_banner_widget_destroy_exception_does_not_propagate(self):
-        import plaud_tools.tray_app as tray_app
         hw = self._make_home_window()
         hw.arm_welcome_banner()
         bad_banner = MagicMock()
@@ -179,6 +176,7 @@ class TestHomeWindowWelcomeBanner:
 # ---------------------------------------------------------------------------
 # Sentinel consumption logic in TrayApp._run
 # ---------------------------------------------------------------------------
+
 
 class TestInstallSentinelConsumed:
     """Verify that the sentinel file is deleted when present."""

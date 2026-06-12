@@ -7,7 +7,6 @@ import pytest
 from plaud_tools.client import PlaudClient, PlaudRecordingQuery
 from plaud_tools.session import FileSessionStore, SessionManager
 
-
 pytestmark = pytest.mark.skipif(
     os.getenv("PLAUD_LIVE_READS") != "1",
     reason="Set PLAUD_LIVE_READS=1 to run live Plaud read tests against sacrificial data.",

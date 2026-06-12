@@ -5,9 +5,9 @@ test for the canonical-path autostart bug: a frozen-bundle install relocated
 to a non-canonical path must derive install_root from sys.executable, NOT
 from any hardcoded canonical path.
 """
+
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -16,10 +16,10 @@ import pytest
 
 from plaud_tools.layout import InstallLayout
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_bundle_tree(tmp_path: Path) -> tuple[Path, Path]:
     """Create a minimal bundle directory structure and return (install_root, cli_exe)."""
@@ -39,6 +39,7 @@ def _make_bundle_tree(tmp_path: Path) -> tuple[Path, Path]:
 # ---------------------------------------------------------------------------
 # Bundle channel
 # ---------------------------------------------------------------------------
+
 
 class TestBundleChannel:
     """detect() when sys.frozen is True."""
@@ -101,9 +102,7 @@ class TestBundleChannel:
             layout = InstallLayout.detect()
         assert layout.channel in ("pip", "dev")
 
-    def test_tray_exe_at_install_root_resolves_install_root_to_exe_dir(
-        self, monkeypatch, tmp_path
-    ):
+    def test_tray_exe_at_install_root_resolves_install_root_to_exe_dir(self, monkeypatch, tmp_path):
         """Tray exe sits AT the install root (no cli/ subdirectory).
 
         Per scripts/install.ps1 and pyinstaller/plaud-tray.spec, the tray
@@ -135,9 +134,7 @@ class TestBundleChannel:
         assert layout.mcp_exe == tmp_path / "mcp" / "plaud-mcp.exe"
         assert layout.ffmpeg_exe == tmp_path / "mcp" / "ffmpeg.exe"
 
-    def test_tray_exe_cli_exe_field_falls_back_to_tray_when_cli_subdir_missing(
-        self, monkeypatch, tmp_path
-    ):
+    def test_tray_exe_cli_exe_field_falls_back_to_tray_when_cli_subdir_missing(self, monkeypatch, tmp_path):
         """When the tray is the running exe and there is no cli/ subdir,
         cli_exe falls back to the tray exe path (rather than pointing at a
         non-existent file).
@@ -153,9 +150,7 @@ class TestBundleChannel:
         # No cli/plaud-tools.exe exists, so cli_exe defaults to the tray exe.
         assert layout.cli_exe == tray_exe
 
-    def test_tray_exe_cli_exe_field_uses_cli_subdir_when_present(
-        self, monkeypatch, tmp_path
-    ):
+    def test_tray_exe_cli_exe_field_uses_cli_subdir_when_present(self, monkeypatch, tmp_path):
         """When the tray is running but a sibling cli/plaud-tools.exe exists,
         cli_exe points at the CLI executable (the more useful target for
         external callers wanting to invoke the CLI).
@@ -179,6 +174,7 @@ class TestBundleChannel:
 # REGRESSION TEST — the canonical-path autostart bug
 # ---------------------------------------------------------------------------
 
+
 class TestCanonicalPathRegression:
     """A bundle at a non-canonical path must derive install_root from sys.executable.
 
@@ -194,9 +190,7 @@ class TestCanonicalPathRegression:
 
     CANONICAL_PATH = r"C:\Users\kadinb\AppData\Local\Programs\PlaudTools"
 
-    def test_non_canonical_bundle_path_produces_correct_install_root(
-        self, monkeypatch, tmp_path
-    ):
+    def test_non_canonical_bundle_path_produces_correct_install_root(self, monkeypatch, tmp_path):
         """install_root must be the actual extract directory, not the canonical path."""
         # Simulate bundle extracted to a non-canonical user directory.
         non_canonical_root = tmp_path / "PlaudCustom"
@@ -222,9 +216,7 @@ class TestCanonicalPathRegression:
             "install_root must never be the hardcoded canonical install path"
         )
 
-    def test_canonical_path_not_hardcoded_when_exe_elsewhere(
-        self, monkeypatch, tmp_path
-    ):
+    def test_canonical_path_not_hardcoded_when_exe_elsewhere(self, monkeypatch, tmp_path):
         """Even when the canonical path exists on disk, install_root follows sys.executable."""
         # tmp_path simulates a custom location.
         custom_root = tmp_path / "MyCustomPlaudTools"
@@ -240,12 +232,9 @@ class TestCanonicalPathRegression:
 
         assert layout.install_root == custom_root
         # install_root must not contain the canonical path segment.
-        assert "Programs" not in str(layout.install_root) or \
-               layout.install_root == custom_root
+        assert "Programs" not in str(layout.install_root) or layout.install_root == custom_root
 
-    def test_mcp_and_ffmpeg_derived_from_actual_install_root(
-        self, monkeypatch, tmp_path
-    ):
+    def test_mcp_and_ffmpeg_derived_from_actual_install_root(self, monkeypatch, tmp_path):
         """mcp_exe and ffmpeg_exe must also come from the actual install_root."""
         custom_root = tmp_path / "SomeOtherPath"
         cli_dir = custom_root / "cli"
@@ -264,9 +253,7 @@ class TestCanonicalPathRegression:
         assert layout.mcp_exe == custom_root / "mcp" / "plaud-mcp.exe"
         assert layout.ffmpeg_exe == custom_root / "mcp" / "ffmpeg.exe"
 
-    def test_tray_exe_at_non_canonical_path_produces_correct_install_root(
-        self, monkeypatch, tmp_path
-    ):
+    def test_tray_exe_at_non_canonical_path_produces_correct_install_root(self, monkeypatch, tmp_path):
         """Tray exe regression: PlaudTools.exe relocated to a non-canonical
         path must derive install_root from sys.executable.
 
@@ -295,13 +282,13 @@ class TestCanonicalPathRegression:
             f"entry written by _set_autostart points at the wrong location."
         )
         # And not at any hardcoded canonical path.
-        assert "Programs" not in str(layout.install_root) or \
-               layout.install_root == non_canonical_root
+        assert "Programs" not in str(layout.install_root) or layout.install_root == non_canonical_root
 
 
 # ---------------------------------------------------------------------------
 # Pip channel
 # ---------------------------------------------------------------------------
+
 
 class TestPipChannel:
     """detect() when not frozen and plaud-tools shim is on PATH."""
@@ -319,8 +306,7 @@ class TestPipChannel:
         mcp_shim.touch()
 
         def _which(name: str) -> str | None:
-            return str(shim) if name == "plaud-tools" else \
-                   str(mcp_shim) if name == "plaud-mcp" else None
+            return str(shim) if name == "plaud-tools" else str(mcp_shim) if name == "plaud-mcp" else None
 
         with patch("shutil.which", side_effect=_which):
             layout = InstallLayout.detect()
@@ -404,6 +390,7 @@ class TestPipChannel:
 # Dev channel
 # ---------------------------------------------------------------------------
 
+
 class TestDevChannel:
     """detect() when not frozen and no plaud-tools shim on PATH."""
 
@@ -460,6 +447,7 @@ class TestDevChannel:
 # ---------------------------------------------------------------------------
 # Dataclass invariants
 # ---------------------------------------------------------------------------
+
 
 class TestDataclassInvariants:
     """InstallLayout is a frozen dataclass; verify immutability and field types."""

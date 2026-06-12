@@ -4,9 +4,10 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .appdata import events_path as _events_path
 from .client import PlaudClient, PlaudRecordingQuery
@@ -61,6 +62,7 @@ def _write_event(event_type: str, **kwargs: Any) -> None:
 # fields are safe metadata; token bytes never appear here.
 # ---------------------------------------------------------------------------
 
+
 def _diagnose_session_state() -> dict[str, Any]:
     """Best-effort snapshot of how the MCP currently sees the user session.
 
@@ -94,6 +96,7 @@ def _emit_session_expired(reason: str) -> None:
 # ---------------------------------------------------------------------------
 # Structured error helpers
 # ---------------------------------------------------------------------------
+
 
 def _json_result(value: Any, is_error: bool = False) -> dict[str, Any]:
     result = {"content": [{"type": "text", "text": json.dumps(value, indent=2)}]}
@@ -164,7 +167,8 @@ def _summarize_detail(detail: Any) -> dict[str, Any]:
         "is_summary": detail.is_summary,
         "headline": (extra.get("aiContentHeader") or {}).get("headline"),
         "language": (extra.get("tranConfig") or {}).get("language"),
-        "used_template": extra.get("used_template") or (extra.get("aiContentHeader") or {}).get("used_template"),
+        "used_template": extra.get("used_template")
+        or (extra.get("aiContentHeader") or {}).get("used_template"),
     }
 
 
@@ -193,7 +197,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     query=query,
                     folder_id=folder,
                 )
-                page = all_items[after:after + limit]
+                page = all_items[after : after + limit]
                 has_more = len(all_items) > after + limit
             else:
                 page = client.list_recordings(
@@ -207,10 +211,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 )
                 has_more = len(page) == limit
             next_after = after + len(page) if has_more else None
-            return _json_result({
-                "items": [summarize_recording(item) for item in page],
-                "next_after": next_after,
-            })
+            return _json_result(
+                {
+                    "items": [summarize_recording(item) for item in page],
+                    "next_after": next_after,
+                }
+            )
 
         return _call(get_client, inner)
 
@@ -268,7 +274,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 return _json_result({"ok": True, "recording_id": recording_id, "mutation": "restore"})
 
             if mutation == "move":
-                actual_folder_id = None if (clear_folder or folder_id is None or folder_id in ("", "-")) else folder_id
+                actual_folder_id = (
+                    None if (clear_folder or folder_id is None or folder_id in ("", "-")) else folder_id
+                )
                 client.set_recording_folder(recording_id, actual_folder_id)
                 return _json_result({"ok": True, "recording_id": recording_id, "folder_id": actual_folder_id})
 
@@ -296,13 +304,15 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             result = client.rename_speaker(recording_id, original_label, new_name)
-            return _json_result({
-                "ok": True,
-                "recording_id": recording_id,
-                "original_label": original_label,
-                "new_name": new_name,
-                "segments_updated": result["segments_updated"],
-            })
+            return _json_result(
+                {
+                    "ok": True,
+                    "recording_id": recording_id,
+                    "original_label": original_label,
+                    "new_name": new_name,
+                    "segments_updated": result["segments_updated"],
+                }
+            )
 
         return _call(get_client, inner)
 
@@ -339,15 +349,19 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 start_ms = parse_isoish(start_time, "start_time")
             elif isinstance(start_time, int):
                 start_ms = start_time
-            recording = client.upload_recording(audio_data, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset)
+            recording = client.upload_recording(
+                audio_data, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset
+            )
             if folder_id:
                 client.set_recording_folder(recording.id, folder_id)
-            return _json_result({
-                "ok": True,
-                "recording_id": recording.id,
-                "filename": recording.filename,
-                "transcoded": needs_transcode,
-            })
+            return _json_result(
+                {
+                    "ok": True,
+                    "recording_id": recording.id,
+                    "filename": recording.filename,
+                    "transcoded": needs_transcode,
+                }
+            )
 
         return _call(get_client, inner)
 
@@ -374,30 +388,33 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 llm=llm,
             )
             if wait == "none":
-                return _json_result({
-                    "recording_id": recording_id,
-                    "accepted": True,
-                })
+                return _json_result(
+                    {
+                        "recording_id": recording_id,
+                        "accepted": True,
+                    }
+                )
             client.wait_for_transcription(recording_id)
             if wait == "summary":
                 client.wait_for_summary(recording_id)
             detail = client.get_recording(recording_id)
-            return _json_result({
-                "ok": True,
-                "recording_id": recording_id,
-                "is_trans": detail.is_trans,
-                "is_summary": detail.is_summary,
-            })
+            return _json_result(
+                {
+                    "ok": True,
+                    "recording_id": recording_id,
+                    "is_trans": detail.is_trans,
+                    "is_summary": detail.is_summary,
+                }
+            )
 
         return _call(get_client, inner)
 
     def list_folders() -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             tags = client.list_file_tags()
-            return _json_result([
-                {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
-                for tag in tags
-            ])
+            return _json_result(
+                [{"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon} for tag in tags]
+            )
 
         return _call(get_client, inner)
 
@@ -422,4 +439,3 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "list_folders": list_folders,
         "merge_recordings": merge_recordings,
     }
-

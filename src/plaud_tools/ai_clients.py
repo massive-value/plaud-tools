@@ -1,4 +1,5 @@
 """AI client config detection and MCP wiring for Claude Desktop, Claude Code, Codex CLI."""
+
 from __future__ import annotations
 
 import json
@@ -56,6 +57,7 @@ def _backup_once(config_path: Path) -> None:
 # JSON helpers (Claude Desktop, Claude Code)
 # ---------------------------------------------------------------------------
 
+
 def _read_json(config_path: Path) -> dict:
     if not config_path.exists():
         return {}
@@ -73,6 +75,7 @@ def _write_atomic_json(config_path: Path, data: dict) -> None:
 # ---------------------------------------------------------------------------
 # TOML helpers (Codex CLI)
 # ---------------------------------------------------------------------------
+
 
 def _read_toml(config_path: Path) -> dict:
     if not config_path.exists():
@@ -103,7 +106,7 @@ def _write_toml_mcp(config_path: Path, command: str | None) -> None:
     text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
     if command is not None:
-        new_section = f'[mcp_servers.plaud]\ncommand = {_toml_string(command)}\n'
+        new_section = f"[mcp_servers.plaud]\ncommand = {_toml_string(command)}\n"
         if _TOML_SECTION_RE.search(text):
             # Use a callable replacement so re.sub doesn't treat backslashes
             # in `new_section` (e.g. Windows paths) as group escapes.
@@ -124,6 +127,7 @@ def _write_toml_mcp(config_path: Path, command: str | None) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def get_status(client_id: str, mcp_exe: str) -> ClientStatus:
     paths = _client_paths()

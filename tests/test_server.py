@@ -1,4 +1,5 @@
 """Tests for the MCP server module."""
+
 from __future__ import annotations
 
 import asyncio
@@ -207,6 +208,7 @@ def test_make_server_constructs_one_session_manager(monkeypatch):
 # A6: Structured TypeError guard in call_tool (Wave 0 audit)
 # ---------------------------------------------------------------------------
 
+
 class TestCallToolTypeErrorGuard:
     """call_tool must return a structured validation error — not raise — when the
     MCP framework passes an argument name that the underlying handler does not
@@ -235,8 +237,7 @@ class TestCallToolTypeErrorGuard:
         text = self._invoke("list_folders", {"bogus_kwarg": "unexpected"})
         payload = json.loads(text)
         assert payload["error_code"] == "validation", (
-            f"Expected error_code='validation', got {payload.get('error_code')!r}. "
-            f"Full payload: {payload}"
+            f"Expected error_code='validation', got {payload.get('error_code')!r}. Full payload: {payload}"
         )
 
     def test_bogus_kwarg_retryable_is_false(self):
@@ -261,9 +262,7 @@ class TestCallToolTypeErrorGuard:
         try:
             self._invoke("get_recording", {"recording_id": "abc", "unknown_field": True})
         except TypeError:
-            raise AssertionError(
-                "call_tool raised TypeError instead of returning a structured error payload"
-            )
+            raise AssertionError("call_tool raised TypeError instead of returning a structured error payload")
 
     def test_bogus_kwarg_text_is_valid_json(self):
         """The TextContent text for a bad-kwarg call must be parseable JSON."""
@@ -271,6 +270,4 @@ class TestCallToolTypeErrorGuard:
         try:
             json.loads(text)
         except json.JSONDecodeError as exc:
-            raise AssertionError(
-                f"call_tool returned non-JSON text for bogus kwarg: {text!r}"
-            ) from exc
+            raise AssertionError(f"call_tool returned non-JSON text for bogus kwarg: {text!r}") from exc

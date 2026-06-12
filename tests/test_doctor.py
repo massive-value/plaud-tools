@@ -3,33 +3,30 @@
 Every section of the JSON is independently testable via monkeypatching.
 No network calls or real filesystem state is required.
 """
+
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from plaud_tools import doctor as _doctor_mod
 from plaud_tools.doctor import (
+    _ai_clients_section,
     _executables_section,
     _ffmpeg_path,
     _install_dir,
     _mcp_exe_path,
-    _cli_exe_path,
     _session_section,
-    _ai_clients_section,
     run_doctor,
     run_doctor_json,
 )
 from plaud_tools.session import PlaudSession, SessionStore
 
-
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
 # ---------------------------------------------------------------------------
+
 
 class _MemoryStore:
     """Minimal SessionStore stand-in backed by an in-memory dict."""
@@ -48,6 +45,7 @@ class _MemoryStore:
 # ---------------------------------------------------------------------------
 # install_dir
 # ---------------------------------------------------------------------------
+
 
 class TestInstallDir:
     def test_frozen_returns_parent_of_parent(self, monkeypatch, tmp_path):
@@ -72,6 +70,7 @@ class TestInstallDir:
 # ---------------------------------------------------------------------------
 # Executable path helpers
 # ---------------------------------------------------------------------------
+
 
 class TestExecutablePaths:
     def test_mcp_exe_frozen(self, monkeypatch, tmp_path):
@@ -111,6 +110,7 @@ class TestExecutablePaths:
 # _executables_section
 # ---------------------------------------------------------------------------
 
+
 class TestExecutablesSection:
     def test_all_exist_flagged_true(self, monkeypatch, tmp_path):
         cli = tmp_path / "plaud-tools.exe"
@@ -131,8 +131,8 @@ class TestExecutablesSection:
 
     def test_missing_exe_flagged_false(self, monkeypatch, tmp_path):
         cli = tmp_path / "plaud-tools.exe"  # does NOT exist
-        mcp = tmp_path / "plaud-mcp.exe"    # does NOT exist
-        ffmpeg = tmp_path / "ffmpeg.exe"    # does NOT exist
+        mcp = tmp_path / "plaud-mcp.exe"  # does NOT exist
+        ffmpeg = tmp_path / "ffmpeg.exe"  # does NOT exist
 
         monkeypatch.setattr(_doctor_mod, "_cli_exe_path", lambda: cli)
         monkeypatch.setattr(_doctor_mod, "_mcp_exe_path", lambda: mcp)
@@ -158,6 +158,7 @@ class TestExecutablesSection:
 # _session_section
 # ---------------------------------------------------------------------------
 
+
 class TestSessionSection:
     def test_no_session(self):
         store = _MemoryStore(session=None, source="missing")
@@ -166,11 +167,11 @@ class TestSessionSection:
 
     def test_valid_session_never_includes_token(self, monkeypatch):
         # Build a fake JWT that expires far in the future
-        import base64, time
+        import base64
+        import time
+
         exp = int(time.time()) + 365 * 86400
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"exp": exp}).encode()
-        ).rstrip(b"=").decode()
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
         fake_jwt = f"header.{payload}.sig"
 
         session = PlaudSession(access_token=fake_jwt, region="us", email="test@example.com")
@@ -187,12 +188,12 @@ class TestSessionSection:
         assert result["days_until_expiry"] > 0
 
     def test_expired_session_status(self, monkeypatch):
-        import base64, time
+        import base64
+        import time
+
         # Token expired 10 days ago
         exp = int(time.time()) - 10 * 86400
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"exp": exp}).encode()
-        ).rstrip(b"=").decode()
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
         fake_jwt = f"header.{payload}.sig"
 
         session = PlaudSession(access_token=fake_jwt, region="eu", email="old@example.com")
@@ -207,6 +208,7 @@ class TestSessionSection:
 # ---------------------------------------------------------------------------
 # _ai_clients_section
 # ---------------------------------------------------------------------------
+
 
 class TestAiClientsSection:
     def test_not_detected_when_no_config_files(self, monkeypatch, tmp_path):
@@ -275,6 +277,7 @@ class TestAiClientsSection:
 # run_doctor (full document)
 # ---------------------------------------------------------------------------
 
+
 class TestRunDoctor:
     def _stub_env(self, monkeypatch, tmp_path):
         """Monkeypatch all I/O so run_doctor works hermetically."""
@@ -318,12 +321,12 @@ class TestRunDoctor:
         assert isinstance(result["version"], str)
 
     def test_token_never_in_output(self, monkeypatch, tmp_path):
-        import base64, time
+        import base64
+        import time
+
         self._stub_env(monkeypatch, tmp_path)
         exp = int(time.time()) + 365 * 86400
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"exp": exp}).encode()
-        ).rstrip(b"=").decode()
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
         fake_jwt = f"header.{payload}.sig"
         session = PlaudSession(access_token=fake_jwt, region="us", email="a@b.com")
         store = _MemoryStore(session=session, source="keyring")
@@ -362,6 +365,7 @@ class TestRunDoctor:
 # CLI integration: plaud-tools doctor prints valid JSON
 # ---------------------------------------------------------------------------
 
+
 class TestDoctorCli:
     def _stub_env(self, monkeypatch, tmp_path):
         fake_exe = tmp_path / "plaud-tools.exe"
@@ -383,7 +387,6 @@ class TestDoctorCli:
 
     def test_doctor_returns_valid_json(self, monkeypatch, tmp_path):
         from plaud_tools.cli import run_cli
-        from plaud_tools.session import SessionStore
 
         self._stub_env(monkeypatch, tmp_path)
 

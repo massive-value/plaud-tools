@@ -19,6 +19,7 @@ events_path()          -> Path   # events.jsonl inside data_dir()
 session_path()         -> Path   # session.json inside data_dir()
 dpapi_shadow_path()    -> Path | None  # session.dat on Windows; None elsewhere
 """
+
 from __future__ import annotations
 
 import os

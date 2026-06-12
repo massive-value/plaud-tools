@@ -1,22 +1,18 @@
 """Tests for ps1_templates — bundled PS1 script location and dispatcher rendering."""
+
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-import pytest
-
 from plaud_tools.ps1_templates import (
-    scripts_dir,
-    render_update_ps1,
-    render_uninstall_ps1,
     _ps_escape,
+    render_uninstall_ps1,
+    render_update_ps1,
+    scripts_dir,
 )
-
 
 # ---------------------------------------------------------------------------
 # scripts_dir — must resolve to a real directory containing the PS1 files
 # ---------------------------------------------------------------------------
+
 
 def test_scripts_dir_exists():
     d = scripts_dir()
@@ -36,6 +32,7 @@ def test_scripts_dir_contains_uninstall_ps1():
 # ---------------------------------------------------------------------------
 # update.ps1 content — standalone script validation
 # ---------------------------------------------------------------------------
+
 
 def test_update_ps1_has_param_block():
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
@@ -110,7 +107,8 @@ def test_update_ps1_does_not_self_delete():
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
     # Strip the comment-based historical reference so we only check actual code.
     code_only = "\n".join(
-        line for line in content.splitlines()
+        line
+        for line in content.splitlines()
         if not line.lstrip().startswith("#") and "$MyInvocation" not in line.split("#", 1)[-1]
     )
     assert "Remove-Item $MyInvocation.MyCommand.Path" not in code_only
@@ -167,6 +165,7 @@ def test_update_ps1_accepts_dispatcher_path_param():
 # ---------------------------------------------------------------------------
 # uninstall.ps1 content — standalone script validation
 # ---------------------------------------------------------------------------
+
 
 def test_uninstall_ps1_has_param_block():
     content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
@@ -226,6 +225,7 @@ def test_uninstall_ps1_self_destructs():
 # _ps_escape — single-quote safety
 # ---------------------------------------------------------------------------
 
+
 def test_ps_escape_doubles_single_quotes():
     assert _ps_escape("It's fine") == "It''s fine"
 
@@ -241,6 +241,7 @@ def test_ps_escape_multiple_single_quotes():
 # ---------------------------------------------------------------------------
 # render_update_ps1 — dispatcher string content tests
 # ---------------------------------------------------------------------------
+
 
 def test_render_update_ps1_contains_tray_pid():
     result = render_update_ps1(
@@ -350,6 +351,7 @@ def test_render_update_ps1_escapes_single_quote_in_dispatcher_path():
 # ---------------------------------------------------------------------------
 # render_uninstall_ps1 — dispatcher string content tests
 # ---------------------------------------------------------------------------
+
 
 def test_render_uninstall_ps1_contains_tray_pid():
     result = render_uninstall_ps1(

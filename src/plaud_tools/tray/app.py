@@ -9,6 +9,7 @@ To preserve that contract the shim module ``plaud_tools.tray_app`` overrides
 ``__setattr__`` and propagates assignments back into the submodules.  See
 ``plaud_tools.tray_app`` for the propagation logic.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,8 +20,8 @@ import tempfile
 import threading
 import tkinter as tk
 import urllib.request  # noqa: F401  (kept for monkeypatch parity with old tray_app)
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pystray
 from PIL import Image
@@ -45,8 +46,8 @@ from .setup import (
     _setup_logging,
 )
 from .toasts import _show_install_toast, _show_session_expired_toast
-from .updater import UpdateDialog, _check_for_update
 from .uninstaller import UninstallDialog
+from .updater import UpdateDialog, _check_for_update
 from .windows.home import HomeWindow
 from .windows.login import LoginWindow
 from .windows.wizard import WizardWindow
@@ -112,20 +113,26 @@ class TrayApp(_BackgroundMixin):
         if self._update_info:
             version, url, _zip_url = self._update_info
             if getattr(sys, "frozen", False):
-                items.append(pystray.MenuItem(
-                    f"Update available: v{version}",
-                    lambda: self._open_update(),
-                ))
+                items.append(
+                    pystray.MenuItem(
+                        f"Update available: v{version}",
+                        lambda: self._open_update(),
+                    )
+                )
             else:
-                items.append(pystray.MenuItem(
-                    f"Update available: v{version}",
-                    lambda: self._open_url(url),
-                ))
+                items.append(
+                    pystray.MenuItem(
+                        f"Update available: v{version}",
+                        lambda: self._open_url(url),
+                    )
+                )
             items.append(pystray.Menu.SEPARATOR)
 
         if state == "expiring":
             days = self._manager.days_until_expiry() or 0
-            items.append(pystray.MenuItem(f"Session expires in {days} days — sign in again", self._open_login))
+            items.append(
+                pystray.MenuItem(f"Session expires in {days} days — sign in again", self._open_login)
+            )
             items.append(pystray.Menu.SEPARATOR)
 
         if self._session:
@@ -135,11 +142,13 @@ class TrayApp(_BackgroundMixin):
             items.append(pystray.MenuItem("Manage AI clients…", self._open_wizard))
             items.append(pystray.MenuItem("Open log folder", self._open_log_folder))
             items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem(
-                "Start with Windows",
-                self._toggle_autostart,
-                checked=lambda _: _autostart_enabled(),
-            ))
+            items.append(
+                pystray.MenuItem(
+                    "Start with Windows",
+                    self._toggle_autostart,
+                    checked=lambda _: _autostart_enabled(),
+                )
+            )
             items.append(pystray.MenuItem("Sign out", self._sign_out))
         else:
             items.append(pystray.MenuItem("Sign in…", self._open_login))
@@ -206,6 +215,7 @@ class TrayApp(_BackgroundMixin):
             else:
                 if self._root:
                     self._root.after(0, lambda: on_done(False, "You're up to date."))
+
         threading.Thread(target=_worker, daemon=True).start()
 
     def _test_connection(self, on_done: Callable[[bool, str], None]) -> None:
@@ -267,6 +277,7 @@ class TrayApp(_BackgroundMixin):
 
     def _open_url(self, url: str) -> None:
         import webbrowser
+
         webbrowser.open(url)
 
     def _open_repo(self) -> None:
@@ -274,12 +285,14 @@ class TrayApp(_BackgroundMixin):
 
     def _open_log_folder(self) -> None:
         from ..appdata import data_dir as _data_dir
+
         log_dir = _data_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(str(log_dir))  # type: ignore[attr-defined]
         else:
             import webbrowser
+
             webbrowser.open(log_dir.as_uri())
 
     # Post-login flow
@@ -373,6 +386,7 @@ class TrayApp(_BackgroundMixin):
         if fail_sentinel.exists():
             try:
                 import json as _json
+
                 payload = _json.loads(fail_sentinel.read_text(encoding="utf-8"))
                 fail_sentinel.unlink(missing_ok=True)
                 reason = payload.get("reason", "Update failed for an unknown reason.")
@@ -381,6 +395,7 @@ class TrayApp(_BackgroundMixin):
 
                 def _show_update_failure(r: str = reason, lp: str = log_path) -> None:
                     from tkinter import messagebox
+
                     body = r
                     if lp:
                         body += f"\n\nLog file:\n{lp}"
@@ -389,6 +404,7 @@ class TrayApp(_BackgroundMixin):
                         body,
                         parent=self._root,
                     )
+
                 root.after(800, _show_update_failure)
             except Exception:
                 logging.warning("Could not read update failure sentinel", exc_info=True)
@@ -400,9 +416,11 @@ class TrayApp(_BackgroundMixin):
                 updated_to = sentinel.read_text(encoding="utf-8").strip()
                 sentinel.unlink(missing_ok=True)
                 if self._session and self._home_win:
+
                     def _show_update_success(v: str = updated_to) -> None:
                         self._home_win.show()
                         self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
+
                     root.after(500, _show_update_success)
             except Exception:
                 logging.warning("Could not read update sentinel", exc_info=True)
@@ -432,6 +450,7 @@ class TrayApp(_BackgroundMixin):
 def main() -> None:
     if "--com-activate" in sys.argv:
         from .com_activation import run_com_activator
+
         run_com_activator()
         return
     if not _acquire_instance_lock():
@@ -439,6 +458,7 @@ def main() -> None:
     if sys.platform == "win32":
         try:
             import ctypes
+
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PlaudTools.TrayApp")
         except Exception:
             pass
@@ -446,6 +466,11 @@ def main() -> None:
 
 
 __all__ = [
-    "_TEST_CONNECTION_TIMEOUT", "_load_icon", "_load_icons",
-    "_show_session_expired_toast", "_show_install_toast", "TrayApp", "main",
+    "_TEST_CONNECTION_TIMEOUT",
+    "_load_icon",
+    "_load_icons",
+    "_show_session_expired_toast",
+    "_show_install_toast",
+    "TrayApp",
+    "main",
 ]
