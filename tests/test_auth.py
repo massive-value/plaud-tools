@@ -9,6 +9,11 @@ from plaud_tools.errors import PlaudApiError
 from plaud_tools.session import SessionStore
 from plaud_tools.transport import HttpResponse
 
+# Capture the production retry-delays sequence at import time (before any
+# monkeypatch can override it on the class).  Tests that need the full retry
+# budget but zero sleep time use this to build a same-length zero-delay tuple.
+_PROD_RETRY_DELAYS_S = SessionStore._KEYRING_RETRY_DELAYS_S
+
 
 class StubTransport:
     def __init__(self, responses):
@@ -97,8 +102,9 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
         "plaud_tools.session.importlib.import_module",
         lambda name: FlakeyKeyring if name == "keyring" else __import__(name),
     )
-    # Don't let the retry delay slow the suite down.
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+    # Don't let the retry delay slow the suite down — zero-delay single entry
+    # keeps the attempt count (2) while collapsing wall-clock time.
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", (0.0,))
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-retry")
 
@@ -139,12 +145,19 @@ def test_load_retries_then_falls_through_on_persistent_none(tmp_path, monkeypatc
         "plaud_tools.session.importlib.import_module",
         lambda name: EmptyKeyring if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr("plaud_tools.session.SessionStore._KEYRING_RETRY_DELAY_S", 0.0)
+    # Preserve the full retry count while zeroing delays so the assertion on
+    # ``len(_PROD_RETRY_DELAYS_S) + 1`` still holds.  Use the module-level
+    # constant (captured before any monkeypatch) rather than reading the class
+    # attribute, which the autouse fixture has already overridden to ``()``.
+    monkeypatch.setattr(
+        "plaud_tools.session.SessionStore._KEYRING_RETRY_DELAYS_S",
+        (0.0,) * len(_PROD_RETRY_DELAYS_S),
+    )
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-no-retry")
     assert store.load() is None
-    assert call_count["n"] == (len(SessionStore._KEYRING_RETRY_DELAYS_S) + 1), (
-        f"Expected {(len(SessionStore._KEYRING_RETRY_DELAYS_S) + 1)} keyring reads, got {call_count['n']}"
+    assert call_count["n"] == (len(_PROD_RETRY_DELAYS_S) + 1), (
+        f"Expected {len(_PROD_RETRY_DELAYS_S) + 1} keyring reads, got {call_count['n']}"
     )
 
 
@@ -173,7 +186,14 @@ def test_load_recovers_from_late_keyring(tmp_path, monkeypatch):
         "plaud_tools.session.importlib.import_module",
         lambda name: SlowKeyring if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr("plaud_tools.session.SessionStore._KEYRING_RETRY_DELAY_S", 0.0)
+    # settle_after=4 needs at least 3 delays; use a full-length zero sequence
+    # so the budget is wide enough and no time is spent sleeping.  Use the
+    # module-level constant (captured before any monkeypatch) rather than
+    # reading the class attribute, which the autouse fixture overrides to ``()``.
+    monkeypatch.setattr(
+        "plaud_tools.session.SessionStore._KEYRING_RETRY_DELAYS_S",
+        (0.0,) * len(_PROD_RETRY_DELAYS_S),
+    )
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-late-arrival")
     result = store.load()
@@ -204,7 +224,8 @@ def test_load_recovers_from_transient_none(tmp_path, monkeypatch):
         "plaud_tools.session.importlib.import_module",
         lambda name: TransientKeyring if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr("plaud_tools.session.SessionStore._KEYRING_RETRY_DELAY_S", 0.0)
+    # Single zero-delay entry keeps the attempt count (2) without sleeping.
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", (0.0,))
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-transient-none")
     result = store.load()
@@ -231,12 +252,16 @@ def test_load_retry_gives_up_after_persistent_failures(tmp_path, caplog, monkeyp
         "plaud_tools.session.importlib.import_module",
         lambda name: BrokenKeyring if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+    # Preserve the full retry count while zeroing delays so the assertion on
+    # ``len(_PROD_RETRY_DELAYS_S) + 1`` still holds.  Use the module-level
+    # constant (captured before any monkeypatch) rather than reading the class
+    # attribute, which the autouse fixture has already overridden to ``()``.
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", (0.0,) * len(_PROD_RETRY_DELAYS_S))
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-broken")
     with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
         assert store.load() is None
-    assert call_count["n"] == (len(SessionStore._KEYRING_RETRY_DELAYS_S) + 1)
+    assert call_count["n"] == (len(_PROD_RETRY_DELAYS_S) + 1)
 
 
 def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
@@ -347,7 +372,7 @@ def test_legacy_keyring_migration_happy_path(tmp_path, monkeypatch, caplog):
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
 
@@ -386,7 +411,7 @@ def test_legacy_keyring_migration_idempotent_on_second_load(tmp_path, monkeypatc
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
     _, source1 = store.load_with_source()
@@ -413,7 +438,7 @@ def test_legacy_keyring_missing_one_half_does_not_migrate(tmp_path, monkeypatch)
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
     session, source = store.load_with_source()
@@ -440,7 +465,7 @@ def test_legacy_keyring_migration_handles_malformed_profile(tmp_path, monkeypatc
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
-    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
     session, source = store.load_with_source()
