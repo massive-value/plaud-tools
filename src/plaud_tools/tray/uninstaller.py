@@ -24,6 +24,16 @@ from .setup import (
     _unregister_com_activator,
 )
 
+# Absolute path to PowerShell to prevent PATH-hijacking attacks.
+# %SystemRoot% is typically C:\Windows; fall back to the hard-coded canonical
+# path if the env var is absent (should never happen on a standard Windows
+# install, but defensive is better).
+_POWERSHELL_EXE: str = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"),
+    r"System32\WindowsPowerShell\v1.0\powershell.exe",
+)
+
+
 # ---------------------------------------------------------------------------
 # Uninstall helpers (inverses of the setup helpers above)
 # ---------------------------------------------------------------------------
@@ -150,7 +160,7 @@ def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> No
     ps_path.write_text(ps_content, encoding="utf-8")
     logging.info("Launching uninstall helper: %s (will delete %s)", ps_path, install_dir)
     subprocess.Popen(
-        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
+        [_POWERSHELL_EXE, "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         cwd=tempfile.gettempdir(),
     )
