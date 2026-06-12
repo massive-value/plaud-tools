@@ -568,13 +568,87 @@ class SessionStore:
 
 
 class SessionManager:
+    # When the backing store does not expose a probe path, fall back to a
+    # time-based TTL so we still revalidate after another process may have
+    # written a new session.  Five minutes balances freshness against the cost
+    # of hitting the keyring on every MCP call.
+    _CACHE_TTL_SECONDS: float = 300.0
+
     def __init__(self, store: SessionStoreProtocol) -> None:
         self.store = store
-        self._cached_session: PlaudSession | None = None
+        # Cache entry: (session, wall-clock time of load, file mtime at load or None).
+        # None means no entry is cached.  Using a tuple avoids a separate
+        # "loaded_at" field and keeps the hot-path check allocation-free.
+        self._cache: tuple[PlaudSession, float, float | None] | None = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _probe_path(self) -> Path | None:
+        """Return the best file path available for a cheap mtime staleness probe.
+
+        Prefers the DPAPI shadow (always written on save, survives keyring
+        hiccups) over the plaintext session file.  Returns None when the store
+        does not expose either path (e.g. a custom ``SessionStoreProtocol``
+        implementation or an env-var-only store).
+        """
+        store = self.store
+        # SessionStore exposes both dpapi_path and file_store.path.
+        dpapi: Path | None = getattr(store, "dpapi_path", None)
+        if dpapi is not None and dpapi.exists():
+            return dpapi
+        # Check for a nested file_store (SessionStore pattern).
+        file_store = getattr(store, "file_store", None)
+        if file_store is not None:
+            fpath: Path | None = getattr(file_store, "path", None)
+            if fpath is not None and fpath.exists():
+                return fpath
+        # Check for a direct path attribute (FileSessionStore used as a store directly).
+        direct_path: Path | None = getattr(store, "path", None)
+        if direct_path is not None and direct_path.exists():
+            return direct_path
+        return None
+
+    @staticmethod
+    def _mtime(path: Path) -> float | None:
+        """Return the mtime of *path*, or None if it cannot be statted."""
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return None
+
+    def _is_stale(self, loaded_at: float, mtime_at_load: float | None) -> bool:
+        """Return True when the cached session should be discarded.
+
+        Uses the mtime probe when a path is available (zero-allocation, no
+        keyring contact).  Falls back to TTL when no path can be probed.
+        """
+        path = self._probe_path()
+        if path is not None:
+            current_mtime = self._mtime(path)
+            # File changed (or disappeared) since the cache was populated.
+            return current_mtime != mtime_at_load
+        # No path available — fall back to wall-clock TTL.
+        return time() - loaded_at > self._CACHE_TTL_SECONDS
+
+    def _make_cache_entry(self, session: PlaudSession) -> tuple[PlaudSession, float, float | None]:
+        """Build a fresh cache tuple for *session* using the current probe state."""
+        path = self._probe_path()
+        mtime = self._mtime(path) if path is not None else None
+        return (session, time(), mtime)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def require(self) -> PlaudSession:
-        if self._cached_session is not None:
-            return self._cached_session
+        if self._cache is not None:
+            cached_session, loaded_at, mtime_at_load = self._cache
+            if not self._is_stale(loaded_at, mtime_at_load):
+                # Hot path: backing store is unchanged and TTL has not elapsed.
+                # No keyring contact, no file I/O beyond the mtime stat above.
+                return cached_session
         session = self.store.load()
         if not session:
             raise PlaudSessionExpiredError("No Plaud session available.")
@@ -586,17 +660,17 @@ class SessionManager:
         # Safe under concurrent asyncio.to_thread handler calls: all threads
         # compute and assign the same validated session object (idempotent
         # assignment); the GIL makes the attribute write itself atomic.
-        self._cached_session = session
+        self._cache = self._make_cache_entry(session)
         return session
 
     def invalidate_cache(self) -> None:
         """Discard the in-memory session cache so the next ``require()`` reloads from the store."""
-        self._cached_session = None
+        self._cache = None
 
     def update_region(self, region: str) -> PlaudSession:
         # Bypass the cache to ensure we read the freshest token from the store,
         # then update both the store and the cache atomically.
-        self._cached_session = None
+        self._cache = None
         session = self.require()
         updated = PlaudSession(
             access_token=session.access_token,
@@ -604,7 +678,7 @@ class SessionManager:
             email=session.email,
         )
         self.store.save(updated)
-        self._cached_session = updated
+        self._cache = self._make_cache_entry(updated)
         return updated
 
     def days_until_expiry(self) -> int | None:

@@ -964,7 +964,7 @@ def test_session_cache_expired_session_invalidates_cache(tmp_path):
         manager.require()
 
     # Cache must be None — a subsequent require() after re-auth would reload.
-    assert manager._cached_session is None
+    assert manager._cache is None
 
 
 # ---------------------------------------------------------------------------
