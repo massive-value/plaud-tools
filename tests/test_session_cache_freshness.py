@@ -40,13 +40,9 @@ from plaud_tools.session import (
 
 def _make_jwt(days: int = 200) -> str:
     """Build a minimal structurally-valid JWT with an *exp* claim."""
-    header = (
-        base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
-    )
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
     exp = int(_time.time()) + days * 86400
-    payload = (
-        base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
-    )
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
     return f"{header}.{payload}.fakesig"
 
 
@@ -98,9 +94,7 @@ class TestMtimeProbeWithFileStore:
         s3 = manager.require()
         assert s2 is s1
         assert s3 is s1
-        assert load_count[0] == 1, (
-            "Hot path must not call store.load() when mtime is unchanged"
-        )
+        assert load_count[0] == 1, "Hot path must not call store.load() when mtime is unchanged"
 
     def test_cross_instance_pickup_after_mtime_changes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -124,9 +118,7 @@ class TestMtimeProbeWithFileStore:
         # A second process / store instance writes a new session.
         jwt_v2 = _make_jwt(days=199)
         store2 = FileSessionStore(session_path)
-        store2.save(
-            PlaudSession(access_token=jwt_v2, region="eu", email="v2@example.com")
-        )
+        store2.save(PlaudSession(access_token=jwt_v2, region="eu", email="v2@example.com"))
         # Force mtime to strictly increase even if the write was within the same
         # second (coarse-clock safety on FAT32 / CI overlays).
         new_mtime = session_path.stat().st_mtime + 1.0
@@ -138,9 +130,7 @@ class TestMtimeProbeWithFileStore:
         assert s2.access_token == jwt_v2
         assert s2.region == "eu"
 
-    def test_invalidate_cache_clears_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_invalidate_cache_clears_entry(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
         session_path = tmp_path / "session.json"
         jwt = _make_jwt()
@@ -193,9 +183,7 @@ class TestMtimeProbeWithSessionStore:
             "plaud_tools.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
-        store1.file_store.save(
-            PlaudSession(access_token=jwt_v1, region="us", email="v1@example.com")
-        )
+        store1.file_store.save(PlaudSession(access_token=jwt_v1, region="us", email="v1@example.com"))
 
         manager = SessionManager(store1)
 
@@ -218,9 +206,7 @@ class TestMtimeProbeWithSessionStore:
         assert s_hot is s1
         # store1.load() routes through keyring (disabled) then file_store.load().
         # Because mtime is unchanged, the cache hit must prevent any file_store.load().
-        assert file_load_count[0] == 0, (
-            "No extra store reads within unchanged-mtime window"
-        )
+        assert file_load_count[0] == 0, "No extra store reads within unchanged-mtime window"
 
         # -- cross-instance write by store2 --
         jwt_v2 = _make_jwt(days=199)
@@ -229,9 +215,7 @@ class TestMtimeProbeWithSessionStore:
             service_name="plaud-tools-test-d5-mtime",
             dpapi_path=None,
         )
-        store2.file_store.save(
-            PlaudSession(access_token=jwt_v2, region="eu", email="v2@example.com")
-        )
+        store2.file_store.save(PlaudSession(access_token=jwt_v2, region="eu", email="v2@example.com"))
         # Ensure mtime strictly increases (coarse-clock safety).
         new_mtime = session_path.stat().st_mtime + 1.0
         os.utime(session_path, (new_mtime, new_mtime))
