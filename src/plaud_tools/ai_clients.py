@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import tomllib
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+
+import tomlkit
 
 ClientStatus = Literal["not-detected", "not-connected", "connected", "stale"]
 
@@ -84,13 +85,6 @@ def _read_toml(config_path: Path) -> dict:
     return tomllib.loads(text) if text else {}
 
 
-# Pattern matches [mcp_servers.plaud] and everything until the next section header.
-_TOML_SECTION_RE = re.compile(
-    r"\[mcp_servers\.plaud\][^\[]*",
-    re.DOTALL,
-)
-
-
 def _toml_string(value: str) -> str:
     # Prefer a single-quoted TOML literal string so Windows backslashes don't
     # get interpreted as escape sequences. Fall back to a basic string with
@@ -101,26 +95,45 @@ def _toml_string(value: str) -> str:
 
 
 def _write_toml_mcp(config_path: Path, command: str | None) -> None:
-    """Add/update or remove [mcp_servers.plaud] in a TOML file without touching other content."""
+    """Add/update or remove [mcp_servers.plaud] in a TOML file without touching other content.
+
+    Uses tomlkit for style-preserving round-trips so that array values like
+    ``args = ["-m", "x"]`` in other sections are never corrupted by section
+    boundary detection (the old regex ``[^\\[]*`` broke on inline arrays).
+    """
     config_path.parent.mkdir(parents=True, exist_ok=True)
     text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
-    if command is not None:
-        new_section = f"[mcp_servers.plaud]\ncommand = {_toml_string(command)}\n"
-        if _TOML_SECTION_RE.search(text):
-            # Use a callable replacement so re.sub doesn't treat backslashes
-            # in `new_section` (e.g. Windows paths) as group escapes.
-            text = _TOML_SECTION_RE.sub(lambda _m: new_section, text)
-        else:
-            sep = "\n" if text.endswith("\n") else "\n\n"
-            text = text.rstrip("\n") + sep + new_section
-    else:
-        text = _TOML_SECTION_RE.sub("", text).strip()
-        if text:
-            text += "\n"
+    doc = tomlkit.loads(text)
 
+    if command is not None:
+        # Build the [mcp_servers.plaud] table using a TOML literal string so
+        # that Windows backslashes are preserved byte-for-byte (same quoting
+        # behavior as _toml_string).
+        plaud_table = tomlkit.table()
+        if "'" not in command:
+            item = tomlkit.string(command, literal=True)
+        else:
+            item = tomlkit.string(command)
+        plaud_table.add("command", item)
+
+        mcp_servers = doc.get("mcp_servers")
+        if mcp_servers is None:
+            mcp_servers = tomlkit.table(is_super_table=True)
+            doc.add("mcp_servers", mcp_servers)
+        mcp_servers["plaud"] = plaud_table  # type: ignore[index]
+    else:
+        mcp_servers = doc.get("mcp_servers")
+        if mcp_servers is not None and "plaud" in mcp_servers:
+            del mcp_servers["plaud"]  # type: ignore[attr-defined]
+            # Remove the mcp_servers super-table entirely when it is now empty
+            # so the file stays clean (matches prior regex-strip behavior).
+            if not mcp_servers:  # type: ignore[truthy-iterable]
+                del doc["mcp_servers"]
+
+    out = tomlkit.dumps(doc)
     tmp = config_path.with_suffix(".plaud-tmp")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_text(out, encoding="utf-8")
     tmp.replace(config_path)
 
 
