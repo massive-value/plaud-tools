@@ -4,9 +4,9 @@ import argparse
 import getpass
 import json
 import sys
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 from . import __version__
 from .auth import PlaudAuth
@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     rename_cmd.add_argument("recording_id")
     rename_cmd.add_argument("new_name")
 
-    folders_cmd = sub.add_parser("folders")
+    folders_cmd = sub.add_parser("folders")  # noqa: F841  # side-effect: registers subparser
 
     move_to_folder_cmd = sub.add_parser("move-to-folder")
     move_to_folder_cmd.add_argument("recording_id")
@@ -95,9 +95,15 @@ def build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("file")
     upload_cmd.add_argument("--title")
     upload_cmd.add_argument("--folder-id")
-    upload_cmd.add_argument("--detach", action="store_true", help="Return immediately without waiting for transcription")
-    upload_cmd.add_argument("--skip-summary", action="store_true", help="Wait for transcript only, not summary")
-    upload_cmd.add_argument("--start-time", help="Recording timestamp as millisecond epoch integer or ISO 8601 string")
+    upload_cmd.add_argument(
+        "--detach", action="store_true", help="Return immediately without waiting for transcription"
+    )
+    upload_cmd.add_argument(
+        "--skip-summary", action="store_true", help="Wait for transcript only, not summary"
+    )
+    upload_cmd.add_argument(
+        "--start-time", help="Recording timestamp as millisecond epoch integer or ISO 8601 string"
+    )
     upload_cmd.add_argument("--timezone-offset", type=float, help="UTC offset in hours (e.g. -7.0)")
 
     merge_cmd = sub.add_parser("merge")
@@ -137,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    ping_cmd = sub.add_parser("ping")
+    ping_cmd = sub.add_parser("ping")  # noqa: F841  # side-effect: registers subparser
     return parser
 
 
@@ -191,7 +197,9 @@ def run_cli(
 
         session, source = store.load_with_source()
         if session is None:
-            return json.dumps({"session": None, "path": str(store.file_store.path), "source": source}, indent=2)
+            return json.dumps(
+                {"session": None, "path": str(store.file_store.path), "source": source}, indent=2
+            )
         manager = SessionManager(store)
         try:
             manager.require()
@@ -302,7 +310,10 @@ def run_cli(
     if args.command == "summary":
         detail = client.get_recording(args.recording_id, include_summary=True)
         if not detail.ai_content:
-            return json.dumps({"recording_id": args.recording_id, "summary": None, "note": "No summary available."}, indent=2)
+            return json.dumps(
+                {"recording_id": args.recording_id, "summary": None, "note": "No summary available."},
+                indent=2,
+            )
         return json.dumps({"recording_id": args.recording_id, "summary": detail.ai_content}, indent=2)
     if args.command == "rename":
         client.rename_recording(args.recording_id, args.new_name)
@@ -313,10 +324,7 @@ def run_cli(
     if args.command == "folders":
         tags = client.list_file_tags()
         return json.dumps(
-            [
-                {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
-                for tag in tags
-            ],
+            [{"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon} for tag in tags],
             indent=2,
         )
     if args.command in ("move-to-folder", "move"):
@@ -337,7 +345,9 @@ def run_cli(
         return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "restore"}, indent=2)
     if args.command == "delete":
         if not args.yes:
-            raise ValueError(f"Permanent deletion of {args.recording_id!r} cannot be undone. Re-run with --yes to confirm.")
+            raise ValueError(
+                f"Permanent deletion of {args.recording_id!r} cannot be undone. Re-run with --yes to confirm."
+            )
         client.delete_recordings([args.recording_id])
         return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "delete"}, indent=2)
     if args.command == "trash-move":
@@ -387,7 +397,9 @@ def run_cli(
                     start_ms = int(raw_st)
                 except ValueError as exc:
                     raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
-        recording = client.upload_recording(audio_data, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset)
+        recording = client.upload_recording(
+            audio_data, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
+        )
         if args.folder_id:
             client.set_recording_folder(recording.id, args.folder_id)
         result: dict = {

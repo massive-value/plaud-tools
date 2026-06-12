@@ -25,12 +25,16 @@ def test_login_stores_session_and_uses_browser_like_headers(tmp_path):
         [
             HttpResponse(
                 200,
-                json.dumps({"status": 0, "access_token": "header.payload.sig", "token_type": "bearer"}).encode(),
+                json.dumps(
+                    {"status": 0, "access_token": "header.payload.sig", "token_type": "bearer"}
+                ).encode(),
                 {},
             )
         ]
     )
-    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-auth-store", account_name="session")
+    store = SessionStore(
+        tmp_path / "session.json", service_name="plaud-tools-test-auth-store", account_name="session"
+    )
     auth = PlaudAuth(store, transport=transport)
     session = auth.login("user@example.com", "pw", "eu")
     assert session.email == "user@example.com"
@@ -46,7 +50,9 @@ def test_login_raises_on_bad_credentials_without_storing(tmp_path):
     transport = StubTransport(
         [HttpResponse(200, json.dumps({"status": -2, "msg": "wrong account or password"}).encode(), {})]
     )
-    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-auth", account_name="session")
+    store = SessionStore(
+        tmp_path / "session.json", service_name="plaud-tools-test-auth", account_name="session"
+    )
     auth = PlaudAuth(store, transport=transport)
     with pytest.raises(PlaudApiError, match="wrong account or password"):
         auth.login("user@example.com", "bad", "eu")
@@ -74,7 +80,7 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
     """
     import logging
 
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.session import SessionStore
 
     payload = json.dumps({"access_token": "header.payload.sig", "region": "us", "email": "u@example.com"})
     call_count = {"n": 0}
@@ -101,7 +107,9 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
 
     assert session is not None, "Expected retry to recover the session"
     assert session.email == "u@example.com"
-    assert call_count["n"] == 2, f"Expected exactly 2 keyring reads (1 failure + 1 success), got {call_count['n']}"
+    assert call_count["n"] == 2, (
+        f"Expected exactly 2 keyring reads (1 failure + 1 success), got {call_count['n']}"
+    )
     assert any("retrying" in r.message for r in caplog.records), (
         "Expected a warning about retrying; got: " + ", ".join(r.message for r in caplog.records)
     )
@@ -269,8 +277,7 @@ def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
     matching = [r for r in caplog.records if "keyring.set_password failed" in r.message]
     assert matching, (
         "Expected a 'keyring.set_password failed' warning when the keyring "
-        "backend raises; got none.  Records: "
-        + ", ".join(r.message for r in caplog.records)
+        "backend raises; got none.  Records: " + ", ".join(r.message for r in caplog.records)
     )
 
 
@@ -278,8 +285,10 @@ def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
 # Legacy plaud-toolkit credential migration
 # ---------------------------------------------------------------------------
 
+
 class _LegacyCred:
     """Minimal stand-in for keyring's Credential class."""
+
     def __init__(self, username: str, password: str) -> None:
         self.username = username
         self.password = password
@@ -293,7 +302,7 @@ class _FakeLegacyKeyring:
     ``delete_password``, and ``get_credential(service, None)``.
     """
 
-    def __init__(self, initial: "dict[tuple[str, str], str] | None" = None) -> None:
+    def __init__(self, initial: dict[tuple[str, str], str] | None = None) -> None:
         self.entries: dict[tuple[str, str], str] = dict(initial or {})
         self.deleted: list[tuple[str, str]] = []
         self.saved: list[tuple[str, str, str]] = []
@@ -328,10 +337,12 @@ def test_legacy_keyring_migration_happy_path(tmp_path, monkeypatch, caplog):
 
     from plaud_tools.session import SessionStore
 
-    fake = _FakeLegacyKeyring({
-        ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
-        ("profile.plaud-toolkit", "profile"): '{"email":"old@example.com","region":"us"}',
-    })
+    fake = _FakeLegacyKeyring(
+        {
+            ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
+            ("profile.plaud-toolkit", "profile"): '{"email":"old@example.com","region":"us"}',
+        }
+    )
     monkeypatch.setattr(
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
@@ -365,10 +376,12 @@ def test_legacy_keyring_migration_idempotent_on_second_load(tmp_path, monkeypatc
     """
     from plaud_tools.session import SessionStore
 
-    fake = _FakeLegacyKeyring({
-        ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
-        ("profile.plaud-toolkit", "profile"): '{"email":"old@example.com","region":"us"}',
-    })
+    fake = _FakeLegacyKeyring(
+        {
+            ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
+            ("profile.plaud-toolkit", "profile"): '{"email":"old@example.com","region":"us"}',
+        }
+    )
     monkeypatch.setattr(
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
@@ -391,9 +404,11 @@ def test_legacy_keyring_missing_one_half_does_not_migrate(tmp_path, monkeypatch)
     """
     from plaud_tools.session import SessionStore
 
-    fake = _FakeLegacyKeyring({
-        ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
-    })
+    fake = _FakeLegacyKeyring(
+        {
+            ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
+        }
+    )
     monkeypatch.setattr(
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
@@ -415,10 +430,12 @@ def test_legacy_keyring_migration_handles_malformed_profile(tmp_path, monkeypatc
     """
     from plaud_tools.session import SessionStore
 
-    fake = _FakeLegacyKeyring({
-        ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
-        ("profile.plaud-toolkit", "profile"): "this is not JSON",
-    })
+    fake = _FakeLegacyKeyring(
+        {
+            ("jwt.plaud-toolkit", "jwt"): "header.payload.sig",
+            ("profile.plaud-toolkit", "profile"): "this is not JSON",
+        }
+    )
     monkeypatch.setattr(
         "plaud_tools.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
@@ -443,6 +460,7 @@ def test_legacy_keyring_migration_handles_malformed_profile(tmp_path, monkeypatc
 # touching the real DPAPI subsystem.
 # ---------------------------------------------------------------------------
 
+
 class _FakeDpapi:
     """Reversible XOR-with-marker stand-in for CryptProtectData/CryptUnprotectData.
 
@@ -450,6 +468,7 @@ class _FakeDpapi:
     transform so tests can verify that the blob on disk is not the plaintext
     JSON, and that the decrypt path actually runs.
     """
+
     _MARKER = b"DPAPI-FAKE-"
 
     @classmethod
@@ -460,7 +479,7 @@ class _FakeDpapi:
     def unprotect(cls, ciphertext: bytes) -> bytes:
         if not ciphertext.startswith(cls._MARKER):
             raise ValueError("not a fake-DPAPI blob")
-        return ciphertext[len(cls._MARKER):][::-1]
+        return ciphertext[len(cls._MARKER) :][::-1]
 
 
 def _patch_fake_dpapi(monkeypatch):
@@ -504,12 +523,13 @@ def test_load_falls_back_to_dpapi_when_keyring_returns_none(tmp_path, monkeypatc
     """
     import logging
 
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
 
     class EmptyKeyring:
         """Reads always return None (simulates the cold-start failure)."""
+
         entries = {}
 
         @staticmethod
@@ -668,7 +688,7 @@ def test_keyring_load_self_heals_missing_dpapi_shadow(tmp_path, monkeypatch):
     populate the shadow so the fallback is available on the *next* cold-start
     MCP read — without forcing the user to sign out + sign in.
     """
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     payload = json.dumps({"access_token": "tok", "region": "us", "email": "u@example.com"})
@@ -952,8 +972,9 @@ def test_session_store_default_dpapi_path_uses_appdata_on_windows(monkeypatch, t
     private instance to verify the wiring.
     """
     import sys as _sys
+
     from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import SessionStore, _DPAPI_PATH_DEFAULT
+    from plaud_tools.session import SessionStore
 
     # Simulate Windows: patch appdata.dpapi_shadow_path to return a known path
     fake_shadow = tmp_path / "fake_shadow.dat"
@@ -972,6 +993,7 @@ def test_session_store_default_dpapi_path_is_none_off_windows(monkeypatch, tmp_p
     must be None (appdata.dpapi_shadow_path() returns None off Windows).
     """
     import sys as _sys
+
     from plaud_tools import appdata as appdata_mod
     from plaud_tools.session import SessionStore
 
@@ -1007,8 +1029,9 @@ def test_file_session_store_load_upgrade_with_legacy_file(tmp_path, monkeypatch)
     load() reads from legacy; subsequent save() writes to new path.
     """
     import json as _json
+
     from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import FileSessionStore, PlaudSession
+    from plaud_tools.session import FileSessionStore
 
     new_path = tmp_path / "new" / "session.json"
     legacy_dir = tmp_path / "legacy" / ".config" / "plaud-tools"
@@ -1024,6 +1047,7 @@ def test_file_session_store_load_upgrade_with_legacy_file(tmp_path, monkeypatch)
     monkeypatch.setattr(appdata_mod, "session_path", lambda: new_path)
     # Patch Path.home() to return tmp_path / "legacy" so legacy path resolves under tmp
     from pathlib import Path as _Path
+
     monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path / "legacy"))
 
     store = FileSessionStore()
@@ -1046,8 +1070,9 @@ def test_file_session_store_load_upgrade_new_path_wins(tmp_path, monkeypatch):
     The legacy file is NOT read.
     """
     import json as _json
+
     from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import FileSessionStore, PlaudSession
+    from plaud_tools.session import FileSessionStore
 
     new_path = tmp_path / "new" / "session.json"
     new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1066,13 +1091,12 @@ def test_file_session_store_load_upgrade_new_path_wins(tmp_path, monkeypatch):
 
     monkeypatch.setattr(appdata_mod, "session_path", lambda: new_path)
     from pathlib import Path as _Path
+
     monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path / "legacy"))
 
     store = FileSessionStore()
     result = store.load()
 
     assert result is not None
-    assert result.access_token == "new-tok", (
-        "When both new and legacy paths exist, new path must win"
-    )
+    assert result.access_token == "new-tok", "When both new and legacy paths exist, new path must win"
     assert result.region == "us"

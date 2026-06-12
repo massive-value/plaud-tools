@@ -4,21 +4,18 @@ These helpers were previously module-level functions in ``plaud_tools.tray_app``
 They live here now but are re-exported from the shim so existing tests and the
 PyInstaller entry script keep working.
 """
+
 from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
-import subprocess
 import sys
-import tempfile
 import tkinter as tk
 from pathlib import Path
 
-from ..appdata import events_path as _events_path, tray_log as _tray_log_path
+from ..appdata import events_path as _events_path
+from ..appdata import tray_log as _tray_log_path
 from ..layout import InstallLayout
-from ..ps1_templates import render_uninstall_ps1
-from ..session import SessionStore
 
 APP_NAME = "Plaud Tools"
 
@@ -40,9 +37,11 @@ def _setup_logging() -> None:
         level=logging.DEBUG,
         handlers=[handler],
     )
+
     # Also capture unhandled tkinter callback exceptions
     def _tk_error(exc, val, tb):  # type: ignore[override]
         logging.exception("tkinter callback error", exc_info=(exc, val, tb))
+
     tk.Tk.report_callback_exception = _tk_error  # type: ignore[assignment]
 
 
@@ -59,7 +58,9 @@ def _mcp_exe() -> str:
     if layout.mcp_exe is not None:
         return str(layout.mcp_exe)
     # Dev fallback: PyInstaller onedir output next to repo root
-    return str(Path(__file__).parent.parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe")
+    return str(
+        Path(__file__).parent.parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe"
+    )
 
 
 # Assets / theme
@@ -94,8 +95,10 @@ def _set_app_icon(win: tk.Wm) -> None:
 
 def _apply_theme(root: tk.Tk) -> None:
     from tkinter import ttk
+
     try:
         import sv_ttk
+
         sv_ttk.set_theme("light")
     except Exception:
         logging.warning("sv_ttk theme unavailable; falling back to default ttk", exc_info=True)
@@ -118,8 +121,11 @@ def _acquire_instance_lock() -> bool:
     if sys.platform != "win32":
         return True
     import ctypes
+
     # "Global\" prefix is required so the named mutex is visible across user sessions (e.g. UAC elevation).
-    _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance")
+    _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(
+        None, False, f"Global\\{APP_NAME.replace(' ', '')}Instance"
+    )
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         # Signal the running instance to surface its window, then exit.
         h = ctypes.windll.kernel32.OpenEventW(0x0002, False, _ACTIVATE_EVENT)  # EVENT_MODIFY_STATE
@@ -155,12 +161,15 @@ def _register_aumid() -> None:
         return
     try:
         import winreg
+
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _TOAST_AUMID_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
             winreg.SetValueEx(key, "CustomActivator", 0, winreg.REG_SZ, _COM_ACTIVATOR_CLSID)
         ico = _assets_path() / "icon.ico"
         if ico.exists():
-            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _TOAST_AUMID_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, _TOAST_AUMID_KEY, 0, winreg.KEY_SET_VALUE
+            ) as key:
                 winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(ico))
     except OSError:
         logging.warning("Could not register toast AUMID", exc_info=True)
@@ -177,6 +186,7 @@ def _register_com_activator() -> None:
         return
     try:
         import winreg
+
         exe = str(Path(sys.executable))
         cmd = f'"{exe}" --com-activate'
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _COM_ACTIVATOR_KEY, 0, winreg.KEY_SET_VALUE) as key:
@@ -194,6 +204,7 @@ def _unregister_com_activator() -> None:
     if sys.platform != "win32":
         return
     import winreg
+
     for subkey in (
         _COM_ACTIVATOR_KEY + r"\LocalServer32",
         _COM_ACTIVATOR_KEY,
@@ -224,6 +235,7 @@ def _autostart_enabled() -> bool:
         return False
     try:
         import winreg
+
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as key:
             val, _ = winreg.QueryValueEx(key, _AUTOSTART_NAME)
             return Path(val).resolve() == Path(sys.executable).resolve()
@@ -231,7 +243,7 @@ def _autostart_enabled() -> bool:
         return False
 
 
-def _autostart_opt_out_marker_path() -> "Path | None":
+def _autostart_opt_out_marker_path() -> Path | None:
     """Return the autostart opt-out marker path, or None outside a frozen bundle."""
     if not getattr(sys, "frozen", False) or sys.platform != "win32":
         return None
@@ -248,6 +260,7 @@ def _set_autostart(enable: bool) -> None:
     if sys.platform != "win32":
         return
     import winreg
+
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enable:
             winreg.SetValueEx(key, _AUTOSTART_NAME, 0, winreg.REG_SZ, str(sys.executable))
@@ -320,7 +333,7 @@ def _install_completions_dir() -> Path | None:
     return install_root / "completions"
 
 
-def _stale_sourcing_re() -> "re.Pattern[str] | None":
+def _stale_sourcing_re() -> re.Pattern[str] | None:
     """Regex that matches only sourcing lines that point at the PlaudTools install dir.
 
     Anchored to the running install path (derived from sys.executable) so
@@ -331,6 +344,7 @@ def _stale_sourcing_re() -> "re.Pattern[str] | None":
     anchor the pattern to.  Callers must handle the None case.
     """
     import re
+
     completions_dir = _install_completions_dir()
     if completions_dir is None:
         return None
@@ -354,10 +368,13 @@ def _setup_cli_path() -> None:
         return
     import ctypes
     import winreg
+
     cli_str = str(cli)
     try:
         with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.HKEY_CURRENT_USER,
+            "Environment",
+            0,
             winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
         ) as key:
             try:
@@ -373,8 +390,13 @@ def _setup_cli_path() -> None:
         HWND_BROADCAST = 0xFFFF
         WM_SETTINGCHANGE = 0x001A
         ctypes.windll.user32.SendMessageTimeoutW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
-            0x0002, 5000, None,
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            "Environment",
+            0x0002,
+            5000,
+            None,
         )
         logging.info("Added %s to user PATH", cli_str)
     except OSError:
@@ -407,8 +429,9 @@ def _setup_ps_completions() -> None:
             if profile.exists():
                 content = profile.read_text(encoding="utf-8-sig")
                 lines = [
-                    l for l in content.splitlines(keepends=True)
-                    if stale_re is None or not stale_re.match(l.strip())
+                    line
+                    for line in content.splitlines(keepends=True)
+                    if stale_re is None or not stale_re.match(line.strip())
                 ]
                 content = "".join(lines)
                 if source_line in content:
@@ -427,6 +450,7 @@ def _setup_ps_completions() -> None:
 
 
 # Environment verification (read-only; used by the tray at startup)
+
 
 class EnvStatus:
     """Result of a read-only environment check performed at tray startup."""
@@ -465,6 +489,7 @@ def _check_cli_path() -> bool:
         return True  # not a frozen bundle — nothing to verify
     try:
         import winreg
+
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
             current, _ = winreg.QueryValueEx(key, "Path")
         parts = [p.strip() for p in current.split(";") if p.strip()]
@@ -496,7 +521,7 @@ def _check_ps_completions() -> bool:
     return False
 
 
-def _verify_env() -> "EnvStatus":
+def _verify_env() -> EnvStatus:
     """Read-only environment check — does not modify PATH, profiles, or registry.
 
     The autostart slot is considered OK both when the registry entry is present
@@ -512,13 +537,36 @@ def _verify_env() -> "EnvStatus":
 
 
 __all__ = [
-    "_setup_logging", "_mcp_exe", "_assets_path", "_set_app_icon", "_apply_theme",
-    "_acquire_instance_lock", "_ACTIVATE_EVENT", "_AUTOSTART_KEY", "_AUTOSTART_NAME",
-    "_register_aumid", "_TOAST_AUMID",
-    "_COM_ACTIVATOR_CLSID", "_register_com_activator", "_unregister_com_activator",
-    "_autostart_enabled", "_autostart_opted_out", "_autostart_opt_out_marker_path",
-    "_set_autostart", "_install_dir", "_cli_dir",
-    "_completions_dir", "_install_completions_dir", "_stale_sourcing_re",
-    "_setup_cli_path", "_setup_ps_completions", "EnvStatus", "_check_cli_path",
-    "_check_ps_completions", "_verify_env", "_events_path", "APP_NAME", "Path",
+    "_setup_logging",
+    "_mcp_exe",
+    "_assets_path",
+    "_set_app_icon",
+    "_apply_theme",
+    "_acquire_instance_lock",
+    "_ACTIVATE_EVENT",
+    "_AUTOSTART_KEY",
+    "_AUTOSTART_NAME",
+    "_register_aumid",
+    "_TOAST_AUMID",
+    "_COM_ACTIVATOR_CLSID",
+    "_register_com_activator",
+    "_unregister_com_activator",
+    "_autostart_enabled",
+    "_autostart_opted_out",
+    "_autostart_opt_out_marker_path",
+    "_set_autostart",
+    "_install_dir",
+    "_cli_dir",
+    "_completions_dir",
+    "_install_completions_dir",
+    "_stale_sourcing_re",
+    "_setup_cli_path",
+    "_setup_ps_completions",
+    "EnvStatus",
+    "_check_cli_path",
+    "_check_ps_completions",
+    "_verify_env",
+    "_events_path",
+    "APP_NAME",
+    "Path",
 ]

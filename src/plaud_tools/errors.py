@@ -49,7 +49,7 @@ class PlaudApiError(PlaudError):
         self.raw_body = raw_body
 
     @classmethod
-    def from_http_error(cls, exc: "HTTPError") -> "PlaudApiError":
+    def from_http_error(cls, exc: HTTPError) -> PlaudApiError:
         """Build a :class:`PlaudApiError` from a :class:`urllib.error.HTTPError`.
 
         Reads the response body, attempts a JSON parse, and extracts Plaud's

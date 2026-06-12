@@ -8,46 +8,49 @@ Covers:
 The Tk widget tests use the `requires_display` mark so they are skipped in
 headless CI environments that lack a working Tcl/Tk installation.
 """
+
 from __future__ import annotations
 
-import sys
-import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 # conftest.py already stubs pystray / PIL so this import succeeds on CI.
 from plaud_tools.tray_app import UninstallDialog
 
-
 # ---------------------------------------------------------------------------
 # Pure-predicate tests — no display required
 # ---------------------------------------------------------------------------
+
 
 class TestAiClientWarningPredicate:
     """UninstallDialog.ai_client_warning_visible is a static predicate."""
 
     def test_warning_shown_when_delete_dir_and_no_disconnect(self):
         """The risky combination: install dir deleted, AI clients NOT cleaned up."""
-        assert UninstallDialog.ai_client_warning_visible(
-            delete_installdir=True, disconnect_clients=False
-        ) is True
+        assert (
+            UninstallDialog.ai_client_warning_visible(delete_installdir=True, disconnect_clients=False)
+            is True
+        )
 
     def test_no_warning_when_both_checked(self):
         """Safe: directory deleted AND clients disconnected first — no dangling paths."""
-        assert UninstallDialog.ai_client_warning_visible(
-            delete_installdir=True, disconnect_clients=True
-        ) is False
+        assert (
+            UninstallDialog.ai_client_warning_visible(delete_installdir=True, disconnect_clients=True)
+            is False
+        )
 
     def test_no_warning_when_delete_dir_unchecked(self):
         """Install dir not deleted — dangling path cannot arise."""
-        assert UninstallDialog.ai_client_warning_visible(
-            delete_installdir=False, disconnect_clients=False
-        ) is False
+        assert (
+            UninstallDialog.ai_client_warning_visible(delete_installdir=False, disconnect_clients=False)
+            is False
+        )
 
     def test_no_warning_when_delete_dir_unchecked_clients_checked(self):
         """Both safe states: no install-dir deletion AND clients being disconnected."""
-        assert UninstallDialog.ai_client_warning_visible(
-            delete_installdir=False, disconnect_clients=True
-        ) is False
+        assert (
+            UninstallDialog.ai_client_warning_visible(delete_installdir=False, disconnect_clients=True)
+            is False
+        )
 
     def test_predicate_is_false_for_all_safe_combinations(self):
         safe = [
@@ -68,6 +71,7 @@ class TestAiClientWarningPredicate:
 # Warning-update callback test — uses mock BooleanVar / StringVar
 # ---------------------------------------------------------------------------
 
+
 class TestWarningUpdateCallback:
     """Test the trace callback logic without a real Tk display.
 
@@ -86,20 +90,20 @@ class TestWarningUpdateCallback:
 
     def _build_update_warning(self, var_installdir, var_clients, warning_var):
         """Return the _update_warning closure as it would be built in show()."""
+
         def _update_warning(*_args):
-            if UninstallDialog.ai_client_warning_visible(
-                var_installdir.get(), var_clients.get()
-            ):
+            if UninstallDialog.ai_client_warning_visible(var_installdir.get(), var_clients.get()):
                 warning_var.set(
                     "⚠ AI clients will still point at the deleted install directory. "
                     "Restart Claude Desktop / Claude Code / Codex after uninstalling to clear the error."
                 )
             else:
                 warning_var.set("")
+
         return _update_warning
 
     def test_warning_set_when_dangerous(self):
-        vi = self._make_mock_var(True)   # delete installdir
+        vi = self._make_mock_var(True)  # delete installdir
         vc = self._make_mock_var(False)  # disconnect clients NOT checked
         wv = self._make_string_var()
         fn = self._build_update_warning(vi, vc, wv)
@@ -110,7 +114,7 @@ class TestWarningUpdateCallback:
 
     def test_warning_cleared_when_safe(self):
         vi = self._make_mock_var(True)
-        vc = self._make_mock_var(True)   # clients WILL be disconnected
+        vc = self._make_mock_var(True)  # clients WILL be disconnected
         wv = self._make_string_var()
         fn = self._build_update_warning(vi, vc, wv)
         fn()
@@ -128,6 +132,7 @@ class TestWarningUpdateCallback:
 # ---------------------------------------------------------------------------
 # Button-disable guard test — mock do_uninstall internals
 # ---------------------------------------------------------------------------
+
 
 class TestButtonDisableGuard:
     """Verify the _set_buttons_in_flight helper sets the right widget states.

@@ -1,10 +1,11 @@
 """LoginWindow — collects email/password/region and signs in via PlaudAuth."""
+
 from __future__ import annotations
 
 import logging
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import ttk
-from typing import Callable
 
 from ...auth import PlaudAuth
 from ...errors import PlaudApiError, PlaudSessionExpiredError

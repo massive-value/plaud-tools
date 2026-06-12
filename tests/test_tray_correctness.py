@@ -1,4 +1,5 @@
 """Tests for issue #44: log rotation, test-connection timeout, narrow mcp exceptions."""
+
 from __future__ import annotations
 
 import json
@@ -9,9 +10,6 @@ import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # 1. Log rotation — _setup_logging uses RotatingFileHandler
@@ -53,9 +51,7 @@ def test_setup_logging_rotating_handler_limits(tmp_path, monkeypatch):
         _setup_logging()
 
         rfh = next(
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.handlers.RotatingFileHandler)
+            h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.RotatingFileHandler)
         )
         assert rfh.maxBytes == 1_000_000
         assert rfh.backupCount == 3
@@ -81,9 +77,7 @@ def test_setup_logging_creates_log_file_in_localappdata(tmp_path, monkeypatch):
         _setup_logging()
 
         rfh = next(
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.handlers.RotatingFileHandler)
+            h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.RotatingFileHandler)
         )
         log_path = Path(rfh.baseFilename)
         assert log_path == tmp_path / "PlaudTools" / "tray.log"
@@ -99,13 +93,15 @@ def test_setup_logging_creates_log_file_in_localappdata(tmp_path, monkeypatch):
 def test_format_session_expired_diag_strips_type_and_ts():
     from plaud_tools.tray.background import _format_session_expired_diag
 
-    out = _format_session_expired_diag({
-        "type": "session_expired",
-        "ts": 1779462640.5,
-        "reason": "no_session",
-        "store_source": "missing",
-        "mcp_pid": 1234,
-    })
+    out = _format_session_expired_diag(
+        {
+            "type": "session_expired",
+            "ts": 1779462640.5,
+            "reason": "no_session",
+            "store_source": "missing",
+            "mcp_pid": 1234,
+        }
+    )
     assert "type" not in out
     assert "ts" not in out
     assert "reason='no_session'" in out
@@ -117,12 +113,14 @@ def test_format_session_expired_diag_stable_ordering():
     """Keys are sorted so log lines are diff-friendly across runs."""
     from plaud_tools.tray.background import _format_session_expired_diag
 
-    out = _format_session_expired_diag({
-        "type": "session_expired",
-        "ts": 1.0,
-        "zebra": 1,
-        "alpha": 2,
-    })
+    out = _format_session_expired_diag(
+        {
+            "type": "session_expired",
+            "ts": 1.0,
+            "zebra": 1,
+            "alpha": 2,
+        }
+    )
     assert out.index("alpha=") < out.index("zebra=")
 
 
@@ -154,7 +152,7 @@ class _FakePlaudClient:
 
 def _run_test_connection(fake_client, timeout_seconds=15):
     """Helper: create a minimal TrayApp, inject a fake client, run _test_connection."""
-    from plaud_tools.tray_app import TrayApp, _TEST_CONNECTION_TIMEOUT
+    from plaud_tools.tray_app import TrayApp
 
     app = TrayApp.__new__(TrayApp)
     app._root = None  # no tkinter needed — callback fires on root.after(0, ...)
@@ -256,10 +254,10 @@ def test_mcp_upload_recording_catches_ffmpeg_runtime_error(tmp_path, monkeypatch
     )
 
     # Patch the mcp module's import of transcode to use the monkeypatched version.
-    import plaud_tools.mcp as mcp_module
 
     def patched_inner_upload(client):
         from plaud_tools import transcode as t
+
         path = mp3_file
         file_type, needs_transcode = t.get_file_type(path)
         raw_bytes = path.read_bytes()
@@ -267,9 +265,9 @@ def test_mcp_upload_recording_catches_ffmpeg_runtime_error(tmp_path, monkeypatch
             t.transcode_to_mp3(raw_bytes, path.suffix)
         except RuntimeError as exc:
             from plaud_tools.mcp import _json_result
+
             return _json_result({"error": str(exc)}, is_error=True)
 
-    from plaud_tools.mcp import _json_result
     client_mock = MagicMock()
     handlers = build_handlers(lambda: client_mock)
 
@@ -284,8 +282,8 @@ def test_mcp_upload_recording_catches_ffmpeg_runtime_error(tmp_path, monkeypatch
 
 def test_mcp_call_still_catches_plaud_api_error():
     """_call must still catch PlaudApiError and return an MCP error dict."""
-    from plaud_tools.mcp import _call
     from plaud_tools.errors import PlaudApiError
+    from plaud_tools.mcp import _call
 
     def get_client():
         return MagicMock()

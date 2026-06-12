@@ -1,21 +1,21 @@
 """Tests for UrllibTransport error handling — issue #42."""
+
 from __future__ import annotations
 
 import io
 import json
-import socket
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
 import pytest
 
 from plaud_tools.errors import PlaudApiError
-from plaud_tools.transport import UrllibTransport, _DEFAULT_TIMEOUT
-
+from plaud_tools.transport import _DEFAULT_TIMEOUT, UrllibTransport
 
 # ---------------------------------------------------------------------------
 # Helper: build a urllib.error.HTTPError with a readable body
 # ---------------------------------------------------------------------------
+
 
 def _make_http_error(status: int, body: bytes, content_type: str = "application/json") -> HTTPError:
     headers = {"Content-Type": content_type}
@@ -27,6 +27,7 @@ def _make_http_error(status: int, body: bytes, content_type: str = "application/
 # ---------------------------------------------------------------------------
 # PlaudApiError.from_http_error unit tests (via transport layer)
 # ---------------------------------------------------------------------------
+
 
 class TestHttpErrorToApiError:
     def test_json_envelope_with_msg(self):
@@ -110,6 +111,7 @@ class TestHttpErrorToApiError:
 # UrllibTransport integration: verify raised errors carry the new attributes
 # ---------------------------------------------------------------------------
 
+
 class TestUrllibTransportErrorPropagation:
     def test_http_error_surfaces_structured_fields(self):
         body = json.dumps({"status": -429, "msg": "too many requests"}).encode()
@@ -142,6 +144,7 @@ class TestUrllibTransportErrorPropagation:
 # Timeout parameter threading — Wave 0 / A1
 # ---------------------------------------------------------------------------
 
+
 def _make_successful_response() -> MagicMock:
     """Return a minimal mock that satisfies the urlopen context-manager protocol."""
     resp = MagicMock()
@@ -169,7 +172,7 @@ class TestUrllibTransportTimeout:
         with patch("plaud_tools.transport.urlopen", return_value=_make_successful_response()) as mock_open:
             transport.request("GET", "https://example.com/api", {})
 
-        _req, kwargs_or_pos = mock_open.call_args[0], mock_open.call_args
+        _req, kwargs_or_pos = mock_open.call_args[0], mock_open.call_args  # noqa: F841  # destructuring for clarity
         # urlopen(req, timeout=...) — timeout is the second positional arg
         assert mock_open.call_args[1].get("timeout") == 45.0 or mock_open.call_args[0][1] == 45.0
 
@@ -215,7 +218,7 @@ class TestUrllibTransportTimeoutErrors:
         """socket.timeout (which may surface directly from urlopen) must become PlaudApiError."""
         transport = UrllibTransport(timeout=30.0)
 
-        with patch("plaud_tools.transport.urlopen", side_effect=socket.timeout("socket timed out")):
+        with patch("plaud_tools.transport.urlopen", side_effect=TimeoutError("socket timed out")):
             with pytest.raises(PlaudApiError) as exc_info:
                 transport.request("GET", "https://example.com/api", {})
 
@@ -226,7 +229,7 @@ class TestUrllibTransportTimeoutErrors:
     def test_url_error_with_socket_timeout_reason_raises_plaud_api_error(self):
         """URLError whose reason is a socket.timeout must also surface as PlaudApiError."""
         transport = UrllibTransport()
-        cause = socket.timeout("read timed out")
+        cause = TimeoutError("read timed out")
         url_exc = URLError(reason=cause)
 
         with patch("plaud_tools.transport.urlopen", side_effect=url_exc):

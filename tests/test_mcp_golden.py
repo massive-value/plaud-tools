@@ -23,6 +23,7 @@ description inflation.  The budget is 1.1x the post-#30 baseline (387 words).
 If ``tiktoken`` is ever added as a dev dependency the proxy can be swapped for
 an exact cl100k_base count without changing the budget constant.
 """
+
 from __future__ import annotations
 
 import json
@@ -91,8 +92,7 @@ def test_tool_descriptions_match_golden(tmp_path: Path) -> None:
             "MCP tool descriptions have changed.\n\n"
             "If this change is intentional, regenerate the golden fixture:\n"
             "    PLAUD_GOLDEN_REGEN=1 pytest tests/test_mcp_golden.py\n\n"
-            "Diff (golden → live):\n"
-            + diff_text
+            "Diff (golden → live):\n" + diff_text
         )
 
 

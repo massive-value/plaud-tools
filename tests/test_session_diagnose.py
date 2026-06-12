@@ -10,14 +10,12 @@ autouse fixtures in conftest.py:
   - _fail_if_real_shadow_written: mtime trip-wire on the real shadow file
   - _zero_keyring_retry_delay:  collapses retry budget to zero delay
 """
+
 from __future__ import annotations
 
 import base64
 import json
-import os
 import time as _time
-
-import pytest
 
 from plaud_tools.session import (
     FileSessionStore,
@@ -27,10 +25,10 @@ from plaud_tools.session import (
     _decode_header_safe,
 )
 
-
 # ---------------------------------------------------------------------------
 # _decode_header_safe (moved from mcp._decode_jwt_header_safe)
 # ---------------------------------------------------------------------------
+
 
 class TestDecodeHeaderSafe:
     def test_returns_empty_for_non_jwt(self):
@@ -59,6 +57,7 @@ class TestDecodeHeaderSafe:
 # ---------------------------------------------------------------------------
 # SessionManager.diagnose() — no session
 # ---------------------------------------------------------------------------
+
 
 class TestSessionManagerDiagnoseNoSession:
     def test_returns_missing_source_when_no_session(self, tmp_path, monkeypatch):
@@ -100,16 +99,17 @@ class TestSessionManagerDiagnoseNoSession:
 # SessionManager.diagnose() — valid session from env source
 # ---------------------------------------------------------------------------
 
+
 class TestSessionManagerDiagnoseEnvSource:
     def _make_jwt(self, typ: str = "UT", exp_offset_days: int = 200) -> str:
         """Build a minimal but structurally valid JWT."""
-        header = base64.urlsafe_b64encode(
-            json.dumps({"alg": "HS256", "typ": typ}).encode()
-        ).decode().rstrip("=")
+        header = (
+            base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": typ}).encode()).decode().rstrip("=")
+        )
         exp = int(_time.time()) + exp_offset_days * 86400
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"sub": "user123", "exp": exp}).encode()
-        ).decode().rstrip("=")
+        payload = (
+            base64.urlsafe_b64encode(json.dumps({"sub": "user123", "exp": exp}).encode()).decode().rstrip("=")
+        )
         return f"{header}.{payload}.fakesig"
 
     def test_env_source_returns_expected_fields(self, tmp_path, monkeypatch):
@@ -162,15 +162,14 @@ class TestSessionManagerDiagnoseEnvSource:
 # SessionManager.diagnose() — malformed JWT
 # ---------------------------------------------------------------------------
 
+
 class TestSessionManagerDiagnoseMalformedJwt:
     def test_malformed_jwt_omits_token_typ(self, tmp_path, monkeypatch):
         """A stored token that isn't a valid JWT still returns store_source;
         token_typ is simply absent rather than raising."""
         monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
         session_path = tmp_path / "session.json"
-        FileSessionStore(session_path).save(
-            PlaudSession(access_token="not.a.valid.jwt.at.all", region="us")
-        )
+        FileSessionStore(session_path).save(PlaudSession(access_token="not.a.valid.jwt.at.all", region="us"))
         store = SessionStore(
             session_path,
             service_name="plaud-tools-test-diag-malformed",
@@ -190,18 +189,14 @@ class TestSessionManagerDiagnoseMalformedJwt:
     def test_missing_exp_claim_omits_days_until_expiry(self, tmp_path, monkeypatch):
         """A JWT with no 'exp' claim: days_until_expiry absent, no crash."""
         monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
-        header = base64.urlsafe_b64encode(
-            b'{"alg":"HS256","typ":"UT"}'
-        ).decode().rstrip("=")
+        header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
         # payload with no 'exp' field
         payload_bytes = json.dumps({"sub": "user"}).encode()
         payload = base64.urlsafe_b64encode(payload_bytes).decode().rstrip("=")
         jwt_no_exp = f"{header}.{payload}.fakesig"
 
         session_path = tmp_path / "session.json"
-        FileSessionStore(session_path).save(
-            PlaudSession(access_token=jwt_no_exp, region="us")
-        )
+        FileSessionStore(session_path).save(PlaudSession(access_token=jwt_no_exp, region="us"))
         store = SessionStore(
             session_path,
             service_name="plaud-tools-test-diag-noexp",
@@ -223,15 +218,12 @@ class TestSessionManagerDiagnoseMalformedJwt:
 # SessionManager.diagnose() — keyring source
 # ---------------------------------------------------------------------------
 
+
 class TestSessionManagerDiagnoseKeyringSource:
     def _make_jwt(self, days: int = 200) -> str:
-        header = base64.urlsafe_b64encode(
-            b'{"alg":"HS256","typ":"UT"}'
-        ).decode().rstrip("=")
+        header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
         exp = int(_time.time()) + days * 86400
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"exp": exp}).encode()
-        ).decode().rstrip("=")
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
         return f"{header}.{payload}.sig"
 
     def test_keyring_source_returns_correct_store_source(self, tmp_path, monkeypatch):
@@ -269,15 +261,12 @@ class TestSessionManagerDiagnoseKeyringSource:
 # SessionManager.diagnose() — file source
 # ---------------------------------------------------------------------------
 
+
 class TestSessionManagerDiagnoseFileSource:
     def _make_jwt(self, days: int = 200) -> str:
-        header = base64.urlsafe_b64encode(
-            b'{"alg":"HS256","typ":"UT"}'
-        ).decode().rstrip("=")
+        header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"UT"}').decode().rstrip("=")
         exp = int(_time.time()) + days * 86400
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"exp": exp}).encode()
-        ).decode().rstrip("=")
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
         return f"{header}.{payload}.sig"
 
     def test_file_source_returns_correct_store_source(self, tmp_path, monkeypatch):
@@ -309,6 +298,7 @@ class TestSessionManagerDiagnoseFileSource:
 # SessionManager.diagnose() — defensive error field
 # ---------------------------------------------------------------------------
 
+
 class TestSessionManagerDiagnoseError:
     def test_diagnose_error_field_set_when_store_raises(self, tmp_path, monkeypatch):
         """If the store raises unexpectedly, diagnose() returns a diagnose_error
@@ -335,6 +325,7 @@ class TestSessionManagerDiagnoseError:
 # (plus region, email_present, token_typ, days_until_expiry when session exists)
 # ---------------------------------------------------------------------------
 
+
 class TestSessionExpiredPayloadGolden:
     """Regression guard: the session_expired event payload fields must not change.
 
@@ -343,9 +334,7 @@ class TestSessionExpiredPayloadGolden:
     names.  This golden test catches accidental renames or removals.
     """
 
-    def test_event_contains_all_expected_fields_when_env_token_set(
-        self, tmp_path, monkeypatch
-    ):
+    def test_event_contains_all_expected_fields_when_env_token_set(self, tmp_path, monkeypatch):
         import base64 as _b64
         import json as _json
 
@@ -353,11 +342,13 @@ class TestSessionExpiredPayloadGolden:
             return _b64.urlsafe_b64encode(s.encode()).decode().rstrip("=")
 
         exp = int(_time.time()) + 200 * 86400
-        fake_jwt = ".".join([
-            _b64u('{"alg":"HS256","typ":"UT"}'),
-            _b64u(_json.dumps({"exp": exp})),
-            "sig",
-        ])
+        fake_jwt = ".".join(
+            [
+                _b64u('{"alg":"HS256","typ":"UT"}'),
+                _b64u(_json.dumps({"exp": exp})),
+                "sig",
+            ]
+        )
 
         monkeypatch.setenv("PLAUD_ACCESS_TOKEN", fake_jwt)
 
@@ -365,6 +356,7 @@ class TestSessionExpiredPayloadGolden:
         monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
 
         from plaud_tools.mcp import _emit_session_expired
+
         _emit_session_expired("token_expired")
 
         assert events_file.exists()

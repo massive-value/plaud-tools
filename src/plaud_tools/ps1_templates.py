@@ -17,6 +17,7 @@ Public API
     Return a PowerShell dispatcher string that invokes ``uninstall.ps1`` with
     the given arguments (log_dirs is a list of Path / str, may be empty).
 """
+
 from __future__ import annotations
 
 import sys
@@ -134,9 +135,7 @@ def render_uninstall_ps1(
     log_dirs_str = ";".join(str(d) for d in (log_dirs or []))
     safe_log_dirs = _ps_escape(log_dirs_str)
     lines = [
-        f"& '{safe_ps1}'"
-        f" -TrayPid {tray_pid}"
-        f" -InstallDir '{safe_install}'",
+        f"& '{safe_ps1}' -TrayPid {tray_pid} -InstallDir '{safe_install}'",
     ]
     if log_dirs_str:
         lines[0] += f" -LogDirs '{safe_log_dirs}'"

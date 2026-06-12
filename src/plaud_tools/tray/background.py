@@ -4,6 +4,7 @@ Pulled out of ``tray/app.py`` as a mixin to keep that file under 400 lines.
 ``BackgroundMixin`` is otherwise inert and depends only on ``self`` attributes
 defined by :class:`TrayApp`.
 """
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ import random
 import sys
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from ..ai_clients import connect_all, status_all
 from .setup import (
@@ -25,7 +26,6 @@ from .setup import (
     _setup_ps_completions,
     _verify_env,
 )
-from .setup import APP_NAME
 from .toasts import _show_session_expired_toast, _show_update_available_toast
 from .updater import _check_for_update
 
@@ -48,6 +48,7 @@ class _BackgroundMixin:
         if sys.platform != "win32":
             return
         import ctypes
+
         h = ctypes.windll.kernel32.CreateEventW(None, False, False, _ACTIVATE_EVENT)
         if not h:
             return
@@ -178,15 +179,17 @@ class _BackgroundMixin:
                     missing,
                 )
                 if self._root and self._home_win:
+
                     def _nudge_home() -> None:
                         if self._home_win:
                             self._home_win._refresh_repair_btn()
                             self._home_win._refresh_setup_failure_row()
+
                     self._root.after(0, _nudge_home)
         except Exception:
             logging.warning("Environment check failed", exc_info=True)
 
-    def _auto_repair_env(self, status: "EnvStatus") -> None:
+    def _auto_repair_env(self, status: EnvStatus) -> None:
         """Silently restore missing setup entries on tray startup.
 
         Only runs in the frozen bundle context — the helpers it calls (PATH /
@@ -216,11 +219,12 @@ class _BackgroundMixin:
             except Exception:
                 logging.warning("Auto-repair: autostart restore failed", exc_info=True)
 
-    def _repair_env(self, on_done: "Callable[[bool, str], None]") -> None:
+    def _repair_env(self, on_done: Callable[[bool, str], None]) -> None:
         """Re-run the mutating setup helpers and report success/failure via callback.
 
         Runs in a background thread so the UI stays responsive.
         """
+
         def _work() -> None:
             try:
                 _setup_cli_path()
@@ -231,10 +235,11 @@ class _BackgroundMixin:
                 self._env_status = _verify_env()
                 if self._root:
                     self._root.after(0, lambda: on_done(True, "Setup repaired successfully."))
-            except Exception as exc:
+            except Exception as exc:  # noqa: F841  # captured by lambda on next line
                 logging.warning("Repair setup failed", exc_info=True)
                 if self._root:
                     self._root.after(0, lambda: on_done(False, f"Repair failed: {exc}"))
+
         threading.Thread(target=_work, daemon=True).start()
 
 

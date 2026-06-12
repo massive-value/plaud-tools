@@ -60,3 +60,38 @@ tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# Target the project's minimum supported Python version (3.11–3.13).
+target-version = "py311"
+# 110 chosen to match the 99th-percentile line length in the codebase (~98 chars)
+# while comfortably fitting the handful of intentionally long lines (string literals,
+# URL/description strings in argparse/MCP schemas) without reformatting churn.
+line-length = 110
+
+[tool.ruff.lint]
+# E/W  — pycodestyle errors/warnings
+# F    — Pyflakes (unused imports, undefined names, etc.)
+# I    — isort (import ordering)
+# UP   — pyupgrade (modernise syntax for py311+)
+# B    — flake8-bugbear (likely bugs and design issues)
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    # F821: ruff incorrectly reports undefined names inside string annotations
+    # (forward-reference string literals) when the actual import is inside
+    # the function body.  background.py uses "EnvStatus" and setup.py uses
+    # "re.Pattern[str]" as string type hints — both are valid forward refs.
+    "F821",
+    # B008: do not perform function calls in default argument values —
+    # disabled because mcp.py / server.py use factory callables in argument
+    # defaults deliberately (FastMCP pattern).
+    "B008",
+    # B904: within an except clause, raise … from … — several existing
+    # re-raises use bare raise inside except blocks; fixing is safe but
+    # produces large diffs and is out of scope for this mechanical task.
+    "B904",
+]
+
+[tool.ruff.lint.isort]
+# Keep isort consistent with the existing "from __future__ import annotations" style.
+force-sort-within-sections = false

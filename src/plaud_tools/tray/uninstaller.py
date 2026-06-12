@@ -1,4 +1,5 @@
 """Uninstall helpers and the :class:`UninstallDialog` window."""
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +24,6 @@ from .setup import (
     _unregister_com_activator,
 )
 
-
 # ---------------------------------------------------------------------------
 # Uninstall helpers (inverses of the setup helpers above)
 # ---------------------------------------------------------------------------
@@ -38,9 +38,12 @@ def _remove_cli_path() -> None:
         return
     import ctypes
     import winreg
+
     try:
         with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.HKEY_CURRENT_USER,
+            "Environment",
+            0,
             winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
         ) as key:
             try:
@@ -55,8 +58,13 @@ def _remove_cli_path() -> None:
         HWND_BROADCAST = 0xFFFF
         WM_SETTINGCHANGE = 0x001A
         ctypes.windll.user32.SendMessageTimeoutW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
-            0x0002, 5000, None,
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            "Environment",
+            0x0002,
+            5000,
+            None,
         )
         logging.info("Removed %s from user PATH", cli)
     except OSError:
@@ -84,7 +92,7 @@ def _remove_ps_completions() -> None:
             continue
         try:
             content = profile.read_text(encoding="utf-8-sig")
-            lines = [l for l in content.splitlines(keepends=True) if not stale_re.match(l.strip())]
+            lines = [line for line in content.splitlines(keepends=True) if not stale_re.match(line.strip())]
             new_content = "".join(lines)
             if new_content != content:
                 profile.write_text(new_content, encoding="utf-8")
@@ -195,25 +203,25 @@ class UninstallDialog:
         ).pack(anchor="w", pady=(0, 8))
 
         # --- checkboxes ---
-        var_clients   = tk.BooleanVar(value=True)
-        var_path      = tk.BooleanVar(value=True)
+        var_clients = tk.BooleanVar(value=True)
+        var_path = tk.BooleanVar(value=True)
         var_autostart = tk.BooleanVar(value=True)
-        var_ps        = tk.BooleanVar(value=True)
+        var_ps = tk.BooleanVar(value=True)
         var_installdir = tk.BooleanVar(value=True)
-        var_session   = tk.BooleanVar(value=False)
-        var_logs      = tk.BooleanVar(value=False)
+        var_session = tk.BooleanVar(value=False)
+        var_logs = tk.BooleanVar(value=False)
 
         checks_frame = ttk.Frame(frame)
         checks_frame.pack(fill="x")
 
         items = [
-            (var_clients,    "Disconnect AI clients (Claude Desktop, Claude Code, Codex)"),
-            (var_path,       "Remove from user PATH"),
-            (var_autostart,  "Remove autostart registry key"),
-            (var_ps,         "Remove PowerShell profile sourcing lines"),
+            (var_clients, "Disconnect AI clients (Claude Desktop, Claude Code, Codex)"),
+            (var_path, "Remove from user PATH"),
+            (var_autostart, "Remove autostart registry key"),
+            (var_ps, "Remove PowerShell profile sourcing lines"),
             (var_installdir, "Delete install directory"),
-            (var_session,    "Delete session / credentials"),
-            (var_logs,       "Delete log files"),
+            (var_session, "Delete session / credentials"),
+            (var_logs, "Delete log files"),
         ]
         for var, label in items:
             ttk.Checkbutton(checks_frame, text=label, variable=var).pack(anchor="w", pady=2)
@@ -272,6 +280,7 @@ class UninstallDialog:
             if var_clients.get():
                 try:
                     from ..ai_clients import disconnect_all
+
                     disconnect_all()
                     logging.info("Disconnected AI clients")
                 except Exception:

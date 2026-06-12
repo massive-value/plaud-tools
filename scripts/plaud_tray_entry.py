@@ -11,9 +11,11 @@ import sys
 if "--com-activate" not in sys.argv:
     try:
         from plaud_tools.session import SessionStore
+
         SessionStore().prime_dpapi_shadow()
     except Exception:
         pass
 
 from plaud_tools.tray_app import main
+
 main()

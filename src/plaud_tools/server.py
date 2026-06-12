@@ -1,4 +1,5 @@
 """Python MCP server entry point for plaud-tools."""
+
 from __future__ import annotations
 
 import argparse
@@ -52,8 +53,11 @@ def _setup_mcp_logging() -> None:
     root.addHandler(handler)
     logging.info(
         "plaud-mcp %s starting pid=%d localappdata=%s",
-        __version__, os.getpid(), os.environ.get("LOCALAPPDATA"),
+        __version__,
+        os.getpid(),
+        os.environ.get("LOCALAPPDATA"),
     )
+
 
 _TOOLS: list[types.Tool] = [
     types.Tool(
@@ -81,7 +85,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); pass empty string for unfiled recordings",
+                    "description": "Folder ID (from `list_folders`); pass empty string for unfiled recordings",  # noqa: E501
                 },
                 "after": {
                     "type": "integer",
@@ -127,11 +131,11 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",
+                    "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",  # noqa: E501
                 },
                 "clear_folder": {
                     "type": "boolean",
-                    "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",
+                    "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",  # noqa: E501
                 },
             },
             "required": ["recording_id", "mutation"],
@@ -207,7 +211,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="process_recording",
-        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",
+        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {
@@ -245,7 +249,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="merge_recordings",
-        description="Merge two or more recordings into a single new recording, blocking until the merge job completes.",
+        description="Merge two or more recordings into a single new recording, blocking until the merge job completes.",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {

@@ -17,6 +17,7 @@ Requires the ``[tray]`` optional dependencies::
 
 Entry point: ``plaud-tray`` (see ``pyproject.toml``).
 """
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -36,9 +37,9 @@ import threading  # noqa: F401
 import time
 import tkinter as tk  # noqa: F401
 import urllib.request  # noqa: F401
+from collections.abc import Callable  # noqa: F401
 from pathlib import Path
 from types import ModuleType
-from typing import Callable  # noqa: F401
 
 from . import __version__ as APP_VERSION
 from .ai_clients import CLIENTS, connect, connect_all, disconnect, status_all  # noqa: F401
@@ -59,28 +60,23 @@ from .tray import setup as _setup_mod
 from .tray import toasts as _toasts_mod
 from .tray import uninstaller as _uninstaller_mod
 from .tray import updater as _updater_mod
-from .tray.windows import home as _home_mod
-from .tray.windows import login as _login_mod
-from .tray.windows import wizard as _wizard_mod
 
 # ---------------------------------------------------------------------------
 # Explicit re-exports.  These give every consumer a stable
 # ``plaud_tools.tray_app.<name>`` import path.
 # ---------------------------------------------------------------------------
 from .tray.app import (
-    TrayApp,
     _TEST_CONNECTION_TIMEOUT,
+    TrayApp,
     main,
 )
 from .tray.icons import _load_icon, _load_icons
-from .tray.toasts import _show_install_toast, _show_session_expired_toast
 from .tray.setup import (
-    APP_NAME,
-    EnvStatus,
     _ACTIVATE_EVENT,
     _AUTOSTART_KEY,
     _AUTOSTART_NAME,
-    _MUTEX_HANDLE,
+    APP_NAME,
+    EnvStatus,
     _acquire_instance_lock,
     _apply_theme,
     _assets_path,
@@ -103,6 +99,7 @@ from .tray.setup import (
     _stale_sourcing_re,
     _verify_env,
 )
+from .tray.toasts import _show_install_toast, _show_session_expired_toast
 from .tray.uninstaller import (
     UninstallDialog,
     _delete_log_files,
@@ -117,11 +114,13 @@ from .tray.updater import (
     _check_for_update,
     _version_gt,
 )
+from .tray.windows import home as _home_mod
+from .tray.windows import login as _login_mod
+from .tray.windows import wizard as _wizard_mod
 from .tray.windows.home import HomeWindow
 from .tray.windows.login import LoginWindow
 from .tray.windows.wizard import (
     WizardWindow,
-    _STATUS_BADGE,
 )
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ Key design points (ADR 004):
   canonical location instead of the actual install.
 - Independent of ``appdata.py``; do not import between them.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -64,7 +65,7 @@ class InstallLayout:
     # ------------------------------------------------------------------
 
     @classmethod
-    def detect(cls) -> "InstallLayout":
+    def detect(cls) -> InstallLayout:
         """Detect the layout of the running install from ``sys.executable``.
 
         Channel resolution rules (per ADR 004):
@@ -92,7 +93,7 @@ class InstallLayout:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _detect_bundle(cls, exe: Path) -> "InstallLayout":
+    def _detect_bundle(cls, exe: Path) -> InstallLayout:
         """Build a bundle layout from the frozen executable path.
 
         The bundle ships TWO frozen entry points (per ``scripts/install.ps1``
@@ -142,7 +143,7 @@ class InstallLayout:
         )
 
     @classmethod
-    def _detect_pip_or_dev(cls, exe: Path) -> "InstallLayout":
+    def _detect_pip_or_dev(cls, exe: Path) -> InstallLayout:
         """Build a pip or dev layout from the (non-frozen) interpreter path."""
         # pip install: sys.executable is a venv interpreter whose sibling
         # Scripts/ (Windows) or bin/ (POSIX) directory contains the

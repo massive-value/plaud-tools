@@ -44,6 +44,7 @@ def _zero_keyring_retry_delay(monkeypatch):
 # (the redirect fixture wins) and silently disable the trip-wire.
 try:
     from plaud_tools.appdata import dpapi_shadow_path as _resolve_dpapi_shadow_path
+
     _REAL_DPAPI_SHADOW_PATH = _resolve_dpapi_shadow_path()
 except Exception:
     _REAL_DPAPI_SHADOW_PATH = None

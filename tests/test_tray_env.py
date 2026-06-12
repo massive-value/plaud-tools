@@ -1,7 +1,7 @@
 """Tests for the tray environment verification and regex anchoring (issue #23)."""
+
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,15 +17,14 @@ from plaud_tools.tray_app import (
     _check_cli_path,
     _check_ps_completions,
     _install_completions_dir,
-    _install_dir,
     _stale_sourcing_re,
     _verify_env,
 )
 
-
 # ---------------------------------------------------------------------------
 # EnvStatus helpers
 # ---------------------------------------------------------------------------
+
 
 class TestEnvStatus:
     def test_all_ok_when_all_true(self):
@@ -57,6 +56,7 @@ class TestEnvStatus:
 # ---------------------------------------------------------------------------
 # _stale_sourcing_re — must only match lines inside the install dir
 # ---------------------------------------------------------------------------
+
 
 class TestStaleSourceRe:
     """Verify the stale-sourcing regex is anchored to the running install directory.
@@ -134,6 +134,7 @@ class TestStaleSourceRe:
 # _verify_env — non-frozen (dev) always reports all-ok
 # ---------------------------------------------------------------------------
 
+
 class TestVerifyEnvDevMode:
     """In dev mode (not frozen), _cli_dir and _completions_dir return None,
     so path_ok and completions_ok must be True (nothing to verify)."""
@@ -156,6 +157,7 @@ class TestVerifyEnvDevMode:
 # Autostart opt-out — _set_autostart toggle ↔ _verify_env interaction
 # ---------------------------------------------------------------------------
 
+
 class TestAutostartOptOut:
     """Pins the auto-heal contract: a user who deliberately disabled autostart
     via the "Start with Windows" menu must not have it silently re-enabled on
@@ -164,8 +166,10 @@ class TestAutostartOptOut:
     """
 
     def test_verify_env_treats_opt_out_marker_as_autostart_ok(self):
-        with patch("plaud_tools.tray_app._autostart_enabled", return_value=False), \
-             patch("plaud_tools.tray_app._autostart_opted_out", return_value=True):
+        with (
+            patch("plaud_tools.tray_app._autostart_enabled", return_value=False),
+            patch("plaud_tools.tray_app._autostart_opted_out", return_value=True),
+        ):
             status = _verify_env()
         assert status.autostart_ok is True, (
             "Opt-out marker must be treated as a deliberate user choice, not "
@@ -174,8 +178,10 @@ class TestAutostartOptOut:
         assert status.all_ok is True
 
     def test_verify_env_missing_when_neither_enabled_nor_opted_out(self):
-        with patch("plaud_tools.tray_app._autostart_enabled", return_value=False), \
-             patch("plaud_tools.tray_app._autostart_opted_out", return_value=False):
+        with (
+            patch("plaud_tools.tray_app._autostart_enabled", return_value=False),
+            patch("plaud_tools.tray_app._autostart_opted_out", return_value=False),
+        ):
             status = _verify_env()
         assert status.autostart_ok is False
         assert "autostart" in status.missing_labels()
@@ -186,6 +192,7 @@ class TestAutostartOptOut:
         act on this anyway because it gates on ``sys.frozen``.
         """
         from plaud_tools.tray.setup import _autostart_opt_out_marker_path, _autostart_opted_out
+
         assert _autostart_opt_out_marker_path() is None
         assert _autostart_opted_out() is False
 
@@ -207,20 +214,24 @@ class TestAutostartOptOut:
         # injecting a fake winreg module so the platform guard in
         # _autostart_opt_out_marker_path / _set_autostart sees "win32".
         if sys.platform == "win32":
-            monkeypatch.setattr("winreg.OpenKey", MagicMock(
-                return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)))
+            monkeypatch.setattr(
+                "winreg.OpenKey",
+                MagicMock(return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)),
+            )
             monkeypatch.setattr("winreg.SetValueEx", MagicMock())
             monkeypatch.setattr("winreg.DeleteValue", MagicMock())
         else:
             import types
+
             mock_winreg = types.ModuleType("winreg")
             mock_winreg.HKEY_CURRENT_USER = 0x80000001  # type: ignore[attr-defined]
-            mock_winreg.KEY_SET_VALUE = 0x0002          # type: ignore[attr-defined]
-            mock_winreg.REG_SZ = 1                      # type: ignore[attr-defined]
-            mock_winreg.OpenKey = MagicMock(            # type: ignore[attr-defined]
-                return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False))
-            mock_winreg.SetValueEx = MagicMock()        # type: ignore[attr-defined]
-            mock_winreg.DeleteValue = MagicMock()       # type: ignore[attr-defined]
+            mock_winreg.KEY_SET_VALUE = 0x0002  # type: ignore[attr-defined]
+            mock_winreg.REG_SZ = 1  # type: ignore[attr-defined]
+            mock_winreg.OpenKey = MagicMock(  # type: ignore[attr-defined]
+                return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)
+            )
+            mock_winreg.SetValueEx = MagicMock()  # type: ignore[attr-defined]
+            mock_winreg.DeleteValue = MagicMock()  # type: ignore[attr-defined]
             monkeypatch.setitem(sys.modules, "winreg", mock_winreg)
             monkeypatch.setattr(setup_mod.sys, "platform", "win32", raising=False)
 
@@ -238,6 +249,7 @@ class TestAutostartOptOut:
 # ---------------------------------------------------------------------------
 # Tray auto-heal — _run_verify_env + _auto_repair_env
 # ---------------------------------------------------------------------------
+
 
 class TestAutoHealEnv:
     """The setup-failure banner should be a last resort, not a daily greeting.
@@ -264,9 +276,11 @@ class TestAutoHealEnv:
         app = self._make_app()
         status = EnvStatus(path_ok=False, completions_ok=False, autostart_ok=False)
 
-        with patch("plaud_tools.tray.background._setup_cli_path") as cli, \
-             patch("plaud_tools.tray.background._setup_ps_completions") as compl, \
-             patch("plaud_tools.tray.background._set_autostart") as auto:
+        with (
+            patch("plaud_tools.tray.background._setup_cli_path") as cli,
+            patch("plaud_tools.tray.background._setup_ps_completions") as compl,
+            patch("plaud_tools.tray.background._set_autostart") as auto,
+        ):
             app._auto_repair_env(status)
 
         cli.assert_not_called()
@@ -278,9 +292,11 @@ class TestAutoHealEnv:
         app = self._make_app()
         status = EnvStatus(path_ok=False, completions_ok=False, autostart_ok=False)
 
-        with patch("plaud_tools.tray.background._setup_cli_path") as cli, \
-             patch("plaud_tools.tray.background._setup_ps_completions") as compl, \
-             patch("plaud_tools.tray.background._set_autostart") as auto:
+        with (
+            patch("plaud_tools.tray.background._setup_cli_path") as cli,
+            patch("plaud_tools.tray.background._setup_ps_completions") as compl,
+            patch("plaud_tools.tray.background._set_autostart") as auto,
+        ):
             app._auto_repair_env(status)
 
         cli.assert_called_once()
@@ -296,9 +312,11 @@ class TestAutoHealEnv:
         app = self._make_app()
         status = EnvStatus(path_ok=False, completions_ok=True, autostart_ok=True)
 
-        with patch("plaud_tools.tray.background._setup_cli_path") as cli, \
-             patch("plaud_tools.tray.background._setup_ps_completions") as compl, \
-             patch("plaud_tools.tray.background._set_autostart") as auto:
+        with (
+            patch("plaud_tools.tray.background._setup_cli_path") as cli,
+            patch("plaud_tools.tray.background._setup_ps_completions") as compl,
+            patch("plaud_tools.tray.background._set_autostart") as auto,
+        ):
             app._auto_repair_env(status)
 
         cli.assert_called_once()
@@ -316,10 +334,11 @@ class TestAutoHealEnv:
         healthy = EnvStatus(path_ok=True, completions_ok=True, autostart_ok=True)
         verify_results = iter([missing, healthy])
 
-        with patch("plaud_tools.tray.background._verify_env",
-                   side_effect=lambda: next(verify_results)), \
-             patch("plaud_tools.tray.background._setup_cli_path"), \
-             patch("plaud_tools.tray.background._set_autostart"):
+        with (
+            patch("plaud_tools.tray.background._verify_env", side_effect=lambda: next(verify_results)),
+            patch("plaud_tools.tray.background._setup_cli_path"),
+            patch("plaud_tools.tray.background._set_autostart"),
+        ):
             app._run_verify_env()
 
         assert app._env_status is healthy
@@ -330,6 +349,7 @@ class TestAutoHealEnv:
 # _check_cli_path — registry-level PATH check (Windows mock)
 # ---------------------------------------------------------------------------
 
+
 class TestCheckCliPath:
     def test_returns_true_on_non_windows(self):
         with patch.object(sys, "platform", "linux"):
@@ -338,6 +358,7 @@ class TestCheckCliPath:
     @pytest.mark.skipif(sys.platform != "win32", reason="winreg only on Windows")
     def test_path_present(self, tmp_path):
         import winreg
+
         cli = tmp_path / "cli"
         # Fake frozen mode so _cli_dir returns a path
         with patch("plaud_tools.tray_app._cli_dir", return_value=cli):
@@ -350,6 +371,7 @@ class TestCheckCliPath:
     @pytest.mark.skipif(sys.platform != "win32", reason="winreg only on Windows")
     def test_path_absent(self, tmp_path):
         import winreg
+
         cli = tmp_path / "cli"
         with patch("plaud_tools.tray_app._cli_dir", return_value=cli):
             with patch("winreg.OpenKey") as mock_key:
@@ -362,6 +384,7 @@ class TestCheckCliPath:
 # ---------------------------------------------------------------------------
 # _check_ps_completions — profile-level check
 # ---------------------------------------------------------------------------
+
 
 class TestCheckPsCompletions:
     def test_returns_true_when_not_frozen(self):
@@ -377,14 +400,15 @@ class TestCheckPsCompletions:
         profile.write_text(source_line + "\n", encoding="utf-8")
 
         with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            with patch("plaud_tools.tray_app.Path") as mock_path_cls:
+            with patch("plaud_tools.tray_app.Path") as mock_path_cls:  # noqa: F841
                 # We only need to patch the home() call inside _check_ps_completions
                 # to point at our tmp tree; easier to patch at a higher level.
                 pass
         # Direct test: patch the profile list
         with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
             import plaud_tools.tray_app as ta
-            orig = ta._check_ps_completions
+
+            orig = ta._check_ps_completions  # noqa: F841  # captured for reference only
             # Monkey-patch profiles list via Path.home()
             with patch.object(Path, "home", return_value=tmp_path / "home"):
                 docs = tmp_path / "home" / "Documents"
@@ -402,6 +426,7 @@ class TestCheckPsCompletions:
         ps1.write_text("# completions\n")
         with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
             import plaud_tools.tray_app as ta
+
             with patch.object(Path, "home", return_value=tmp_path / "home"):
                 docs = tmp_path / "home" / "Documents"
                 docs.mkdir(parents=True, exist_ok=True)
@@ -420,6 +445,7 @@ class TestCheckPsCompletions:
 # ---------------------------------------------------------------------------
 # install.ps1 content assertions (snapshot-style)
 # ---------------------------------------------------------------------------
+
 
 class TestInstallPs1:
     """Verify install.ps1 contains the expected idempotency patterns."""

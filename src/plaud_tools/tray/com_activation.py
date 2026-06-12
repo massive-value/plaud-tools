@@ -14,6 +14,7 @@ launches ``PlaudTools.exe --com-activate``. That process calls
 Non-Windows builds: every public symbol in this module is a no-op so that
 ``app.py`` can import it unconditionally.
 """
+
 from __future__ import annotations
 
 import ctypes

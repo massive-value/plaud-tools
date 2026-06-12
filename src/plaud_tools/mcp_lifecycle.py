@@ -12,6 +12,7 @@ Design goals (ADR 003):
   force-kill only after a configurable grace period.
 - Poll until the process exits rather than sleeping a fixed duration.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -20,8 +21,9 @@ import os
 import signal
 import subprocess
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator, NamedTuple
+from typing import NamedTuple
 
 __all__ = [
     "ProcessInfo",
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Process enumeration
 # ---------------------------------------------------------------------------
+
 
 class ProcessInfo(NamedTuple):
     pid: int
@@ -64,6 +67,7 @@ def _default_process_enumerator() -> Iterator[ProcessInfo]:
     """
     try:
         import psutil  # type: ignore[import]
+
         for proc in psutil.process_iter(["pid", "exe"]):
             try:
                 exe = proc.info.get("exe") or ""
@@ -181,9 +185,7 @@ def _windows_fallback_enumerator() -> Iterator[ProcessInfo]:
     # Command emits CSV lines: "Id","Path"
     # e.g.: "1234","C:\Programs\PlaudTools\mcp\plaud-mcp.exe"
     _PS_CMD = (
-        "Get-Process | Where-Object { $_.Path } | "
-        "Select-Object Id,Path | "
-        "ConvertTo-Csv -NoTypeInformation"
+        "Get-Process | Where-Object { $_.Path } | Select-Object Id,Path | ConvertTo-Csv -NoTypeInformation"
     )
     try:
         out = subprocess.check_output(
@@ -251,6 +253,7 @@ def enumerate_mcp_processes(
 # ---------------------------------------------------------------------------
 # Shutdown logic
 # ---------------------------------------------------------------------------
+
 
 def _terminate_gracefully(pid: int) -> None:
     """Send a graceful shutdown signal to *pid*.
@@ -366,6 +369,7 @@ def shutdown_mcp_children(
 # PowerShell snippet for PS1 generators
 # ---------------------------------------------------------------------------
 
+
 def mcp_shutdown_ps1_snippet(install_dir: str, grace_seconds: int = 3) -> str:
     """Return a PowerShell code block that shuts down scoped plaud-mcp processes.
 
@@ -395,7 +399,7 @@ def mcp_shutdown_ps1_snippet(install_dir: str, grace_seconds: int = 3) -> str:
         f"        if ((Get-Date) -gt $deadline) {{ break }}\n"
         f"        Start-Sleep -Milliseconds 100\n"
         f"    }}\n"
-        f"    $mcpProcs | Where-Object {{ !$_.HasExited }} | Stop-Process -Force -ErrorAction SilentlyContinue\n"
+        f"    $mcpProcs | Where-Object {{ !$_.HasExited }} | Stop-Process -Force -ErrorAction SilentlyContinue\n"  # noqa: E501
         f"    # Poll until fully exited\n"
         f"    $exitDeadline = (Get-Date).AddSeconds(2)\n"
         f"    while (($mcpProcs | Where-Object {{ !$_.HasExited }}) -and (Get-Date) -lt $exitDeadline) {{\n"
@@ -408,6 +412,7 @@ def mcp_shutdown_ps1_snippet(install_dir: str, grace_seconds: int = 3) -> str:
 # ---------------------------------------------------------------------------
 # PowerShell snippet: zip layout probe for PS1 generators
 # ---------------------------------------------------------------------------
+
 
 def zip_layout_probe_ps1_snippet(zip_var: str, install_dir_var: str, dest_var: str) -> str:
     """Return a PowerShell code block that probes a zip's layout and sets *dest_var*.

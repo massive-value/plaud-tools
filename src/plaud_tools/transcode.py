@@ -17,9 +17,7 @@ NATIVE_EXTS: dict[str, str] = {
 }
 
 # Formats that must be transcoded to MP3 before upload.
-TRANSCODE_EXTS: frozenset[str] = frozenset(
-    {".m4a", ".mp4", ".wav", ".aac", ".flac", ".wma", ".amr"}
-)
+TRANSCODE_EXTS: frozenset[str] = frozenset({".m4a", ".mp4", ".wav", ".aac", ".flac", ".wma", ".amr"})
 
 
 def get_file_type(path: str | Path) -> tuple[str, bool]:
@@ -37,10 +35,7 @@ def get_file_type(path: str | Path) -> tuple[str, bool]:
     if ext in TRANSCODE_EXTS:
         return "MP3", True
     supported = sorted(NATIVE_EXTS) + sorted(TRANSCODE_EXTS)
-    raise ValueError(
-        f"Unsupported audio format {ext!r}. "
-        f"Supported: {', '.join(supported)}."
-    )
+    raise ValueError(f"Unsupported audio format {ext!r}. Supported: {', '.join(supported)}.")
 
 
 def _find_ffmpeg() -> str:
@@ -88,11 +83,16 @@ def transcode_to_mp3(source_bytes: bytes, source_ext: str, *, quality: int = 4) 
         Path(in_path).write_bytes(source_bytes)
         result = subprocess.run(
             [
-                ff, "-y",
-                "-i", in_path,
-                "-codec:a", "libmp3lame",
-                "-qscale:a", str(quality),
-                "-map_metadata", "-1",
+                ff,
+                "-y",
+                "-i",
+                in_path,
+                "-codec:a",
+                "libmp3lame",
+                "-qscale:a",
+                str(quality),
+                "-map_metadata",
+                "-1",
                 out_path,
             ],
             capture_output=True,

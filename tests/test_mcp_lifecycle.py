@@ -2,6 +2,7 @@
 
 Uses stub process enumerators so no real processes are created or killed.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,10 +16,10 @@ from plaud_tools.mcp_lifecycle import (
     shutdown_mcp_children,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_enumerator(*entries: tuple[int, str]):
     """Return a zero-arg callable that yields ProcessInfo from (pid, exe_path) pairs."""
@@ -33,6 +34,7 @@ def _make_enumerator(*entries: tuple[int, str]):
 # ---------------------------------------------------------------------------
 # enumerate_mcp_processes — scoping tests
 # ---------------------------------------------------------------------------
+
 
 def test_enumerate_finds_mcp_process_inside_install_dir(tmp_path: Path):
     mcp_exe = tmp_path / "mcp" / "plaud-mcp.exe"
@@ -138,6 +140,7 @@ def test_enumerate_case_insensitive_name(tmp_path: Path):
 # shutdown_mcp_children — behavioural tests with mock kill/alive functions
 # ---------------------------------------------------------------------------
 
+
 def test_shutdown_returns_empty_when_no_processes(tmp_path: Path):
     enumerator = _make_enumerator()
     pids = shutdown_mcp_children(tmp_path, enumerator=enumerator)
@@ -190,6 +193,7 @@ def test_shutdown_scopes_only_to_install_dir(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # mcp_shutdown_ps1_snippet — structural / content tests
 # ---------------------------------------------------------------------------
+
 
 def test_ps1_snippet_contains_install_dir():
     snippet = mcp_shutdown_ps1_snippet(r"C:\Programs\PlaudTools")
@@ -264,11 +268,11 @@ from plaud_tools.mcp_lifecycle import (  # noqa: E402  (grouped with fallback te
 )
 
 # Fixture: canned ConvertTo-Csv output from PowerShell Get-Process
-_PS_CSV_OUTPUT = '''"Id","Path"
+_PS_CSV_OUTPUT = """"Id","Path"
 "1234","C:\\Programs\\PlaudTools\\mcp\\plaud-mcp.exe"
 "5678","C:\\Programs\\PlaudTools\\mcp\\plaud-mcp.exe"
 "9999","C:\\Windows\\System32\\svchost.exe"
-'''
+"""
 
 # Fixture: empty output — no processes with a Path property
 _PS_CSV_EMPTY = '"Id","Path"\n'
@@ -296,6 +300,7 @@ def _wmic_unavailable(out_for_powershell):
 
     PowerShell calls return *out_for_powershell* (a str or a callable raising).
     """
+
     def fake_check_output(cmd, **kwargs):
         if "wmic" in cmd[0].lower():
             raise FileNotFoundError("wmic not found")
@@ -307,6 +312,7 @@ def _wmic_unavailable(out_for_powershell):
 
 
 # --- Pure parser tests (no subprocess, no os.name) -------------------------
+
 
 def test_parse_powershell_csv_extracts_pid_and_path():
     results = _parse_powershell_csv(_PS_CSV_OUTPUT)
@@ -338,6 +344,7 @@ def test_parse_wmic_csv_extracts_pid_and_path():
 
 
 # --- Subprocess fallback-chain tests (stub check_output, no os.name) -------
+
 
 def test_windows_fallback_parses_pid_and_exe_path(monkeypatch):
     """WMIC absent → PowerShell CSV parsed into ProcessInfo with full paths."""
@@ -384,11 +391,7 @@ def test_windows_fallback_filters_via_enumerate_mcp_processes(tmp_path, monkeypa
 
     # Reference the real tmp_path exe (native flavour) + an unrelated outside path.
     outside_exe = str(tmp_path.parent / "other" / "plaud-mcp.exe")
-    csv_output = (
-        '"Id","Path"\n'
-        f'"1001","{str(mcp_exe)}"\n'
-        f'"2002","{outside_exe}"\n'
-    )
+    csv_output = f'"Id","Path"\n"1001","{str(mcp_exe)}"\n"2002","{outside_exe}"\n'
     monkeypatch.setattr("subprocess.check_output", _wmic_unavailable(csv_output))
 
     results = enumerate_mcp_processes(tmp_path, enumerator=_windows_fallback_enumerator)
@@ -411,9 +414,9 @@ def test_warning_logged_when_zero_results(monkeypatch, caplog):
 
     assert results == []
     warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any(
-        "zero process entries" in msg or "disabled" in msg for msg in warning_messages
-    ), f"Expected a WARNING about zero results, got: {warning_messages}"
+    assert any("zero process entries" in msg or "disabled" in msg for msg in warning_messages), (
+        f"Expected a WARNING about zero results, got: {warning_messages}"
+    )
 
 
 def test_warning_logged_when_powershell_raises(monkeypatch, caplog):
@@ -430,6 +433,6 @@ def test_warning_logged_when_powershell_raises(monkeypatch, caplog):
 
     assert results == []
     warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any(
-        "disabled" in msg or "fallback failed" in msg for msg in warning_messages
-    ), f"Expected a WARNING about fallback failure, got: {warning_messages}"
+    assert any("disabled" in msg or "fallback failed" in msg for msg in warning_messages), (
+        f"Expected a WARNING about fallback failure, got: {warning_messages}"
+    )

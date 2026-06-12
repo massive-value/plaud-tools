@@ -7,6 +7,7 @@ Run this before invoking pyinstaller:
 
 It writes three files (gitignored) that each .spec passes to EXE(version=...).
 """
+
 from __future__ import annotations
 
 import sys

@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import gzip
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -239,7 +238,13 @@ def test_get_recording_skips_summary_fetch_when_not_requested(tmp_path):
 def test_get_recording_speakers_empty_when_no_transcript(tmp_path):
     manager, _ = make_manager(tmp_path)
     transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(), {})]
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(),
+                {},
+            )
+        ]
     )
     client = PlaudClient(manager, transport=transport)
     detail = client.get_recording("rec1", include_transcript=False)
@@ -372,7 +377,9 @@ def test_list_trash_uses_is_trash_query(tmp_path):
         [
             HttpResponse(
                 200,
-                json.dumps({"status": 0, "data_file_list": [{"id": "rec1", "filename": "Old", "is_trash": True}]}).encode(),
+                json.dumps(
+                    {"status": 0, "data_file_list": [{"id": "rec1", "filename": "Old", "is_trash": True}]}
+                ).encode(),
                 {},
             )
         ]
@@ -445,8 +452,20 @@ def test_edit_transcript_uses_full_trans_result_payload(tmp_path):
     transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
     client = PlaudClient(manager, transport=transport)
     segments = [
-        {"start_time": 0, "end_time": 5000, "content": "hello", "speaker": "Alex", "original_speaker": "Speaker 1"},
-        {"start_time": 5000, "end_time": 10000, "content": "world", "speaker": "Bee", "original_speaker": "Speaker 2"},
+        {
+            "start_time": 0,
+            "end_time": 5000,
+            "content": "hello",
+            "speaker": "Alex",
+            "original_speaker": "Speaker 1",
+        },
+        {
+            "start_time": 5000,
+            "end_time": 10000,
+            "content": "world",
+            "speaker": "Bee",
+            "original_speaker": "Speaker 2",
+        },
     ]
     client.edit_transcript("rec1", segments)
     call = transport.calls[0]
@@ -486,9 +505,27 @@ def test_rename_speaker_reads_segments_and_patches_full_transcript(tmp_path):
                 200,
                 json.dumps(
                     [
-                        {"start_time": 0, "end_time": 5000, "content": "one", "speaker": "Speaker 1", "original_speaker": "Speaker 1"},
-                        {"start_time": 5000, "end_time": 10000, "content": "two", "speaker": "Speaker 2", "original_speaker": "Speaker 2"},
-                        {"start_time": 10000, "end_time": 15000, "content": "three", "speaker": "Speaker 1", "original_speaker": "Speaker 1"},
+                        {
+                            "start_time": 0,
+                            "end_time": 5000,
+                            "content": "one",
+                            "speaker": "Speaker 1",
+                            "original_speaker": "Speaker 1",
+                        },
+                        {
+                            "start_time": 5000,
+                            "end_time": 10000,
+                            "content": "two",
+                            "speaker": "Speaker 2",
+                            "original_speaker": "Speaker 2",
+                        },
+                        {
+                            "start_time": 10000,
+                            "end_time": 15000,
+                            "content": "three",
+                            "speaker": "Speaker 1",
+                            "original_speaker": "Speaker 1",
+                        },
                     ]
                 ).encode(),
                 {},
@@ -510,7 +547,13 @@ def test_rename_speaker_reads_segments_and_patches_full_transcript(tmp_path):
 def test_rename_speaker_rejects_missing_transcript(tmp_path):
     manager, _ = make_manager(tmp_path)
     transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(), {})]
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(),
+                {},
+            )
+        ]
     )
     client = PlaudClient(manager, transport=transport)
     with pytest.raises(ValueError, match="has no transcript yet"):
@@ -545,7 +588,13 @@ def test_rename_speaker_rejects_missing_label_match(tmp_path):
                 200,
                 json.dumps(
                     [
-                        {"start_time": 0, "end_time": 5000, "content": "one", "speaker": "Speaker 2", "original_speaker": "Speaker 2"},
+                        {
+                            "start_time": 0,
+                            "end_time": 5000,
+                            "content": "one",
+                            "speaker": "Speaker 2",
+                            "original_speaker": "Speaker 2",
+                        },
                     ]
                 ).encode(),
                 {},
@@ -568,7 +617,9 @@ def test_rename_speaker_rejects_blank_labels(tmp_path):
 
 def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
     manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0, "msg": "task processing"}).encode(), {})])
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": 0, "msg": "task processing"}).encode(), {})]
+    )
     client = PlaudClient(manager, transport=transport)
     client.transcribe_and_summarize("rec1")
     call = transport.calls[0]
@@ -589,7 +640,9 @@ def test_transcribe_and_summarize_honors_overrides(tmp_path):
     manager, _ = make_manager(tmp_path)
     transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
     client = PlaudClient(manager, transport=transport)
-    client.transcribe_and_summarize("rec1", template_type="MEETING-CONSULT", language="en", diarization=False, llm="gpt-5")
+    client.transcribe_and_summarize(
+        "rec1", template_type="MEETING-CONSULT", language="en", diarization=False, llm="gpt-5"
+    )
     body = json.loads(transport.calls[0]["body"].decode("utf-8"))
     assert body["summ_type"] == "MEETING-CONSULT"
     info = json.loads(body["info"])
@@ -745,6 +798,7 @@ def test_session_store_falls_back_to_file_when_keyring_unavailable(tmp_path, mon
 # Session cache tests (issue #43)
 # ---------------------------------------------------------------------------
 
+
 class CountingStore:
     """A SessionStoreProtocol stub that counts load() calls."""
 
@@ -841,6 +895,7 @@ def test_session_cache_region_failover_loads_store_at_most_twice(tmp_path):
 # Region-redirect recursion-bound tests (Wave 0 / A2)
 # ---------------------------------------------------------------------------
 
+
 def test_region_redirect_loop_raises_after_two_requests(tmp_path):
     """A server that returns -302 on every call must not recurse unboundedly.
     Exactly 2 transport requests should be made (original + one retry), then
@@ -891,7 +946,6 @@ def test_region_redirect_once_then_success(tmp_path):
 def test_session_cache_expired_session_invalidates_cache(tmp_path):
     """When require() raises PlaudSessionExpiredError, the cache must be cleared
     so the caller could theoretically re-authenticate and retry."""
-    from plaud_tools.session import TOKEN_REFRESH_BUFFER_SECONDS
     import base64
     import json as _json
 

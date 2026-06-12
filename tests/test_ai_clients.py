@@ -3,17 +3,13 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-import pytest
-
 from plaud_tools import ai_clients
 
 
 def test_codex_connect_writes_parsable_toml_with_windows_path(tmp_path: Path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
-        '[mcp_servers.plaud]\n'
-        'command = "C:\\\\Users\\\\old\\\\plaud-mcp.exe"\n'
-        'enabled = false\n',
+        '[mcp_servers.plaud]\ncommand = "C:\\\\Users\\\\old\\\\plaud-mcp.exe"\nenabled = false\n',
         encoding="utf-8",
     )
     paths = {"codex": config, "claude-desktop": tmp_path / "x.json", "claude-code": tmp_path / "y.json"}
@@ -50,8 +46,7 @@ def test_codex_stale_when_path_differs(tmp_path: Path, monkeypatch):
 def test_codex_disconnect_removes_plaud_section_only(tmp_path: Path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
-        '[mcp_servers.other]\ncommand = "other.exe"\n\n'
-        '[mcp_servers.plaud]\ncommand = "/x/plaud-mcp"\n',
+        '[mcp_servers.other]\ncommand = "other.exe"\n\n[mcp_servers.plaud]\ncommand = "/x/plaud-mcp"\n',
         encoding="utf-8",
     )
     paths = {"codex": config, "claude-desktop": tmp_path / "x.json", "claude-code": tmp_path / "y.json"}
