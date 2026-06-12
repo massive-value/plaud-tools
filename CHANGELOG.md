@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backing file when available, or a 5-minute TTL otherwise — instead of
   serving a stale in-memory session indefinitely. The within-window hot path
   stays allocation-free and skips keyring reads. (#116)
+- **CLI command dispatch refactored to a registry (internal).** `run_cli`'s
+  long if/elif chain is now a typed `dict[str, Callable]` of per-command
+  handlers. No user-visible change — the full `test_interfaces.py` contract
+  passes unmodified. (#119)
 - **Tray updater/toasts hardening.** Update downloads are restricted to an
   allowlist of `github.com` / `objects.githubusercontent.com` (exact host
   match), and PowerShell is invoked by absolute path
