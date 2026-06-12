@@ -1,14 +1,23 @@
 """Tests for the hardened single-instance mutex in tray/setup.py (E2).
 
 All three outcomes are exercised via an injectable fake kernel32 so no real
-Win32 handles are created.  The tests run on all platforms (Linux/macOS CI
-included) because the non-win32 early-return is exercised separately.
+Win32 handles are created.
+
+Windows-only: ``plaud_tools.tray.setup`` does ``import tkinter`` at module top,
+which is absent on the ``.[dev]``-only Linux/macOS CI runners.  The module-level
+skipif mirrors the DPAPI win32 skip in test_auth.py, and each test imports
+``_acquire_instance_lock`` inside its body so collection on non-Windows never
+triggers the tkinter import.
 """
 
 from __future__ import annotations
 
 import sys
 from unittest.mock import MagicMock
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="single-instance mutex is Windows-only")
 
 # ---------------------------------------------------------------------------
 # Helpers
