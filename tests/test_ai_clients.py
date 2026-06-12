@@ -76,12 +76,7 @@ def test_connect_disconnect_roundtrip_preserves_section_with_inline_array(tmp_pa
     the start of a new section header, truncating the array value and corrupting
     the file.  tomlkit parses the document correctly so this can never happen.
     """
-    original = (
-        "# Top-level user comment\n"
-        "[other_tool]\n"
-        'args = ["-m", "some.module"]\n'
-        "timeout = 30\n"
-    )
+    original = '# Top-level user comment\n[other_tool]\nargs = ["-m", "some.module"]\ntimeout = 30\n'
     config = tmp_path / "config.toml"
     config.write_text(original, encoding="utf-8")
 
