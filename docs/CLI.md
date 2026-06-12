@@ -24,6 +24,8 @@ Prompts for your Plaud password and stores the resulting access token in your OS
 
 If you signed up for Plaud with Google, use "Forgot password" on [web.plaud.ai](https://web.plaud.ai) first to set a password — `plaud-tools login` is password-based.
 
+**Avoid `--password` in scripts.** Passing `--password` on the command line exposes it via process listings (`ps`, Task Manager) and shell history. Omit the flag to be prompted securely instead. For scripting and CI, use the safer alternatives described below.
+
 ### `session show`
 
 ```
@@ -55,6 +57,26 @@ PLAUD_ACCESS_TOKEN=<token> PLAUD_REGION=us plaud-tools list
 ```
 
 Both the CLI and `plaud-mcp` server honour `PLAUD_ACCESS_TOKEN` and `PLAUD_REGION` — they take precedence over any stored session and are never written to disk.
+
+### Recommended scripting and CI auth paths
+
+When automating `plaud-tools` in scripts or CI pipelines, avoid `login --password`: the password is visible in process listings and shell history. Use one of these safer alternatives instead:
+
+**Environment variable (one-shot or ephemeral):**
+
+```
+PLAUD_ACCESS_TOKEN=<token> PLAUD_REGION=us plaud-tools list
+```
+
+The token is injected per-invocation and never stored.
+
+**Stored session without a password (persistent):**
+
+```
+plaud-tools session set --token <token> --region us --email you@example.com
+```
+
+Writes a session entry directly to the keyring / file store without going through `login` at all. Obtain a token by running `plaud-tools login` interactively once and then copying it with `plaud-tools session show --show-token`.
 
 ---
 

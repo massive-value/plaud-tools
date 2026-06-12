@@ -117,7 +117,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     login_cmd = sub.add_parser("login")
     login_cmd.add_argument("--email", required=True)
-    login_cmd.add_argument("--password")
+    login_cmd.add_argument(
+        "--password",
+        help=(
+            "WARNING: passing a password on the command line exposes it via process listings "
+            "(ps, Task Manager) and shell history. "
+            "For scripting, prefer the PLAUD_ACCESS_TOKEN environment variable or "
+            "'session set --token <token>' instead. "
+            "If omitted, you will be prompted securely."
+        ),
+    )
     login_cmd.add_argument("--region", choices=["us", "eu"], default="us")
 
     session_cmd = sub.add_parser("session")
