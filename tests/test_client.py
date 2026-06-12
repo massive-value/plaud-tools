@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import base64
 import gzip
+import io
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
+import plaud_tools.client as client_mod
 from plaud_tools.client import PlaudClient, PlaudRecordingQuery
 from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
 from plaud_tools.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
@@ -962,3 +965,337 @@ def test_session_cache_expired_session_invalidates_cache(tmp_path):
 
     # Cache must be None — a subsequent require() after re-auth would reload.
     assert manager._cached_session is None
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 / C5 — 429 backoff & polite polling
+# ---------------------------------------------------------------------------
+
+
+def _make_http_error(status: int, body: bytes, headers: dict[str, str] | None = None) -> HTTPError:
+    """Build a urllib.error.HTTPError with a readable body and optional headers."""
+    from email.message import Message
+
+    msg = Message()
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    fp = io.BytesIO(body)
+    return HTTPError(url="https://example.com/api", code=status, msg="Error", hdrs=msg, fp=fp)
+
+
+def _transient_error(status: int = 429, retry_after: float | None = None) -> PlaudApiError:
+    """Build a PlaudApiError that classify() deems retryable."""
+    headers: dict[str, str] = {}
+    if retry_after is not None:
+        headers["Retry-After"] = str(int(retry_after))
+    exc = _make_http_error(status, b"rate limited", headers=headers)
+    return PlaudApiError.from_http_error(exc)
+
+
+class TestRetryBackoff:
+    """_request_json must retry 429 / 5xx up to _MAX_ATTEMPTS total attempts."""
+
+    def test_succeeds_after_one_transient_failure(self, tmp_path, monkeypatch):
+        """Transport raises 429 once, then succeeds — caller gets the result."""
+        manager, _ = make_manager(tmp_path)
+        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+        transport = StubTransport([_transient_error(429), ok])
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)  # deterministic
+
+        client = PlaudClient(manager, transport=transport)
+        result = client.list_recordings()
+
+        assert result == []
+        # 1 original attempt + 1 retry = 2 transport calls total.
+        assert len(transport.calls) == 2
+        # One sleep call for the retry.
+        assert len(sleep_calls) == 1
+
+    def test_succeeds_after_two_transient_failures(self, tmp_path, monkeypatch):
+        """Transport raises 503 twice, then succeeds — caller gets the result."""
+        manager, _ = make_manager(tmp_path)
+        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+        transport = StubTransport([_transient_error(503), _transient_error(503), ok])
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
+
+        client = PlaudClient(manager, transport=transport)
+        result = client.list_recordings()
+
+        assert result == []
+        # 1 original + 2 retries = 3 transport calls total.
+        assert len(transport.calls) == 3
+        assert len(sleep_calls) == 2
+
+    def test_raises_after_exhausting_all_attempts(self, tmp_path, monkeypatch):
+        """Transport raises 429 every time — raises after _MAX_ATTEMPTS calls."""
+        manager, _ = make_manager(tmp_path)
+        # Provide more responses than _MAX_ATTEMPTS to prove we stop early.
+        transport = StubTransport(
+            [_transient_error(429), _transient_error(429), _transient_error(429), _transient_error(429)]
+        )
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.list_recordings()
+
+        # Must stop at exactly _MAX_ATTEMPTS calls.
+        assert len(transport.calls) == client_mod._MAX_ATTEMPTS
+
+    def test_non_retryable_error_not_retried(self, tmp_path, monkeypatch):
+        """A 404 must not be retried — exactly 1 transport call."""
+        manager, _ = make_manager(tmp_path)
+        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"not found"))
+        transport = StubTransport([err_404])
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.list_recordings()
+
+        assert len(transport.calls) == 1
+        assert sleep_calls == []
+
+
+class TestRetryAfterHeader:
+    """Retry-After header value must be honoured: sleep >= Retry-After."""
+
+    def test_retry_after_larger_than_backoff_is_used(self, tmp_path, monkeypatch):
+        """When Retry-After > computed backoff, we sleep Retry-After."""
+        manager, _ = make_manager(tmp_path)
+        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+        # Retry-After = 30s, which is much larger than the ~1 s back-off.
+        transport = StubTransport([_transient_error(429, retry_after=30.0), ok])
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
+        # Force jitter to minimum so computed delay is clearly < 30.
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
+
+        client = PlaudClient(manager, transport=transport)
+        client.list_recordings()
+
+        assert len(sleep_calls) == 1
+        # The sleep value must be at least the Retry-After value.
+        assert sleep_calls[0] >= 30.0
+
+    def test_retry_after_parsed_from_header(self, tmp_path, monkeypatch):
+        """from_http_error must populate retry_after from the Retry-After header."""
+        exc = _make_http_error(429, b"rate limited", headers={"Retry-After": "45"})
+        err = PlaudApiError.from_http_error(exc)
+        assert err.retry_after == 45.0
+
+    def test_retry_after_absent_gives_none(self, tmp_path, monkeypatch):
+        """Missing Retry-After header → retry_after is None."""
+        exc = _make_http_error(429, b"rate limited")
+        err = PlaudApiError.from_http_error(exc)
+        assert err.retry_after is None
+
+    def test_retry_after_http_date_ignored(self, tmp_path, monkeypatch):
+        """HTTP-date form of Retry-After must be ignored (set to None), not crash."""
+        exc = _make_http_error(429, b"rate limited", headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        err = PlaudApiError.from_http_error(exc)
+        assert err.retry_after is None
+
+    def test_backoff_larger_than_retry_after_is_used(self, tmp_path, monkeypatch):
+        """When computed backoff > Retry-After, we sleep the backoff (never under-sleep)."""
+        manager, _ = make_manager(tmp_path)
+        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+        # Retry-After = 0 s — server says "retry now", but we still back off.
+        transport = StubTransport([_transient_error(429, retry_after=0.0), ok])
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
+        # Force jitter to upper bound so computed delay > 0.
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: hi)
+
+        client = PlaudClient(manager, transport=transport)
+        client.list_recordings()
+
+        assert len(sleep_calls) == 1
+        # Sleep must be at least the computed backoff, not the zero Retry-After.
+        assert sleep_calls[0] > 0.0
+
+
+class TestPollLoopSurvival:
+    """Poll loops must survive transient errors and abort on non-transient ones."""
+
+    def _recording_response(self, is_trans: bool = True, is_summary: bool = True) -> HttpResponse:
+        return HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "status": 0,
+                    "data": {
+                        "file_id": "rec1",
+                        "file_name": "Test",
+                        "content_list": [
+                            {"data_type": "transaction", "task_status": 1 if is_trans else 0},
+                            {"data_type": "auto_sum_note", "task_status": 1 if is_summary else 0},
+                        ],
+                    },
+                }
+            ).encode(),
+            {},
+        )
+
+    def test_wait_for_transcription_survives_one_transient_error(self, tmp_path, monkeypatch):
+        """A single 429 during the poll must be skipped, not abort the wait."""
+        manager, _ = make_manager(tmp_path)
+        # First poll: 429 (transient). Second poll: recording ready.
+        transport = StubTransport([_transient_error(429), self._recording_response(is_trans=True)])
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        # Must complete without raising.
+        client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
+        # Transport was called twice: once for the transient, once for success.
+        assert len(transport.calls) == 2
+
+    def test_wait_for_transcription_propagates_non_transient_error(self, tmp_path, monkeypatch):
+        """A non-transient error (e.g. 404) during the poll must propagate."""
+        manager, _ = make_manager(tmp_path)
+        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"not found"))
+        transport = StubTransport([err_404])
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
+
+        assert len(transport.calls) == 1
+
+    def test_wait_for_summary_survives_one_transient_error(self, tmp_path, monkeypatch):
+        """A single 503 during the summary poll must be skipped."""
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([_transient_error(503), self._recording_response(is_summary=True)])
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        client.wait_for_summary("rec1", timeout_s=60.0, poll_interval_s=0.0)
+        assert len(transport.calls) == 2
+
+    def test_wait_for_summary_propagates_non_transient_error(self, tmp_path, monkeypatch):
+        """A non-transient error (e.g. 401) during the summary poll must propagate."""
+        manager, _ = make_manager(tmp_path)
+        err_401 = PlaudApiError.from_http_error(_make_http_error(401, b"unauthorized"))
+        transport = StubTransport([err_401])
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.wait_for_summary("rec1", timeout_s=60.0, poll_interval_s=0.0)
+
+        assert len(transport.calls) == 1
+
+    def test_merge_poll_survives_one_transient_error(self, tmp_path, monkeypatch):
+        """A transient error during a merge poll must be skipped, not abort."""
+        manager, _ = make_manager(tmp_path)
+
+        combine_response = HttpResponse(
+            200,
+            json.dumps({"status": 0, "task_id": "task123"}).encode(),
+            {},
+        )
+        poll_transient = _transient_error(429)
+        poll_success = HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "status": 0,
+                    "data": {
+                        "status": "success",
+                        "file": {"file_id": "merged1", "file_name": "merged", "start_time": 0},
+                    },
+                }
+            ).encode(),
+            {},
+        )
+
+        transport = StubTransport([combine_response, poll_transient, poll_success])
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        result = client.merge_recordings(["id1", "id2"], "merged")
+        # Should return the merged recording detail without aborting on the 429.
+        assert result.id == "merged1"
+        assert len(transport.calls) == 3
+
+    def test_merge_poll_propagates_non_transient_error(self, tmp_path, monkeypatch):
+        """A non-transient error during a merge poll must propagate immediately."""
+        manager, _ = make_manager(tmp_path)
+
+        combine_response = HttpResponse(
+            200,
+            json.dumps({"status": 0, "task_id": "task123"}).encode(),
+            {},
+        )
+        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"task not found"))
+
+        transport = StubTransport([combine_response, err_404])
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.merge_recordings(["id1", "id2"], "merged")
+
+        assert len(transport.calls) == 2
+
+
+class TestRedirectAndRetryComposition:
+    """Region redirect and retry/backoff must not interfere with each other."""
+
+    def test_redirect_then_success_still_works_with_retry_present(self, tmp_path, monkeypatch):
+        """The existing -302 redirect contract is preserved after adding retry logic."""
+        manager, store = make_manager(tmp_path, region="us")
+        redirect_response = HttpResponse(
+            200,
+            json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+            {},
+        )
+        ok_response = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+        transport = StubTransport([redirect_response, ok_response])
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        result = client.list_recordings()
+
+        assert result == []
+        assert store.load().region == "eu"
+        assert len(transport.calls) == 2
+        assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
+
+    def test_redirect_loop_still_raises_with_retry_present(self, tmp_path, monkeypatch):
+        """-302 on every call must still raise 'region redirect loop', not retry infinitely."""
+        manager, _ = make_manager(tmp_path, region="us")
+        redirect_response = HttpResponse(
+            200,
+            json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+            {},
+        )
+        transport = StubTransport(
+            [redirect_response, redirect_response, redirect_response, redirect_response]
+        )
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError, match="region redirect loop"):
+            client.list_recordings()
+
+        # Still exactly 2 requests (original + 1 redirect retry).
+        assert len(transport.calls) == 2
