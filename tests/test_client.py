@@ -837,6 +837,57 @@ def test_session_cache_region_failover_loads_store_at_most_twice(tmp_path):
     assert counting_store.load_count <= 2
 
 
+# ---------------------------------------------------------------------------
+# Region-redirect recursion-bound tests (Wave 0 / A2)
+# ---------------------------------------------------------------------------
+
+def test_region_redirect_loop_raises_after_two_requests(tmp_path):
+    """A server that returns -302 on every call must not recurse unboundedly.
+    Exactly 2 transport requests should be made (original + one retry), then
+    PlaudApiError('region redirect loop') must be raised."""
+    manager, _ = make_manager(tmp_path, region="us")
+    redirect_response = HttpResponse(
+        200,
+        json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+        {},
+    )
+    # Provide more than 2 responses to prove we stop early, not because the
+    # stub runs out.
+    transport = StubTransport([redirect_response, redirect_response, redirect_response])
+    client = PlaudClient(manager, transport=transport)
+
+    with pytest.raises(PlaudApiError, match="region redirect loop"):
+        client.list_recordings()
+
+    # Exactly 2 requests: the original call and the single allowed retry.
+    assert len(transport.calls) == 2
+
+
+def test_region_redirect_once_then_success(tmp_path):
+    """A single -302 followed by a normal status-0 payload must succeed and
+    persist the new region — the existing happy-path contract must hold."""
+    manager, store = make_manager(tmp_path, region="us")
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.list_recordings()
+
+    assert result == []
+    # Region must have been persisted to "eu".
+    assert store.load().region == "eu"
+    # Second request must have gone to the EU base URL.
+    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
+    assert len(transport.calls) == 2
+
+
 def test_session_cache_expired_session_invalidates_cache(tmp_path):
     """When require() raises PlaudSessionExpiredError, the cache must be cleared
     so the caller could theoretically re-authenticate and retry."""
