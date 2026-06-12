@@ -1054,7 +1054,7 @@ def test_fetch_summary_from_data_link_handles_plain_text():
     from plaud_tools.transport import HttpResponse
 
     class PlainTextTransport:
-        def request(self, method, url, headers, body=None):
+        def request(self, method, url, headers, body=None, *, timeout=None):
             return HttpResponse(status_code=200, body=b"# My Summary\n\nContent here.", headers={})
 
     client = PlaudClient(SessionManager(SessionStore()), transport=PlainTextTransport())

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import io
 import json
-from unittest.mock import patch
+import socket
+from unittest.mock import MagicMock, call, patch
 from urllib.error import HTTPError, URLError
 
 import pytest
 
 from plaud_tools.errors import PlaudApiError
-from plaud_tools.transport import UrllibTransport
+from plaud_tools.transport import UrllibTransport, _DEFAULT_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -135,3 +136,112 @@ class TestUrllibTransportErrorPropagation:
         err = exc_info.value
         assert err.http_status is None
         assert "Connection refused" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# Timeout parameter threading — Wave 0 / A1
+# ---------------------------------------------------------------------------
+
+def _make_successful_response() -> MagicMock:
+    """Return a minimal mock that satisfies the urlopen context-manager protocol."""
+    resp = MagicMock()
+    resp.getcode.return_value = 200
+    resp.read.return_value = b"{}"
+    resp.headers.items.return_value = []
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+class TestUrllibTransportTimeout:
+    """Verify that the timeout value actually reaches urlopen (issue A1)."""
+
+    def test_default_timeout_is_30s(self):
+        """Constructor default must be _DEFAULT_TIMEOUT (30 s)."""
+        transport = UrllibTransport()
+        assert transport._timeout == _DEFAULT_TIMEOUT
+        assert _DEFAULT_TIMEOUT == 30.0
+
+    def test_constructor_timeout_is_forwarded_to_urlopen(self):
+        """A custom constructor timeout must arrive at urlopen unchanged."""
+        transport = UrllibTransport(timeout=45.0)
+
+        with patch("plaud_tools.transport.urlopen", return_value=_make_successful_response()) as mock_open:
+            transport.request("GET", "https://example.com/api", {})
+
+        _req, kwargs_or_pos = mock_open.call_args[0], mock_open.call_args
+        # urlopen(req, timeout=...) — timeout is the second positional arg
+        assert mock_open.call_args[1].get("timeout") == 45.0 or mock_open.call_args[0][1] == 45.0
+
+    def test_per_call_timeout_overrides_constructor(self):
+        """A per-call timeout= kwarg must take precedence over the constructor default."""
+        transport = UrllibTransport(timeout=5.0)
+
+        with patch("plaud_tools.transport.urlopen", return_value=_make_successful_response()) as mock_open:
+            transport.request("GET", "https://example.com/api", {}, timeout=99.0)
+
+        args = mock_open.call_args
+        actual = args[1].get("timeout") if args[1] else args[0][1]
+        assert actual == 99.0
+
+    def test_default_30s_reaches_urlopen_without_override(self):
+        """With no constructor or call-site override, urlopen sees 30 s."""
+        transport = UrllibTransport()
+
+        with patch("plaud_tools.transport.urlopen", return_value=_make_successful_response()) as mock_open:
+            transport.request("PUT", "https://s3.example.com/upload", {}, b"data")
+
+        args = mock_open.call_args
+        actual = args[1].get("timeout") if args[1] else args[0][1]
+        assert actual == 30.0
+
+
+class TestUrllibTransportTimeoutErrors:
+    """TimeoutError / socket.timeout must surface as PlaudApiError, not a raw exception."""
+
+    def test_timeout_error_raises_plaud_api_error(self):
+        """Built-in TimeoutError (not a URLError subclass) must become PlaudApiError."""
+        transport = UrllibTransport(timeout=30.0)
+
+        with patch("plaud_tools.transport.urlopen", side_effect=TimeoutError("timed out")):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        err = exc_info.value
+        assert err.http_status is None
+        assert "timed out" in str(err).lower() or "30" in str(err)
+
+    def test_socket_timeout_raises_plaud_api_error(self):
+        """socket.timeout (which may surface directly from urlopen) must become PlaudApiError."""
+        transport = UrllibTransport(timeout=30.0)
+
+        with patch("plaud_tools.transport.urlopen", side_effect=socket.timeout("socket timed out")):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        err = exc_info.value
+        assert err.http_status is None
+        assert "timed out" in str(err).lower() or "30" in str(err)
+
+    def test_url_error_with_socket_timeout_reason_raises_plaud_api_error(self):
+        """URLError whose reason is a socket.timeout must also surface as PlaudApiError."""
+        transport = UrllibTransport()
+        cause = socket.timeout("read timed out")
+        url_exc = URLError(reason=cause)
+
+        with patch("plaud_tools.transport.urlopen", side_effect=url_exc):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        # URLError path raises PlaudApiError (existing behaviour preserved)
+        assert exc_info.value.http_status is None
+
+    def test_timeout_message_includes_budget(self):
+        """Error message must include the effective timeout value for observability."""
+        transport = UrllibTransport(timeout=120.0)
+
+        with patch("plaud_tools.transport.urlopen", side_effect=TimeoutError()):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        assert "120" in str(exc_info.value)

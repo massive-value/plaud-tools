@@ -15,7 +15,7 @@ class StubTransport:
         self.responses = list(responses)
         self.calls = []
 
-    def request(self, method, url, headers, body=None):
+    def request(self, method, url, headers, body=None, *, timeout=None):
         self.calls.append({"method": method, "url": url, "headers": headers, "body": body})
         return self.responses.pop(0)
 
