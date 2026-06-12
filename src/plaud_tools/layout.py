@@ -128,11 +128,11 @@ class InstallLayout:
 
         # MCP exe lives at install_root/mcp/plaud-mcp.exe
         mcp_candidate = install_root / "mcp" / "plaud-mcp.exe"
-        mcp_exe: Path | None = mcp_candidate
+        mcp_exe: Path | None = mcp_candidate if mcp_candidate.exists() else None
 
         # ffmpeg lives at install_root/mcp/ffmpeg.exe
         ffmpeg_candidate = install_root / "mcp" / "ffmpeg.exe"
-        ffmpeg_exe: Path | None = ffmpeg_candidate
+        ffmpeg_exe: Path | None = ffmpeg_candidate if ffmpeg_candidate.exists() else None
 
         return cls(
             channel="bundle",

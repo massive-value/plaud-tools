@@ -46,10 +46,19 @@ def _cli_exe_path() -> Path:
 
 
 def _mcp_exe_path() -> Path | None:
-    """Absolute path to the plaud-mcp executable, or a dev-fallback path."""
+    """Absolute path to the plaud-mcp executable, or a candidate/fallback path.
+
+    Returns the confirmed path when the exe exists on disk.  When the exe is
+    absent but the layout is a bundle channel, returns the *expected* candidate
+    path so that doctor can report ``exists: false`` with the correct location.
+    Falls back to a dev-time PyInstaller output path for non-bundle channels.
+    """
     layout = InstallLayout.detect()
     if layout.mcp_exe is not None:
         return layout.mcp_exe
+    # Bundle channel: exe not present — return expected candidate for diagnostics.
+    if layout.channel == "bundle" and layout.install_root is not None:
+        return layout.install_root / "mcp" / "plaud-mcp.exe"
     # Dev fallback: PyInstaller onedir output next to repo root
     return Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe"
 
@@ -58,11 +67,16 @@ def _ffmpeg_path() -> Path:
     """Absolute path to ffmpeg.
 
     In a frozen bundle ffmpeg.exe lives next to plaud-mcp.exe; for pip users
-    ffmpeg is expected on the system PATH.
+    ffmpeg is expected on the system PATH.  When the exe is absent in a bundle
+    channel, returns the expected candidate path so doctor can report
+    ``exists: false`` with the correct location.
     """
     layout = InstallLayout.detect()
     if layout.ffmpeg_exe is not None:
         return layout.ffmpeg_exe
+    # Bundle channel: exe not present — return expected candidate for diagnostics.
+    if layout.channel == "bundle" and layout.install_root is not None:
+        return layout.install_root / "mcp" / "ffmpeg.exe"
     return Path("ffmpeg")
 
 
