@@ -1,8 +1,12 @@
 """Tests for the MCP server module."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import sys
+
+import mcp.types as mcp_types
 
 from plaud_tools.server import _TOOLS, _make_server, _mcp_log_path, _setup_mcp_logging
 
@@ -197,3 +201,76 @@ def test_make_server_constructs_one_session_manager(monkeypatch):
         f"process; got {len(instances)}.  This regression guards against "
         f"re-introducing per-call SessionManager(store) inside get_client."
     )
+
+
+# ---------------------------------------------------------------------------
+# A6: Structured TypeError guard in call_tool (Wave 0 audit)
+# ---------------------------------------------------------------------------
+
+class TestCallToolTypeErrorGuard:
+    """call_tool must return a structured validation error — not raise — when the
+    MCP framework passes an argument name that the underlying handler does not
+    accept.  The error payload must match the project-standard shape used by
+    _error_result() in mcp.py: {error, error_code, retryable}.
+
+    The test exercises the full call_tool path by invoking the handler registered
+    with the MCP SDK (via server.request_handlers[CallToolRequest]) so that the
+    exact same code path exercised by the live server is under test.
+    """
+
+    def _invoke(self, tool_name: str, arguments: dict) -> str:
+        """Build a CallToolRequest, run it through the SDK handler, and return the
+        text of the first TextContent in the result."""
+        server = _make_server()
+        sdk_handler = server.request_handlers[mcp_types.CallToolRequest]
+        req = mcp_types.CallToolRequest(
+            method="tools/call",
+            params=mcp_types.CallToolRequestParams(name=tool_name, arguments=arguments),
+        )
+        result = asyncio.run(sdk_handler(req))
+        return result.root.content[0].text
+
+    def test_bogus_kwarg_returns_validation_error_code(self):
+        """A kwarg unknown to the handler must produce error_code='validation'."""
+        text = self._invoke("list_folders", {"bogus_kwarg": "unexpected"})
+        payload = json.loads(text)
+        assert payload["error_code"] == "validation", (
+            f"Expected error_code='validation', got {payload.get('error_code')!r}. "
+            f"Full payload: {payload}"
+        )
+
+    def test_bogus_kwarg_retryable_is_false(self):
+        """A validation error from a bad kwarg must not be marked as retryable."""
+        text = self._invoke("list_folders", {"bogus_kwarg": "unexpected"})
+        payload = json.loads(text)
+        assert payload["retryable"] is False
+
+    def test_bogus_kwarg_error_message_names_tool(self):
+        """The human-readable error string must include the tool name so agents can self-correct."""
+        text = self._invoke("browse_recordings", {"not_a_real_param": 42})
+        payload = json.loads(text)
+        assert "browse_recordings" in payload["error"], (
+            f"Expected tool name in error message; got: {payload.get('error')!r}"
+        )
+
+    def test_bogus_kwarg_does_not_raise(self):
+        """call_tool must never propagate a raw TypeError to the caller."""
+        # If this assertion fails the SDK catches the exception and wraps it in a
+        # plain-text error message — the test below would also fail — but this
+        # assertion documents the requirement explicitly.
+        try:
+            self._invoke("get_recording", {"recording_id": "abc", "unknown_field": True})
+        except TypeError:
+            raise AssertionError(
+                "call_tool raised TypeError instead of returning a structured error payload"
+            )
+
+    def test_bogus_kwarg_text_is_valid_json(self):
+        """The TextContent text for a bad-kwarg call must be parseable JSON."""
+        text = self._invoke("list_folders", {"garbage": "value"})
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"call_tool returned non-JSON text for bogus kwarg: {text!r}"
+            ) from exc

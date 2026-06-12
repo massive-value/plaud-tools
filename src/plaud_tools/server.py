@@ -294,8 +294,21 @@ def _make_server() -> Server:
         handler = handlers.get(name)
         if handler is None:
             return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
-        result = handler(**arguments)
-        text = result["content"][0]["text"]
+        try:
+            result = handler(**arguments)
+            text = result["content"][0]["text"]
+        except TypeError as exc:
+            # The MCP framework or a misbehaving client passed unexpected / missing
+            # keyword arguments.  Returning a structured validation error keeps the
+            # raw TypeError inside the server process and lets the caller
+            # self-correct.  Shape mirrors _error_result() in mcp.py exactly:
+            # {"error": ..., "error_code": "validation", "retryable": false}.
+            payload = {
+                "error": f"Invalid arguments for tool '{name}': {exc}",
+                "error_code": "validation",
+                "retryable": False,
+            }
+            return [types.TextContent(type="text", text=json.dumps(payload, indent=2))]
         return [types.TextContent(type="text", text=text)]
 
     return server
