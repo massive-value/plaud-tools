@@ -64,7 +64,7 @@ Please retry; if the mismatch persists report it at https://github.com/massive-v
 2. If the mismatch persists across multiple attempts, the release asset on GitHub may be corrupt. Check the [GitHub releases page](https://github.com/massive-value/plaud-tools/releases) and compare the hash in `SHA256SUMS` against `Get-FileHash -Algorithm SHA256 <path>` on the downloaded file.
 3. File a bug with `plaud-tools doctor` output and the hash values from the error message: <https://github.com/massive-value/plaud-tools/issues>
 
-**Older releases:** releases predating wave 0 (before v0.2.11 remediation) have no `SHA256SUMS` asset. The installer and updater warn that verification was skipped but proceed — this is expected behavior for those releases only.
+**Missing `SHA256SUMS` asset:** verification is fail-closed (#113) — if a release has no `SHA256SUMS` asset, the installer and updater abort rather than proceeding unverified ("integrity cannot be verified"). Every release from v0.3.0 onward publishes the asset, so this should only occur against a malformed/incomplete release or a tampered asset list. Releases predating wave 0 (≤ v0.2.11) have no `SHA256SUMS`; install/update always targets the latest release, which does.
 
 ---
 

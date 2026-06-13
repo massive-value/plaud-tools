@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-13
+
+### Security
+
+- **SHA256SUMS verification is now unconditionally fail-closed (#113).** The
+  installer (`install.ps1`) and the in-app updater (`tray/updater.py`)
+  previously warn-and-proceeded when a release had no `SHA256SUMS` asset
+  (a soft-fail for pre-wave-0 releases). That branch is removed: an absent
+  `SHA256SUMS` asset now aborts the install/update, the same as a hash
+  mismatch. Every release from v0.3.0 onward publishes the asset (v0.3.0 and
+  v0.3.1 both shipped it), so the soft-fail is no longer needed and an absent
+  asset now signals a malformed release or tampered asset list. (#113)
+
 ## [0.3.1] - 2026-06-13
 
 Maintenance release. No functional or behavioral changes.

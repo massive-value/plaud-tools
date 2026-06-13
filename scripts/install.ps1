@@ -226,46 +226,38 @@ try {
     Get-FileWithProgress -Uri $asset.browser_download_url -OutFile $zipTemp
     Write-Host '    Download complete.'
 
-    # --- Step 2b: verify SHA256 checksum (fail-closed when asset present) ---
+    # --- Step 2b: verify SHA256 checksum (unconditionally fail-closed) ---
     #
     # The SHA256SUMS asset (format: "<hex>  PlaudTools.zip", standard sha256sum
-    # two-space format) is published alongside PlaudTools.zip starting from the
-    # release that ships task A3.  Older releases have no such asset.
+    # two-space format) is published alongside PlaudTools.zip on every release
+    # from v0.3.0 onward.
     #
-    # Rollout behavior:
-    #   * SHA256SUMS asset present  → verify; FAIL CLOSED on mismatch.
-    #   * SHA256SUMS asset absent   → warn + proceed (soft-fail for older releases).
-    #
-    # TODO(#113): remove the soft-fail branch and make verification
-    # unconditionally fail-closed, once SHA256SUMS has shipped in >=2 tagged
-    # releases (so pre-wave-0 releases without the asset have aged out of the
-    # upgrade path).  v0.3.0 is the first release that publishes it.
-    #   https://github.com/massive-value/plaud-tools/issues/113
+    # Verification is FAIL CLOSED (#113): a hash mismatch aborts the install, and
+    # so does an absent SHA256SUMS asset — an absent asset means a malformed
+    # release or a tampered asset list, and the download cannot be trusted.
     $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS' } | Select-Object -First 1
-    if ($sumsAsset) {
-        Write-Host '    Verifying SHA256 checksum...'
-        $sumsTemp = Join-Path $env:TEMP 'PlaudTools.SHA256SUMS'
-        try {
-            Invoke-RestMethod -Uri $sumsAsset.browser_download_url -OutFile $sumsTemp -UseBasicParsing
-            $sumsContent = Get-Content $sumsTemp -Encoding UTF8 -Raw
-            # Parse first token from the two-space format: "<hex>  <filename>"
-            $expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
-            $actualHash   = (Get-FileHash -Path $zipTemp -Algorithm SHA256).Hash.ToUpper()
-            if ($actualHash -ne $expectedHash) {
-                throw (
-                    "SHA256 mismatch — the downloaded zip may be corrupt or tampered.`n" +
-                    "  Expected: $expectedHash`n" +
-                    "  Actual:   $actualHash`n" +
-                    'Please retry; if the mismatch persists report it at https://github.com/massive-value/plaud-tools/issues'
-                )
-            }
-            Write-Host '    Checksum verified.'
-        } finally {
-            Remove-Item -Path $sumsTemp -ErrorAction SilentlyContinue
+    if (-not $sumsAsset) {
+        throw 'SHA256SUMS asset not found for this release; the download''s integrity cannot be verified. Aborting install. If this persists, report it at https://github.com/massive-value/plaud-tools/issues'
+    }
+    Write-Host '    Verifying SHA256 checksum...'
+    $sumsTemp = Join-Path $env:TEMP 'PlaudTools.SHA256SUMS'
+    try {
+        Invoke-RestMethod -Uri $sumsAsset.browser_download_url -OutFile $sumsTemp -UseBasicParsing
+        $sumsContent = Get-Content $sumsTemp -Encoding UTF8 -Raw
+        # Parse first token from the two-space format: "<hex>  <filename>"
+        $expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
+        $actualHash   = (Get-FileHash -Path $zipTemp -Algorithm SHA256).Hash.ToUpper()
+        if ($actualHash -ne $expectedHash) {
+            throw (
+                "SHA256 mismatch — the downloaded zip may be corrupt or tampered.`n" +
+                "  Expected: $expectedHash`n" +
+                "  Actual:   $actualHash`n" +
+                'Please retry; if the mismatch persists report it at https://github.com/massive-value/plaud-tools/issues'
+            )
         }
-    } else {
-        # Older release: SHA256SUMS not published yet — proceed but warn.
-        Write-Warning '    SHA256SUMS asset not found for this release; integrity could not be verified. Proceeding.'
+        Write-Host '    Checksum verified.'
+    } finally {
+        Remove-Item -Path $sumsTemp -ErrorAction SilentlyContinue
     }
 
     # --- Step 3: extract to install directory ---
