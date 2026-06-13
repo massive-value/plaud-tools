@@ -27,6 +27,7 @@ from typing import NamedTuple
 
 __all__ = [
     "ProcessInfo",
+    "active_enumerator_name",
     "enumerate_mcp_processes",
     "shutdown_mcp_children",
     "mcp_shutdown_ps1_snippet",
@@ -43,6 +44,47 @@ _POWERSHELL_EXE: str = os.path.join(
     os.environ.get("SystemRoot", r"C:\Windows"),
     r"System32\WindowsPowerShell\v1.0\powershell.exe",
 )
+
+
+# ---------------------------------------------------------------------------
+# Enumerator introspection
+# ---------------------------------------------------------------------------
+
+
+def active_enumerator_name() -> str:
+    """Return a short label describing which process enumerator is active.
+
+    Mirrors the fallback chain in ``_default_process_enumerator`` without
+    actually enumerating any processes:
+
+    - ``"psutil"``     — the ``psutil`` package is importable (preferred path).
+    - ``"wmic"``       — psutil absent, Windows, and ``wmic.exe`` is available.
+    - ``"powershell"`` — psutil absent, Windows, wmic not available (Win11 22H2+
+                         or legacy missing), PowerShell is the final fallback.
+    - ``"none"``       — psutil absent and not on Windows (POSIX without psutil).
+
+    The result is purely probe-time: it answers "which enumerator *would* be
+    used right now if we called _default_process_enumerator()."  It does not
+    guarantee that the enumerator will successfully return any processes.
+    """
+    try:
+        import psutil  # type: ignore[import]  # noqa: F401
+
+        return "psutil"
+    except ImportError:
+        pass
+
+    if os.name != "nt":
+        return "none"
+
+    # On Windows, WMIC is tried first.  wmic.exe was removed from Win11 22H2+,
+    # so probe via shutil.which rather than running it.
+    import shutil
+
+    if shutil.which("wmic") is not None:
+        return "wmic"
+
+    return "powershell"
 
 
 # ---------------------------------------------------------------------------
