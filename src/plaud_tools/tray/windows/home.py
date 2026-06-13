@@ -192,7 +192,14 @@ class HomeWindow:
             self._session_var.set(self._get_session_label())
 
     def _refresh_update_btn(self) -> None:
-        if self._update_btn is None:
+        # This is the only refresh invoked asynchronously from the background
+        # update-poll thread (via ``root.after(0, ...)``), so it can fire long
+        # after the user closed the HomeWindow.  Closing the window destroys the
+        # underlying Tk button but leaves ``self._update_btn`` pointing at the
+        # dead widget, so ``is None`` is not enough — configuring it would raise
+        # ``TclError: invalid command name``.  ``winfo_exists()`` returns 0 for a
+        # destroyed widget without raising.
+        if self._update_btn is None or not self._update_btn.winfo_exists():
             return
         info = self._get_update_info()
         if info is not None:

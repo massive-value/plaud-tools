@@ -39,8 +39,13 @@ def _setup_logging() -> None:
         handlers=[handler],
     )
 
-    # Also capture unhandled tkinter callback exceptions
-    def _tk_error(exc, val, tb):  # type: ignore[override]
+    # Also capture unhandled tkinter callback exceptions.
+    # NOTE: this is assigned to the *class* (tk.Tk), so Tk invokes it as a
+    # bound method — the first positional arg is the Tk instance.  It must
+    # therefore accept ``self``; a 3-arg ``(exc, val, tb)`` signature raises
+    # "takes 3 positional arguments but 4 were given" *inside* the error
+    # reporter, turning every recoverable callback error into a hard crash.
+    def _tk_error(self, exc, val, tb):  # type: ignore[override]
         logging.exception("tkinter callback error", exc_info=(exc, val, tb))
 
     tk.Tk.report_callback_exception = _tk_error  # type: ignore[assignment]
