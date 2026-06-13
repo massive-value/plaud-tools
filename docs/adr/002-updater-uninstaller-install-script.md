@@ -74,7 +74,7 @@ Every GitHub release now publishes a `SHA256SUMS` asset alongside `PlaudTools.zi
 
 **Installer (`scripts/install.ps1`)** — after downloading `PlaudTools.zip`, the script fetches `SHA256SUMS` and compares `Get-FileHash -Algorithm SHA256` against the listed hash. On mismatch the install is aborted with an error. When `SHA256SUMS` is absent (older releases that predate wave 0) the script warns and proceeds (soft-fail for backward compatibility with the rollout window).
 
-**In-app updater (`tray/updater.py`)** — the same verify-then-extract contract is applied: `verify_zip_checksum(zip_path, sums_url)` is called after the download completes. `ChecksumMismatch` or any network error fetching `SHA256SUMS` causes the update to be refused; the tray re-enables the Install button with an error label so the user can retry.
+**In-app updater (`tray/updater.py`)** — the same verify-then-extract contract is applied: `verify_zip_checksum(zip_path, sums_url)` is called after the download completes. `ChecksumMismatch` or any network error fetching `SHA256SUMS` causes the update to be refused; the tray surfaces a "PlaudTools — Update failed" notification carrying the failure reason and logs it to `tray.log`.
 
 Both sides are fail-closed when the asset is present and soft-fail when absent. The soft-fail branch is tracked for removal once SHA256SUMS is universal across all supported release branches.
 
