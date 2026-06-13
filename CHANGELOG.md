@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-13
+
+Audit remediation release: closes every finding (Critical → Low) from the
+v0.2.11 principal audit across four waves — transport resilience, supply-chain
+integrity, MCP/process-lifecycle hardening, incremental browse, streaming
+uploads, and a documentation sync. No breaking changes (CLI flags, MCP
+response shapes, and `doctor` JSON are preserved/additive).
+
 ### Polish & low-priority (audit remediation, wave 4)
 
 - **`layout.py` honors its documented contract.** Bundle `mcp_exe` /
@@ -1168,7 +1176,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/massive-value/plaud-tools/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/massive-value/plaud-tools/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/massive-value/plaud-tools/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/massive-value/plaud-tools/compare/v0.2.8...v0.2.9
