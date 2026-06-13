@@ -51,12 +51,12 @@ Starting with wave 0, every release publishes a `SHA256SUMS` asset. The installe
 **Installer error (PowerShell):**
 ```
 SHA256 mismatch — the downloaded zip may be corrupt or tampered.
-  Expected: <expected-hex>
-  Got:      <actual-hex>
-Aborting install.
+  Expected: <HEX>
+  Actual:   <HEX>
+Please retry; if the mismatch persists report it at https://github.com/massive-value/plaud-tools/issues
 ```
 
-**In-app updater (tray):** the Install button re-enables with the label "Hash mismatch — retry?" and the error is logged to `tray.log`.
+**In-app updater (tray):** the update is refused and the tray surfaces a **"PlaudTools — Update failed"** notification whose body carries the mismatch reason; the failure is also logged to `tray.log`.
 
 **What to do:**
 
@@ -76,7 +76,7 @@ The tray updater restricts downloads to `github.com` and `objects.githubusercont
 Refusing to download update from untrusted host '<host>'. Allowed hosts: ['github.com', 'objects.githubusercontent.com']
 ```
 
-This appears in `tray.log` and the tray's Install button re-enables with an error label.
+The update is refused; the tray surfaces a **"PlaudTools — Update failed"** notification whose body carries this refusal reason, and the message is also logged to `tray.log`.
 
 **What to do:**
 
