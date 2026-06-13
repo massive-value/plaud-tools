@@ -134,9 +134,11 @@ def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
     - sums_url is None      →  log a warning and return normally so installs
       against older releases still work.
 
-    # TODO: remove the soft-fail (sums_url is None) branch two releases after
-    # SHA256SUMS ships to all supported release branches.  Track via:
-    #   https://github.com/massive-value/plaud-tools/issues  (open a "remove soft-fail" issue)
+    # TODO(#113): remove the soft-fail (sums_url is None) branch and make
+    # verification unconditionally fail-closed, once SHA256SUMS has shipped in
+    # >=2 tagged releases (so pre-wave-0 releases without the asset have aged
+    # out of the upgrade path).  v0.3.0 is the first release that publishes it.
+    #   https://github.com/massive-value/plaud-tools/issues/113
 
     The SHA256SUMS format is the standard sha256sum two-space format::
 

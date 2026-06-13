@@ -236,9 +236,11 @@ try {
     #   * SHA256SUMS asset present  → verify; FAIL CLOSED on mismatch.
     #   * SHA256SUMS asset absent   → warn + proceed (soft-fail for older releases).
     #
-    # TODO: remove the soft-fail branch two releases after SHA256SUMS ships to all
-    # supported release branches.  Track in:
-    #   https://github.com/massive-value/plaud-tools/issues  (open a "remove soft-fail" issue)
+    # TODO(#113): remove the soft-fail branch and make verification
+    # unconditionally fail-closed, once SHA256SUMS has shipped in >=2 tagged
+    # releases (so pre-wave-0 releases without the asset have aged out of the
+    # upgrade path).  v0.3.0 is the first release that publishes it.
+    #   https://github.com/massive-value/plaud-tools/issues/113
     $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS' } | Select-Object -First 1
     if ($sumsAsset) {
         Write-Host '    Verifying SHA256 checksum...'
