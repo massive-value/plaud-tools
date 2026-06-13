@@ -106,6 +106,48 @@ server-side interactive prompt is possible over stdio.  The `confirm` gate is
 the MCP-native equivalent of `--yes`, moved into the tool schema so the LLM
 must carry explicit evidence of consent through the call.
 
+## Transport resilience
+
+**Request timeouts.** `UrllibTransport` applies a 30 s default timeout to every call; S3 chunk PUTs get a 120 s ceiling. A hung `urlopen` now surfaces as `PlaudApiError` instead of wedging the process indefinitely.
+
+**Region-redirect bound.** Plaud's `-302` region-redirect is followed at most once per request. A second `-302` raises `PlaudApiError("region redirect loop")`.
+
+**Retry / backoff (Wave 2 / C5).** HTTP 429 and 5xx responses are retried up to twice with exponential backoff + ±25 % jitter (base ≈ 1 s → 3 s). When the server supplies a `Retry-After` header the client sleeps the larger of the header value and the computed delay. The transcription, summary, and merge poll loops treat a transient error as a skipped poll and continue until their deadline instead of aborting early.
+
+## Browse and upload behavior
+
+**Incremental filtered browse.** `browse_recordings` / CLI `list`/`search` page the upstream API with `skip`/`limit`, filter each page, and stop once enough matches are collected to answer `has_more` honestly. The entire library is never pulled into memory.
+
+**Streaming disk-chunked uploads.** `upload_recording` reads 5 MiB chunks from disk per multipart part; transcoding writes the MP3 directly to a temp file (`transcode_to_mp3_path`). Large recordings do not scale memory with file size. The presign → multipart → complete protocol is unchanged.
+
+## Supply-chain integrity
+
+**ffmpeg pin.** The release pipeline downloads ffmpeg from a pinned versioned URL and verifies it against a hardcoded SHA-256.
+
+**SHA256SUMS asset.** Every release publishes a `SHA256SUMS` file alongside `PlaudTools.zip`. Both the PowerShell installer (`scripts/install.ps1`) and the in-app updater verify the zip before extracting — fail-closed when the asset is present, warn-and-proceed when absent (soft-fail for older releases that predate wave 0). The soft-fail branch is tracked for removal once SHA256SUMS is universal across all supported release branches.
+
+**GitHub Actions SHA pins.** All GitHub Actions steps are pinned to full commit SHAs in both `ci.yml` and `release.yml`.
+
+**Tri-platform constraint lockfiles.** `constraints/{windows,macos,linux}.txt` pin the full dependency closure per platform (compiled with `uv pip compile`). The Windows lockfile ships as a lightweight SBOM release asset; a CI job verifies all three install on their native OS.
+
+## Session cache freshness
+
+`SessionManager` caches the loaded session in memory. The cache is invalidated by detecting an out-of-band session update: a cheap mtime probe on the backing file when available, or a 5-minute TTL otherwise. The within-window hot path skips keyring reads entirely.
+
+## Diagnostics — `doctor` output
+
+`plaud-tools doctor` returns a JSON document. The `mcp_lifecycle` section includes an `enumerator` field reporting which process enumerator is active: `psutil` (normal bundle), `wmic` (legacy Windows), `powershell` (modern Windows without psutil), or `none` (no enumerator available). The dev-fallback MCP path in the same section is platform-aware (no `.exe` suffix on POSIX).
+
+## Tray updater security
+
+**Host allowlist.** Update downloads are restricted to `github.com` and `objects.githubusercontent.com` (exact hostname match). Any redirect to a different host is refused before the download starts.
+
+**Absolute PowerShell path.** The tray and lifecycle helpers invoke PowerShell via its absolute path (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`) to prevent PATH-hijack attacks.
+
+## Scripting and CI authentication
+
+`login --password` leaks the password via process listings and shell history. For scripting and CI use the `PLAUD_ACCESS_TOKEN` environment variable or `plaud-tools session set --token <token>` instead. The `--password` flag remains available for interactive terminal use.
+
 ## Rewrite priorities
 
 - reduce MCP tool count while improving reliability and token efficiency
