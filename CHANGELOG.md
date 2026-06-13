@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-13
+
+Maintenance release. No functional or behavioral changes.
+
+### Changed
+
+- **Soft-fail TODO comments now reference issue #113.** The
+  warn-and-proceed-when-`SHA256SUMS`-is-absent branches in `install.ps1` and
+  `tray/updater.py` carry `TODO(#113)` markers documenting the fail-closed
+  cleanup and its release gate (remove once `SHA256SUMS` has shipped in ≥2
+  tagged releases). v0.3.0 was the first release to publish the asset; this
+  release is the second, satisfying that gate. Comment-only — verification
+  behavior is unchanged. (#113)
+
 ## [0.3.0] - 2026-06-13
 
 Audit remediation release: closes every finding (Critical → Low) from the
