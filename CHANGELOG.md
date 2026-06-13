@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing a password on the command line leaks via process listings and
   shell history, and points to `PLAUD_ACCESS_TOKEN` and `session set
   --token` for scripting/CI. The flag is unchanged. (#123)
+- **`doctor` reports the active process enumerator.** Adds an
+  `mcp_lifecycle.enumerator` field (`psutil`/`wmic`/`powershell`/`none`) and
+  makes the dev-fallback MCP path platform-aware (no `.exe` on POSIX).
+  Additive — no output fields removed. (#125)
 
 ### High-leverage (audit remediation, wave 3)
 
