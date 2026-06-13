@@ -1,9 +1,9 @@
 """Unit tests for verify_zip_checksum in plaud_tools.tray.updater.
 
-These tests cover the three rollout scenarios for Wave 2 / C1 (hash verification):
+These tests cover the verification scenarios (Wave 2 / C1, fail-closed per #113):
   - Matching hash → passes silently.
   - Tampered zip (wrong hash in SHA256SUMS) → raises ChecksumMismatch (fail-closed).
-  - Absent SHA256SUMS URL (None) → warns and proceeds (soft-fail for older releases).
+  - Absent SHA256SUMS URL (None) → raises ChecksumMismatch (fail-closed, #113).
 
 All tests are pure Python (no network, no subprocess, no tkinter); urllib is
 patched so tests run in any environment.
@@ -115,37 +115,33 @@ def test_verify_zip_checksum_case_insensitive_comparison(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# verify_zip_checksum — absent SHA256SUMS (soft-fail)
+# verify_zip_checksum — absent SHA256SUMS (fail-closed, #113)
 # ---------------------------------------------------------------------------
 
 
-def test_verify_zip_checksum_absent_sums_url_warns_and_proceeds(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """When sums_url is None (pre-A3 release), verify_zip_checksum must warn and return normally.
+def test_verify_zip_checksum_absent_sums_url_raises(tmp_path: Path) -> None:
+    """When sums_url is None, verify_zip_checksum must raise — fail-closed (#113).
 
-    This is the soft-fail branch that allows older releases (without a SHA256SUMS
-    asset) to continue installing.  It must be removed two releases after SHA256SUMS
-    ships to all supported release branches.
+    Every release from v0.3.0 onward publishes SHA256SUMS, so an absent asset
+    means the download's integrity cannot be established and the install must be
+    refused rather than proceeding unverified.
     """
     zip_path = _make_zip(tmp_path)
 
-    import logging
+    with pytest.raises(ChecksumMismatch) as exc_info:
+        verify_zip_checksum(zip_path, sums_url=None)
 
-    with caplog.at_level(logging.WARNING, logger="plaud_tools.tray.updater"):
-        result = verify_zip_checksum(zip_path, sums_url=None)
-
-    assert result is None  # Must not raise.
-    # A warning must be emitted so operators can see the soft-fail in logs.
-    assert any("SHA256SUMS" in r.message or "integrity" in r.message for r in caplog.records)
+    msg = str(exc_info.value).lower()
+    assert "sha256sums" in msg or "integrity" in msg
 
 
 def test_verify_zip_checksum_absent_sums_url_does_not_call_network(tmp_path: Path) -> None:
-    """When sums_url is None, no network call must be made."""
+    """When sums_url is None, the failure must be raised before any network call."""
     zip_path = _make_zip(tmp_path)
 
     with patch("plaud_tools.tray.updater.urllib.request.urlopen") as mock_urlopen:
-        verify_zip_checksum(zip_path, sums_url=None)
+        with pytest.raises(ChecksumMismatch):
+            verify_zip_checksum(zip_path, sums_url=None)
 
     mock_urlopen.assert_not_called()
 

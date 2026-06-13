@@ -122,11 +122,14 @@ def test_install_ps1_fails_closed_on_mismatch():
     assert "throw" in content
 
 
-def test_install_ps1_soft_fail_when_sums_absent():
+def test_install_ps1_fail_closed_when_sums_absent():
     content = _read_install_ps1()
-    # When SHA256SUMS is absent, the script must warn but proceed.
-    assert "Write-Warning" in content
-    assert "integrity could not be verified" in content
+    # When SHA256SUMS is absent, the script must abort (fail-closed, #113) rather
+    # than warn-and-proceed.
+    assert "if (-not $sumsAsset)" in content
+    assert "integrity cannot be verified" in content
+    # The old soft-fail warning must be gone.
+    assert "Proceeding." not in content
 
 
 def test_install_ps1_cleans_up_sums_temp_file():
@@ -168,7 +171,7 @@ def test_install_ps1_syntax_valid():
 # small PS1 harness that reproduces the same pattern used in install.ps1:
 #   * matching hash → no throw, exits 0
 #   * tampered zip (wrong hash in SHA256SUMS) → throws, exits 1
-#   * absent SHA256SUMS file → writes a warning, exits 0
+#   * absent SHA256SUMS file → throws, exits 1 (fail-closed, #113)
 # ---------------------------------------------------------------------------
 
 # The standalone hash-check logic extracted from install.ps1 for direct testing.
@@ -180,18 +183,16 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-if ($SumsPath -and (Test-Path $SumsPath)) {
-    $sumsContent = Get-Content $SumsPath -Encoding UTF8 -Raw
-    $expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
-    $actualHash   = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToUpper()
-    if ($actualHash -ne $expectedHash) {
-        throw "SHA256 mismatch"
-    }
-    Write-Host "VERIFIED"
-} else {
-    Write-Warning "integrity could not be verified"
-    Write-Host "PROCEEDING"
+if (-not ($SumsPath -and (Test-Path $SumsPath))) {
+    throw "SHA256SUMS asset not found; integrity cannot be verified"
 }
+$sumsContent = Get-Content $SumsPath -Encoding UTF8 -Raw
+$expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
+$actualHash   = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToUpper()
+if ($actualHash -ne $expectedHash) {
+    throw "SHA256 mismatch"
+}
+Write-Host "VERIFIED"
 """
 
 
@@ -259,12 +260,15 @@ def test_install_ps1_hash_check_tampered_zip_fails(tmp_path: Path):
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
-def test_install_ps1_hash_check_absent_sums_warns_and_proceeds(tmp_path: Path):
-    """When SHA256SUMS is absent, the script should warn but exit 0 (soft-fail)."""
+def test_install_ps1_hash_check_absent_sums_fails_closed(tmp_path: Path):
+    """When SHA256SUMS is absent, the script must abort with exit 1 (fail-closed, #113)."""
     payload = b"fake zip content"
     result = _run_hash_check(tmp_path, payload, sums_content=None)
-    assert result.returncode == 0, f"Expected soft-fail (exit 0):\n{result.stdout}\n{result.stderr}"
-    assert "PROCEEDING" in result.stdout
+    assert result.returncode != 0, (
+        f"Expected fail-closed (non-zero exit) but got exit 0:\n{result.stdout}\n{result.stderr}"
+    )
+    combined = (result.stdout + result.stderr).lower()
+    assert "integrity cannot be verified" in combined or "not found" in combined
 
 
 # ---------------------------------------------------------------------------

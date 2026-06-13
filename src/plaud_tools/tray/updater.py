@@ -127,18 +127,14 @@ class ChecksumMismatch(ValueError):
 def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
     """Verify *zip_path* against the SHA256SUMS asset at *sums_url*.
 
-    Rollout behavior (critical — older releases have no SHA256SUMS asset):
+    Verification is unconditionally FAIL CLOSED (#113): the caller must not
+    install a zip unless this returns normally.
     - sums_url is not None  →  download the asset, parse the expected hash,
       compute the actual hash, and raise :exc:`ChecksumMismatch` on mismatch.
-      FAIL CLOSED: the caller must not install a zip that fails this check.
-    - sums_url is None      →  log a warning and return normally so installs
-      against older releases still work.
-
-    # TODO(#113): remove the soft-fail (sums_url is None) branch and make
-    # verification unconditionally fail-closed, once SHA256SUMS has shipped in
-    # >=2 tagged releases (so pre-wave-0 releases without the asset have aged
-    # out of the upgrade path).  v0.3.0 is the first release that publishes it.
-    #   https://github.com/massive-value/plaud-tools/issues/113
+    - sums_url is None      →  raise :exc:`ChecksumMismatch`. The integrity of
+      the download cannot be established, so refuse to install. (Every release
+      from v0.3.0 onward publishes SHA256SUMS; an absent asset now means a
+      malformed/incomplete release or a tampered asset list.)
 
     The SHA256SUMS format is the standard sha256sum two-space format::
 
@@ -158,15 +154,17 @@ def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
     Raises
     ------
     ChecksumMismatch
-        When *sums_url* is present but the computed hash does not match.
+        When *sums_url* is None (no SHA256SUMS asset to verify against), or when
+        it is present but the computed hash does not match.
     """
     if sums_url is None:
-        # Older release: SHA256SUMS not published yet — warn and proceed.
-        logging.warning(
-            "verify_zip_checksum: SHA256SUMS asset absent for this release; "
-            "integrity could not be verified. Proceeding without checksum check."
+        # No SHA256SUMS asset → integrity cannot be verified → refuse to install.
+        raise ChecksumMismatch(
+            "SHA256SUMS asset is missing from this release; the download's "
+            "integrity cannot be verified. Refusing to install. If this "
+            "persists, report it at "
+            "https://github.com/massive-value/plaud-tools/issues"
         )
-        return
 
     # Download the SHA256SUMS file.
     req = urllib.request.Request(sums_url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
@@ -370,8 +368,8 @@ class UpdateDialog:
             return
 
         # --- Hash verification (MUST happen before writing dispatcher/sentinel) ---
-        # verify_zip_checksum is fail-closed when SHA256SUMS is present and the
-        # hash mismatches; it warns-and-proceeds when the asset is absent.
+        # verify_zip_checksum is unconditionally fail-closed (#113): it raises on
+        # a hash mismatch AND when the SHA256SUMS asset is absent.
         try:
             _set_status("Verifying…")
             verify_zip_checksum(zip_path, sums_url)

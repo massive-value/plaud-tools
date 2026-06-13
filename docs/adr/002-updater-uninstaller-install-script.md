@@ -72,11 +72,11 @@ The tray log lives at `%LOCALAPPDATA%\PlaudTools\tray.log` (not `%LOCALAPPDATA%\
 
 Every GitHub release now publishes a `SHA256SUMS` asset alongside `PlaudTools.zip` in the standard `sha256sum` two-space format (`<hex>  PlaudTools.zip`).
 
-**Installer (`scripts/install.ps1`)** — after downloading `PlaudTools.zip`, the script fetches `SHA256SUMS` and compares `Get-FileHash -Algorithm SHA256` against the listed hash. On mismatch the install is aborted with an error. When `SHA256SUMS` is absent (older releases that predate wave 0) the script warns and proceeds (soft-fail for backward compatibility with the rollout window).
+**Installer (`scripts/install.ps1`)** — after downloading `PlaudTools.zip`, the script fetches `SHA256SUMS` and compares `Get-FileHash -Algorithm SHA256` against the listed hash. On mismatch the install is aborted with an error. When `SHA256SUMS` is absent the install is likewise aborted (fail-closed).
 
-**In-app updater (`tray/updater.py`)** — the same verify-then-extract contract is applied: `verify_zip_checksum(zip_path, sums_url)` is called after the download completes. `ChecksumMismatch` or any network error fetching `SHA256SUMS` causes the update to be refused; the tray surfaces a "PlaudTools — Update failed" notification carrying the failure reason and logs it to `tray.log`.
+**In-app updater (`tray/updater.py`)** — the same verify-then-extract contract is applied: `verify_zip_checksum(zip_path, sums_url)` is called after the download completes. `ChecksumMismatch` (including the absent-asset case) or any network error fetching `SHA256SUMS` causes the update to be refused; the tray surfaces a "PlaudTools — Update failed" notification carrying the failure reason and logs it to `tray.log`.
 
-Both sides are fail-closed when the asset is present and soft-fail when absent. The soft-fail branch is tracked for removal once SHA256SUMS is universal across all supported release branches.
+**Amendment (#113, v0.3.2):** verification is now *unconditionally* fail-closed on both sides. The original rollout shipped a soft-fail (warn-and-proceed) branch for the window in which releases predating wave 0 — which carry no `SHA256SUMS` asset — were still in the upgrade path. Once the asset had shipped in ≥2 tagged releases (v0.3.0 and v0.3.1), that branch was removed: an absent `SHA256SUMS` asset now aborts the install/update exactly like a hash mismatch.
 
 **ffmpeg pin (Wave 0 / A3)** — the release pipeline downloads ffmpeg from a pinned versioned URL and verifies it against a hardcoded SHA-256 before bundling. GitHub Actions steps in both `ci.yml` and `release.yml` are pinned to full commit SHAs.
 
