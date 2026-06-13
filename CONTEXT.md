@@ -124,7 +124,7 @@ must carry explicit evidence of consent through the call.
 
 **ffmpeg pin.** The release pipeline downloads ffmpeg from a pinned versioned URL and verifies it against a hardcoded SHA-256.
 
-**SHA256SUMS asset.** Every release publishes a `SHA256SUMS` file alongside `PlaudTools.zip`. Both the PowerShell installer (`scripts/install.ps1`) and the in-app updater verify the zip before extracting — fail-closed when the asset is present, warn-and-proceed when absent (soft-fail for older releases that predate wave 0). The soft-fail branch is tracked for removal once SHA256SUMS is universal across all supported release branches.
+**SHA256SUMS asset.** Every release publishes a `SHA256SUMS` file alongside `PlaudTools.zip`. Both the PowerShell installer (`scripts/install.ps1`) and the in-app updater verify the zip before extracting, and verification is unconditionally **fail-closed** (#113): a hash mismatch aborts, and so does an absent `SHA256SUMS` asset. (The original rollout warned-and-proceeded when the asset was absent, to cover pre-wave-0 releases still in the upgrade path; that soft-fail branch was removed in v0.3.2 once the asset had shipped in ≥2 tagged releases. Both install and update fetch `releases/latest`, which always carries the asset, so an absent asset now signals a malformed release or tampered asset list.)
 
 **GitHub Actions SHA pins.** All GitHub Actions steps are pinned to full commit SHAs in both `ci.yml` and `release.yml`.
 
