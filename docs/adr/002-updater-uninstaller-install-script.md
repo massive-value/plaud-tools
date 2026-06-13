@@ -65,3 +65,28 @@ The tray log lives at `%LOCALAPPDATA%\PlaudTools\tray.log` (not `%LOCALAPPDATA%\
 - **Separate `Uninstall.exe`**: Rejected for alpha software. The tray menu item covers the common case; a second frozen binary adds build complexity for minimal gain.
 - **Silent auto-update**: Rejected. Alpha software with a reverse-engineered API; a bad release should not silently overwrite a working install.
 - **`plaud-tools update` checks PyPI first**: Rejected. pip already prints "Requirement already satisfied"; a redundant pre-check adds code with no user-visible benefit.
+
+## Amendment — 2026-06-12 (Wave 0 / A3 + Wave 2 / C1: supply-chain integrity)
+
+### SHA256SUMS verification (Wave 0 / A3 + Wave 2 / C1)
+
+Every GitHub release now publishes a `SHA256SUMS` asset alongside `PlaudTools.zip` in the standard `sha256sum` two-space format (`<hex>  PlaudTools.zip`).
+
+**Installer (`scripts/install.ps1`)** — after downloading `PlaudTools.zip`, the script fetches `SHA256SUMS` and compares `Get-FileHash -Algorithm SHA256` against the listed hash. On mismatch the install is aborted with an error. When `SHA256SUMS` is absent (older releases that predate wave 0) the script warns and proceeds (soft-fail for backward compatibility with the rollout window).
+
+**In-app updater (`tray/updater.py`)** — the same verify-then-extract contract is applied: `verify_zip_checksum(zip_path, sums_url)` is called after the download completes. `ChecksumMismatch` or any network error fetching `SHA256SUMS` causes the update to be refused; the tray surfaces a "PlaudTools — Update failed" notification carrying the failure reason and logs it to `tray.log`.
+
+Both sides are fail-closed when the asset is present and soft-fail when absent. The soft-fail branch is tracked for removal once SHA256SUMS is universal across all supported release branches.
+
+**ffmpeg pin (Wave 0 / A3)** — the release pipeline downloads ffmpeg from a pinned versioned URL and verifies it against a hardcoded SHA-256 before bundling. GitHub Actions steps in both `ci.yml` and `release.yml` are pinned to full commit SHAs.
+
+### Update host allowlist (Wave 3 / D6)
+
+Update downloads are restricted to an explicit allowlist: `github.com` and `objects.githubusercontent.com` (exact `hostname` match, not substring). `_check_download_host(url)` is called before any download begins in the updater worker; a host not in the allowlist raises `ValueError` and the download is refused. Redirects to off-allowlist hosts are therefore also refused at the point the redirect URL is resolved.
+
+**Rationale:** The GitHub releases API can return any asset URL it chooses. Without an allowlist, a compromised or misbehaving API response could redirect downloads to an attacker-controlled server. The allowlist ensures the binary always originates from GitHub infrastructure regardless of what the API returns.
+
+### Absolute PowerShell path (Wave 3 / D6)
+
+The tray and lifecycle helpers now invoke PowerShell via its absolute path:
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. Previously the `powershell` name was resolved via `PATH`, which an attacker with write access to the user's `PATH` environment could shadow. The absolute path is immune to PATH manipulation.

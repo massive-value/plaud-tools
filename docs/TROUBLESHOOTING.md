@@ -44,6 +44,50 @@ If the tray fails to start, files were quarantined by antivirus, or the install 
 
 ---
 
+## Install / update SHA256 verification failure
+
+Starting with wave 0, every release publishes a `SHA256SUMS` asset. The installer and the in-app updater verify the downloaded `PlaudTools.zip` against this hash before extracting. A mismatch causes a hard failure:
+
+**Installer error (PowerShell):**
+```
+SHA256 mismatch — the downloaded zip may be corrupt or tampered.
+  Expected: <HEX>
+  Actual:   <HEX>
+Please retry; if the mismatch persists report it at https://github.com/massive-value/plaud-tools/issues
+```
+
+**In-app updater (tray):** the update is refused and the tray surfaces a **"PlaudTools — Update failed"** notification whose body carries the mismatch reason; the failure is also logged to `tray.log`.
+
+**What to do:**
+
+1. Try again — the mismatch is most often caused by a partial or interrupted download. Click the Install button again (tray) or re-run `install.ps1`.
+2. If the mismatch persists across multiple attempts, the release asset on GitHub may be corrupt. Check the [GitHub releases page](https://github.com/massive-value/plaud-tools/releases) and compare the hash in `SHA256SUMS` against `Get-FileHash -Algorithm SHA256 <path>` on the downloaded file.
+3. File a bug with `plaud-tools doctor` output and the hash values from the error message: <https://github.com/massive-value/plaud-tools/issues>
+
+**Older releases:** releases predating wave 0 (before v0.2.11 remediation) have no `SHA256SUMS` asset. The installer and updater warn that verification was skipped but proceed — this is expected behavior for those releases only.
+
+---
+
+## In-app updater host-allowlist refusal
+
+The tray updater restricts downloads to `github.com` and `objects.githubusercontent.com`. If the GitHub releases API returns a download URL with a different hostname, the tray refuses the download and logs:
+
+```
+Refusing to download update from untrusted host '<host>'. Allowed hosts: ['github.com', 'objects.githubusercontent.com']
+```
+
+The update is refused; the tray surfaces a **"PlaudTools — Update failed"** notification whose body carries this refusal reason, and the message is also logged to `tray.log`.
+
+**What to do:**
+
+1. This is a safety guard — it fires only when the resolved download host is not GitHub. Under normal circumstances it should never trigger.
+2. If you see this error consistently, it may indicate a proxy or CDN redirect in your network. Check whether your network routes GitHub traffic through a transparent proxy. If so, you can install manually:
+   - Download `PlaudTools.zip` directly from the [releases page](https://github.com/massive-value/plaud-tools/releases).
+   - Re-run the installer with `-Repair`: `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1))) -Repair`
+3. File a bug with the URL from the log message if the host looks unexpected: <https://github.com/massive-value/plaud-tools/issues>
+
+---
+
 ## Antivirus quarantine
 
 PyInstaller-built executables occasionally trip antivirus heuristics. If `PlaudTools.exe`, `plaud-tools.exe`, or `plaud-mcp.exe` disappears from the install directory shortly after install:
@@ -124,10 +168,11 @@ If the entry is missing, click **Repair setup** on the PlaudTools home window �
 
 ## Session storage location
 
-Sessions are stored in your OS keyring when available, with a file-store fallback.
+Sessions are stored in your OS keyring when available, with a DPAPI-encrypted shadow file as a secondary fallback, and a plain file store as the last resort.
 
 - **Keyring** — managed by your OS (Windows Credential Manager, macOS Keychain, Linux Secret Service). Inspect via your OS's credential management tool.
-- **File store** — `~/.config/plaud-tools/session.json` (mode `600`). Inspect with any text editor.
+- **DPAPI shadow** (Windows only) — `%LOCALAPPDATA%\PlaudTools\session.dat`, encrypted with `CryptProtectData`. Written alongside every keyring save to survive keyring cold-start races.
+- **File store** — `%LOCALAPPDATA%\PlaudTools\session.json` (Windows) or per `platformdirs.user_data_dir` on macOS/Linux (mode `600`). Last-resort fallback only.
 
 To see which source is active:
 
@@ -135,7 +180,7 @@ To see which source is active:
 plaud-tools session show
 ```
 
-The `source` field reports `env`, `keyring`, `file`, or `missing`.
+The `source` field reports `env`, `keyring`, `dpapi`, `file`, or `missing`.
 
 ---
 
