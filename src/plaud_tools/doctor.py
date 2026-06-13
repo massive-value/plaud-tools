@@ -19,6 +19,7 @@ from .ai_clients import CLIENTS
 from .appdata import tray_log as _log_path
 from .errors import PlaudSessionExpiredError
 from .layout import InstallLayout
+from .mcp_lifecycle import active_enumerator_name
 from .session import SessionManager, SessionStore
 
 # ---------------------------------------------------------------------------
@@ -59,8 +60,10 @@ def _mcp_exe_path() -> Path | None:
     # Bundle channel: exe not present — return expected candidate for diagnostics.
     if layout.channel == "bundle" and layout.install_root is not None:
         return layout.install_root / "mcp" / "plaud-mcp.exe"
-    # Dev fallback: PyInstaller onedir output next to repo root
-    return Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / "plaud-mcp.exe"
+    # Dev fallback: PyInstaller onedir output next to repo root.
+    # Only append .exe on Windows; POSIX bundles use no suffix.
+    exe_name = "plaud-mcp.exe" if sys.platform == "win32" else "plaud-mcp"
+    return Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / exe_name
 
 
 def _ffmpeg_path() -> Path:
@@ -197,6 +200,9 @@ def run_doctor(store: SessionStore | None = None) -> dict[str, Any]:
         "session": _session_section(store),
         "ai_clients": _ai_clients_section(),
         "log_path": str(_log_path()),
+        "mcp_lifecycle": {
+            "enumerator": active_enumerator_name(),
+        },
     }
 
 
