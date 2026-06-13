@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-13
+
+### Fixed
+
+- **Tray no longer crashes when an update is detected after the Home window
+  has been opened and closed.** Two stacked bugs:
+  1. `HomeWindow._refresh_update_btn` is the one refresh invoked
+     asynchronously from the background update-poll thread (via
+     `root.after(0, ...)`). It could fire after the user closed the Home
+     window, which destroys the underlying Tk button but leaves
+     `self._update_btn` non-`None`. Configuring the dead widget raised
+     `_tkinter.TclError: invalid command name`. It now guards on
+     `winfo_exists()` and skips a destroyed widget.
+  2. `_setup_logging` assigned the global Tk exception handler `_tk_error`
+     to the **class** `tk.Tk`, so Tk invoked it as a bound method with four
+     args (`self, exc, val, tb`) while it was defined with only three. The
+     reporter raised `TypeError: takes 3 positional arguments but 4 were
+     given` *inside itself* — meaning it had never logged a single Tk
+     callback error and turned every otherwise-recoverable error (including
+     the `TclError` above) into a hard process crash. The handler now
+     accepts `self`.
+
 ## [0.3.2] - 2026-06-13
 
 ### Security
