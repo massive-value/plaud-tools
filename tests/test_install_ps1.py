@@ -30,6 +30,19 @@ def _read_install_ps1() -> str:
 # ---------------------------------------------------------------------------
 
 
+def test_install_ps1_is_ascii_only():
+    """install.ps1 MUST be pure ASCII.
+
+    A user who saves it to disk and runs it under Windows PowerShell 5.1
+    (BOM-less → ANSI codepage) hits the same misdecode that broke update.ps1:
+    a non-ASCII byte in a string literal can produce a stray quote and a parse
+    error. Keep it 7-bit clean (issue #131).
+    """
+    raw = INSTALL_PS1.read_bytes()
+    offenders = [(i, b) for i, b in enumerate(raw) if b > 0x7F]
+    assert not offenders, f"non-ASCII bytes in install.ps1 at offsets {offenders[:5]}"
+
+
 def test_install_ps1_declares_force_switch():
     content = _read_install_ps1()
     assert "[switch]$Force" in content

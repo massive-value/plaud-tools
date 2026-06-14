@@ -4,8 +4,8 @@
 #   irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
 #
 # Options:
-#   -Force   — remove any existing install (after shutting down tray + MCP) and reinstall.
-#   -Repair  — alias for -Force; use when files are missing or quarantined.
+#   -Force   - remove any existing install (after shutting down tray + MCP) and reinstall.
+#   -Repair  - alias for -Force; use when files are missing or quarantined.
 #
 # Example:
 #   irm .../install.ps1 | iex                      # normal install
@@ -118,7 +118,7 @@ function Get-ZipExtractDestination {
             $prefix = $roots[0] + '/'
             $hasChildren = $zip.Entries | Where-Object { $_.FullName -ne $prefix -and $_.FullName.StartsWith($prefix) }
             if ($hasChildren) {
-                # Extract to parent — the folder inside the zip becomes $InstallDir.
+                # Extract to parent - the folder inside the zip becomes $InstallDir.
                 return (Split-Path $InstallDir -Parent)
             }
         }
@@ -145,9 +145,9 @@ try {
         throw "Could not find PlaudTools.zip in the latest release assets. Check https://github.com/massive-value/plaud-tools/releases/latest"
     }
 
-    Write-Host "    Latest: v$latestVersion — PlaudTools.zip ($([math]::Round($asset.size / 1MB, 1)) MB)"
+    Write-Host "    Latest: v$latestVersion - PlaudTools.zip ($([math]::Round($asset.size / 1MB, 1)) MB)"
 
-    # Strip any pre-release suffix (e.g. "0.3.0-rc1" → "0.3.0") before casting
+    # Strip any pre-release suffix (e.g. "0.3.0-rc1" -> "0.3.0") before casting
     # to [version] so that numeric comparison is always used and a pre-release tag
     # is never ranked above or equal to the same numeric release.
     function Get-NumericVersion {
@@ -181,7 +181,7 @@ try {
             # -Force/-Repair: shut down running processes then wipe the install dir.
             $switchName = if ($Repair) { '-Repair' } else { '-Force' }
             Write-Host ''
-            Write-Host "$switchName specified — shutting down PlaudTools processes..." -ForegroundColor Yellow
+            Write-Host "$switchName specified - shutting down PlaudTools processes..." -ForegroundColor Yellow
 
             # Gracefully stop any running tray process.
             $trayProcs = Get-Process -Name 'PlaudTools' -ErrorAction SilentlyContinue | Where-Object {
@@ -217,7 +217,7 @@ try {
     # Broken/partial install: directory exists but exe is missing (e.g. Defender quarantine).
     if (Test-Path $installDir) {
         Write-Host ''
-        Write-Host 'Found an incomplete installation (directory present, exe missing) — cleaning up...' -ForegroundColor Yellow
+        Write-Host 'Found an incomplete installation (directory present, exe missing) - cleaning up...' -ForegroundColor Yellow
         Remove-Item $installDir -Recurse -Force
     }
 
@@ -233,7 +233,7 @@ try {
     # from v0.3.0 onward.
     #
     # Verification is FAIL CLOSED (#113): a hash mismatch aborts the install, and
-    # so does an absent SHA256SUMS asset — an absent asset means a malformed
+    # so does an absent SHA256SUMS asset - an absent asset means a malformed
     # release or a tampered asset list, and the download cannot be trusted.
     $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS' } | Select-Object -First 1
     if (-not $sumsAsset) {
@@ -249,7 +249,7 @@ try {
         $actualHash   = (Get-FileHash -Path $zipTemp -Algorithm SHA256).Hash.ToUpper()
         if ($actualHash -ne $expectedHash) {
             throw (
-                "SHA256 mismatch — the downloaded zip may be corrupt or tampered.`n" +
+                "SHA256 mismatch - the downloaded zip may be corrupt or tampered.`n" +
                 "  Expected: $expectedHash`n" +
                 "  Actual:   $actualHash`n" +
                 'Please retry; if the mismatch persists report it at https://github.com/massive-value/plaud-tools/issues'
@@ -307,7 +307,7 @@ try {
     $completionsDir = Join-Path $installDir 'completions'
     $ps1File = Join-Path $completionsDir 'plaud-tools.ps1'
     if (Test-Path $ps1File) {
-        # Regex anchored to the install dir — only our sourcing lines are touched
+        # Regex anchored to the install dir - only our sourcing lines are touched
         $escapedDir  = [regex]::Escape($completionsDir)
         $stalePattern = "^\. `"$($escapedDir -replace '\\\\','[/\\\\]')[/\\\\]plaud[^`"]*\.ps1`""
         $sourceLine  = ". `"$ps1File`""
@@ -345,7 +345,7 @@ try {
     # 4c. Register autostart in HKCU Run key (idempotent)
     #
     # The value name MUST match plaud_tools.tray.setup._AUTOSTART_NAME ("Plaud
-    # Tools", with a space) — that is what the tray reads in _autostart_enabled
+    # Tools", with a space) - that is what the tray reads in _autostart_enabled
     # and writes in _set_autostart.  Earlier revisions of this script wrote
     # "PlaudTools" (no space); we strip that stale name on every run so users
     # who upgraded through the buggy version do not end up with two Run keys

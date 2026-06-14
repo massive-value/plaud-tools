@@ -409,22 +409,43 @@ class TrayApp(_BackgroundMixin):
             except Exception:
                 logging.warning("Could not read update failure sentinel", exc_info=True)
 
-        # If relaunched after an in-app update, open HomeWindow with a success message.
+        # If relaunched after an in-app update, open HomeWindow with a success
+        # message — but ONLY if the running version actually matches the version
+        # the update claimed to install. The sentinel proves the updater ran its
+        # success path; this guard additionally proves the new bits are actually
+        # the ones now executing. Without it, a silently-failed or partially
+        # applied update (stale dist-info, killed updater, etc.) would falsely
+        # announce success while the tray is still on the old version.
         sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
         if sentinel.exists():
             try:
                 updated_to = sentinel.read_text(encoding="utf-8").strip()
                 sentinel.unlink(missing_ok=True)
+                version_matches = updated_to == APP_VERSION
+                if not version_matches:
+                    logging.warning(
+                        "Update sentinel claims v%s but running version is v%s — "
+                        "the update did not take effect; suppressing success banner.",
+                        updated_to,
+                        APP_VERSION,
+                    )
                 if self._session and self._home_win:
 
-                    def _show_update_success(v: str = updated_to) -> None:
+                    def _show_update_status(v: str = updated_to, ok: bool = version_matches) -> None:
                         # Re-check for mypy: outer guard `if self._home_win` doesn't
                         # narrow inside a nested def captured by a closure.
                         if self._home_win is not None:
                             self._home_win.show()
-                            self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
+                            if ok:
+                                self._home_win._set_status(f"Updated to v{v} successfully.", ok=True)
+                            else:
+                                self._home_win._set_status(
+                                    f"Update to v{v} did not complete — still on "
+                                    f"v{APP_VERSION}. See logs for details.",
+                                    ok=False,
+                                )
 
-                    root.after(500, _show_update_success)
+                    root.after(500, _show_update_status)
             except Exception:
                 logging.warning("Could not read update sentinel", exc_info=True)
 

@@ -69,6 +69,7 @@ def render_update_ps1(
     zip_path: str,
     extract_dir: str,
     dispatcher_path: str | None = None,
+    new_version: str | None = None,
 ) -> str:
     """Return a PS1 dispatcher that calls the bundled update.ps1 with the given args.
 
@@ -91,6 +92,14 @@ def render_update_ps1(
         Absolute path to the dispatcher PS1 itself. Passed to update.ps1 as
         ``-DispatcherPath`` so update.ps1 can delete it after a successful
         run. Optional for backwards compatibility with older callers.
+    new_version:
+        The version being installed (e.g. ``"0.3.3"``). Passed to update.ps1
+        as ``-NewVersion`` so it can (a) prune stale ``plaud_tools-*.dist-info``
+        directories left behind by the overlay extraction — otherwise
+        ``importlib.metadata.version`` resolves the OLD version and the tray
+        keeps reporting the pre-update version — and (b) write the
+        ``plaud_just_updated.txt`` success sentinel only AFTER a successful
+        extraction. Optional for backwards compatibility with older callers.
     """
     scripts = scripts_dir()
     ps1 = scripts / "update.ps1"
@@ -108,6 +117,9 @@ def render_update_ps1(
     if dispatcher_path:
         safe_dispatcher = _ps_escape(dispatcher_path)
         line += f" -DispatcherPath '{safe_dispatcher}'"
+    if new_version:
+        safe_version = _ps_escape(new_version)
+        line += f" -NewVersion '{safe_version}'"
     return line + "\n"
 
 
