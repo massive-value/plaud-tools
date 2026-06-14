@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-06-14
+
+### Fixed
+
+- **In-app update no longer reports "Updated successfully" while staying on
+  the old version (#131).** Three independent defects, each sufficient to
+  cause the symptom, were found and fixed:
+  1. **`update.ps1` failed to parse under Windows PowerShell 5.1.** The script
+     was UTF-8 without a BOM and contained em-dashes (`—`). The updater
+     launches Windows PowerShell 5.1, which reads a BOM-less `.ps1` as the
+     ANSI codepage (Windows-1252), not UTF-8. The em-dash inside the
+     `"Tray exe missing at $trayExe — cannot restart"` string literal
+     misdecoded — its trailing byte read as a closing quote — so the whole
+     script failed to parse and silently never ran. `update.ps1` and
+     `install.ps1` are now pure ASCII, with regression guards. (PowerShell 7,
+     used in development, defaults to UTF-8 and masked this.)
+  2. **False success reporting.** The success sentinel was pre-written before
+     the updater launched and only cleared on explicit failure. It is now
+     written by `update.ps1` only *after* a successful extraction, the tray
+     waits for the updater's heartbeat before quitting (reporting an honest
+     failure if it never starts), and the success banner is shown only when
+     the running version actually matches the installed target.
+  3. **Stale `dist-info` left the wrong version reported.** Overlay extraction
+     (`Expand-Archive -Force`) never deletes orphaned files, so the previous
+     version's `plaud_tools-*.dist-info` survived next to the new one and
+     `importlib.metadata` resolved the old version. `update.ps1` now prunes
+     stale `dist-info` after extracting.
+- The updater also now launches the helper with `CREATE_BREAKAWAY_FROM_JOB`
+  (graceful fallback when the job forbids it) so it survives the tray exiting.
+
+> **Note:** because the in-app updater runs the *currently installed*
+> `update.ps1`, users on **v0.3.3 or earlier cannot reach v0.3.4 via the in-app
+> button** — the broken script parse-fails the same way. Reinstall with the
+> `install.ps1` one-liner (now ASCII-fixed) to land on v0.3.4; updates work
+> in-app from v0.3.4 onward.
+
 ## [0.3.3] - 2026-06-13
 
 ### Fixed
@@ -1225,7 +1261,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/massive-value/plaud-tools/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/massive-value/plaud-tools/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/massive-value/plaud-tools/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/massive-value/plaud-tools/compare/v0.3.0...v0.3.1
