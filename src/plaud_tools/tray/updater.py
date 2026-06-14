@@ -46,6 +46,73 @@ _ALLOWED_UPDATE_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# How long the tray waits for update.ps1's heartbeat file before giving up and
+# reporting failure (instead of quitting into a half-applied update). The
+# updater writes the heartbeat as its very first action, so this only needs to
+# cover PowerShell cold-start (slow under Defender/enterprise scanning).
+_UPDATER_HEARTBEAT_TIMEOUT_S: float = 20.0
+
+# subprocess.CREATE_BREAKAWAY_FROM_JOB detaches the child from the tray's Job
+# Object so it survives the tray exiting. Referenced defensively in case a
+# future Python drops the attribute.
+_CREATE_BREAKAWAY_FROM_JOB: int = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+
+
+def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
+    """Launch the bundled update dispatcher as a detached PowerShell process.
+
+    The child MUST outlive the tray: the tray quits moments after this returns,
+    and update.ps1 then waits for the tray to exit before replacing its files.
+    The tray runs inside a Windows Job Object; without breaking away, a
+    kill-on-close job kills the child the instant the tray exits — before
+    update.ps1 runs a single line. We therefore request
+    ``CREATE_BREAKAWAY_FROM_JOB``. If the job forbids breakaway, ``CreateProcess``
+    fails with ``ERROR_ACCESS_DENIED`` (raised as :exc:`OSError`); we retry
+    without the flag so the update is no worse off than before.
+
+    ``CREATE_NO_WINDOW`` (not ``DETACHED_PROCESS``) plus explicit ``DEVNULL``
+    handles is retained: ``DETACHED_PROCESS`` from a no-console frozen app passes
+    NULL stdio handles to the child, which crashes PowerShell before any script
+    code runs.
+    """
+    args = [
+        _POWERSHELL_EXE,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+        str(ps_path),
+    ]
+    base_flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    cwd = tempfile.gettempdir()
+    try:
+        return subprocess.Popen(
+            args,
+            creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=cwd,
+        )
+    except OSError:
+        # Job forbids breakaway (no JOB_OBJECT_LIMIT_BREAKAWAY_OK). Fall back to
+        # an in-job launch; the heartbeat gate still ensures honest reporting.
+        logging.warning(
+            "in-app update: CREATE_BREAKAWAY_FROM_JOB denied; launching updater in-job",
+            exc_info=True,
+        )
+        return subprocess.Popen(
+            args,
+            creationflags=base_flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=cwd,
+        )
+
 
 def _check_download_host(url: str) -> None:
     """Raise :exc:`ValueError` if *url* does not parse to an allowed update host.
@@ -384,22 +451,30 @@ class UpdateDialog:
 
             install_dir = InstallLayout.detect().install_root or Path(sys.executable).parent
             tray_pid = os.getpid()
-            sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
             fail_sentinel = Path(tempfile.gettempdir()) / "plaud_update_failed.txt"
             ps_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.ps1"
+            # Heartbeat update.ps1 writes the instant it starts running. We gate
+            # the tray's exit on this file's appearance (see below).
+            alive_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.alive.txt"
+            alive_path.unlink(missing_ok=True)  # clear any stale heartbeat from a prior run
 
             update_info = self._app._update_info
             new_version = update_info[0] if update_info else "unknown"
 
+            # NOTE: the success sentinel (plaud_just_updated.txt) is intentionally
+            # NOT written here. update.ps1 writes it only AFTER a successful
+            # extraction. Pre-writing it meant a silently-failed update (e.g. the
+            # updater process being killed before it ran) still left the sentinel
+            # behind, and the restarted old tray falsely announced success.
             ps_content = render_update_ps1(
                 tray_pid=tray_pid,
                 install_dir=str(install_dir),
                 zip_path=str(zip_path),
                 extract_dir=str(install_dir.parent),
                 dispatcher_path=str(ps_path),
+                new_version=new_version,
             )
             ps_path.write_text(ps_content, encoding="utf-8")
-            sentinel.write_text(new_version, encoding="utf-8")
 
             logging.info(
                 "in-app update: launching updater for v%s (tray_pid=%s zip=%s dispatcher=%s)",
@@ -409,62 +484,72 @@ class UpdateDialog:
                 ps_path,
             )
 
-            # CREATE_NO_WINDOW (not DETACHED_PROCESS) + explicit DEVNULL handles:
-            # DETACHED_PROCESS from a no-console frozen app passes NULL stdio
-            # handles to the child, which causes PowerShell to crash before any
-            # script code runs. CREATE_NO_WINDOW suppresses the window without
-            # detaching, and DEVNULL handles are always valid.
-            proc = subprocess.Popen(
-                [
-                    _POWERSHELL_EXE,
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-File",
-                    str(ps_path),
-                ],
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=tempfile.gettempdir(),
-            )
+            proc = _launch_updater(ps_path)
             logging.info("in-app update: PowerShell updater launched (pid=%s)", proc.pid)
 
-            # Sanity-check: if PowerShell exits within 0.5 s the script almost
-            # certainly never ran (invalid handles, policy block, etc.).
-            _time.sleep(0.5)
-            rc = proc.poll()
-            if rc is not None:
-                import json as _json
+            # Gate the tray exit on the updater actually RUNNING. The tray is in
+            # a Windows Job Object; if it quits before the child PowerShell is
+            # established, a kill-on-close job tears the still-cold-starting
+            # child down before update.ps1 runs a single line (the root cause of
+            # "Updated successfully" while staying on the old version). We launch
+            # with CREATE_BREAKAWAY_FROM_JOB (see _launch_updater) so the child
+            # escapes the job when permitted, AND we wait here for update.ps1's
+            # heartbeat file before quitting — so we only exit once the updater
+            # is confirmed alive, and we report honest failure otherwise.
+            deadline = _time.monotonic() + _UPDATER_HEARTBEAT_TIMEOUT_S
+            while _time.monotonic() < deadline:
+                if alive_path.exists():
+                    logging.info("in-app update: updater heartbeat seen; quitting tray to hand off")
+                    if self._root:
+                        self._root.after(0, self._app._quit)
+                    return
+                rc = proc.poll()
+                if rc is not None:
+                    # Updater exited before writing a heartbeat → it never ran.
+                    self._record_launch_failure(fail_sentinel, ps_path, tray_pid, rc)
+                    _on_error(
+                        RuntimeError(
+                            f"The updater exited (code {rc}) before it could start. "
+                            "Please try again, or download the update from the website."
+                        )
+                    )
+                    return
+                _time.sleep(0.2)
 
-                fail_msg = (
-                    f"PowerShell exited immediately with code {rc} — "
-                    "the update script may have been blocked by an enterprise "
-                    f"policy (AppLocker / WDAC). Dispatcher: {ps_path}"
+            # Timed out waiting for the heartbeat while the process is still
+            # alive — PowerShell is wedged or blocked. Do NOT quit the tray
+            # (the user would be stranded mid-update); surface a failure.
+            logging.error("in-app update: no updater heartbeat after %ss", _UPDATER_HEARTBEAT_TIMEOUT_S)
+            self._record_launch_failure(fail_sentinel, ps_path, tray_pid, None)
+            _on_error(
+                RuntimeError(
+                    "The updater did not start within the expected time. "
+                    "Please try again, or download the update from the website."
                 )
-                logging.error("in-app update: %s", fail_msg)
-                fail_sentinel.write_text(
-                    _json.dumps(
-                        {
-                            "reason": fail_msg,
-                            "log": str(ps_path),
-                            "time": "",
-                            "tray_pid": tray_pid,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                sentinel.unlink(missing_ok=True)
-
-            if self._root:
-                self._root.after(0, self._app._quit)
+            )
 
         except Exception as exc:
             _on_error(exc)
+
+    @staticmethod
+    def _record_launch_failure(fail_sentinel: Path, ps_path: Path, tray_pid: int, rc: int | None) -> None:
+        """Write the failure sentinel so the next tray launch can surface the cause."""
+        import json as _json
+
+        if rc is not None:
+            reason = (
+                f"The updater exited with code {rc} before it could run — it may "
+                "have been blocked by an enterprise policy (AppLocker / WDAC)."
+            )
+        else:
+            reason = "The updater did not start within the expected time."
+        try:
+            fail_sentinel.write_text(
+                _json.dumps({"reason": reason, "log": str(ps_path), "time": "", "tray_pid": tray_pid}),
+                encoding="utf-8",
+            )
+        except Exception:
+            logging.warning("in-app update: could not write failure sentinel", exc_info=True)
 
 
 __all__ = [

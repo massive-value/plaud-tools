@@ -37,6 +37,12 @@
     after a successful run so %TEMP% does not accumulate stale .ps1 files. The
     bundled update.ps1 itself is NEVER deleted — earlier versions self-deleted
     it, which broke subsequent in-app updates.
+
+.PARAMETER NewVersion
+    The version being installed (e.g. "0.3.3"). Used to (a) prune stale
+    plaud_tools-*.dist-info directories left behind by the overlay extraction
+    so importlib.metadata resolves the NEW version, and (b) write the
+    plaud_just_updated.txt success sentinel only AFTER a successful extraction.
 #>
 param(
     [Parameter(Mandatory)]
@@ -53,7 +59,9 @@ param(
 
     [string]$DispatcherPath = "",
 
-    [string]$SentinelPath = ""
+    [string]$SentinelPath = "",
+
+    [string]$NewVersion = ""
 )
 
 Set-StrictMode -Off
@@ -136,6 +144,30 @@ function Get-ZipExtractDestination {
         return $InstallDir
     } finally {
         $zip.Dispose()
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Remove orphaned plaud_tools-*.dist-info directories left behind by the
+# overlay extraction (Expand-Archive -Force overwrites matching paths but never
+# deletes files absent from the zip). If a previous version's dist-info
+# survives next to the new one, importlib.metadata.version("plaud-tools")
+# resolves the OLD version and the tray keeps reporting the pre-update version
+# (and re-offering the same "update available"). Keep only $NewVersion's
+# dist-info. No-op when $NewVersion is empty (older callers).
+# ---------------------------------------------------------------------------
+
+function Remove-StaleDistInfo {
+    param([string]$InstallDir, [string]$NewVersion)
+
+    if (-not $NewVersion) { return }
+    $keep = "plaud_tools-$NewVersion.dist-info"
+    $stale = Get-ChildItem -Path $InstallDir -Recurse -Directory `
+        -Filter 'plaud_tools-*.dist-info' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $keep }
+    foreach ($d in $stale) {
+        Write-Host "Removing stale dist-info: $($d.FullName)"
+        Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -253,6 +285,19 @@ try {
     Remove-Item $ZipPath -ErrorAction SilentlyContinue
     if ($DispatcherPath -and (Test-Path $DispatcherPath)) {
         Remove-Item $DispatcherPath -ErrorAction SilentlyContinue
+    }
+
+    # 5. Prune stale dist-info so the restarted tray resolves the NEW version.
+    Remove-StaleDistInfo -InstallDir $InstallDir -NewVersion $NewVersion
+
+    # 6. Write the success sentinel ONLY now that extraction has actually
+    #    succeeded. (Earlier the tray pre-wrote this before launching the
+    #    updater, so a silently-failed update — e.g. the updater process being
+    #    killed before it ran — still left the sentinel behind and the old tray
+    #    falsely announced success. The tray additionally verifies the running
+    #    version matches before showing the success banner.)
+    if ($NewVersion) {
+        Set-Content -Path $successSentinel -Value $NewVersion -Encoding UTF8 -ErrorAction SilentlyContinue
     }
 
     Write-Host "Update succeeded"

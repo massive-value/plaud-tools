@@ -162,6 +162,36 @@ def test_update_ps1_accepts_dispatcher_path_param():
     assert "DispatcherPath" in content
 
 
+def test_update_ps1_accepts_new_version_param():
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "NewVersion" in content
+
+
+def test_update_ps1_prunes_stale_dist_info():
+    """Overlay extraction (Expand-Archive -Force) leaves the old version's
+    plaud_tools-*.dist-info behind, so importlib.metadata resolves the OLD
+    version. update.ps1 must prune the stale dist-info after extracting.
+    """
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "Remove-StaleDistInfo" in content
+    assert "plaud_tools-*.dist-info" in content
+
+
+def test_update_ps1_writes_success_sentinel_on_success():
+    """The success sentinel must be written by update.ps1 AFTER a successful
+    extraction (inside the try, before the catch), not pre-written by the tray.
+    Otherwise a silently-failed update leaves the sentinel behind and the old
+    tray falsely announces success.
+    """
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    # Sentinel is written via Set-Content to $successSentinel, and must sit in
+    # the success path — before the "Update succeeded" marker.
+    assert "Set-Content -Path $successSentinel" in content
+    assert content.index("Set-Content -Path $successSentinel") < content.index(
+        'Write-Host "Update succeeded"'
+    )
+
+
 # ---------------------------------------------------------------------------
 # uninstall.ps1 content — standalone script validation
 # ---------------------------------------------------------------------------
@@ -346,6 +376,38 @@ def test_render_update_ps1_escapes_single_quote_in_dispatcher_path():
         dispatcher_path=r"C:\Temp\It's_dispatch.ps1",
     )
     assert "It''s_dispatch.ps1" in result
+
+
+def test_render_update_ps1_omits_new_version_when_not_provided():
+    result = render_update_ps1(
+        tray_pid=1,
+        install_dir=r"C:\Programs\PlaudTools",
+        zip_path=r"C:\Temp\update.zip",
+        extract_dir=r"C:\Programs",
+    )
+    assert "-NewVersion" not in result
+
+
+def test_render_update_ps1_includes_new_version_when_provided():
+    result = render_update_ps1(
+        tray_pid=1,
+        install_dir=r"C:\Programs\PlaudTools",
+        zip_path=r"C:\Temp\update.zip",
+        extract_dir=r"C:\Programs",
+        new_version="0.3.3",
+    )
+    assert "-NewVersion '0.3.3'" in result
+
+
+def test_render_update_ps1_escapes_single_quote_in_new_version():
+    result = render_update_ps1(
+        tray_pid=1,
+        install_dir=r"C:\Programs\PlaudTools",
+        zip_path=r"C:\Temp\update.zip",
+        extract_dir=r"C:\Programs",
+        new_version="1.0'rc",
+    )
+    assert "1.0''rc" in result
 
 
 # ---------------------------------------------------------------------------
