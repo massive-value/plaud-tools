@@ -17,7 +17,7 @@
     The tray reads this on next launch and surfaces the failure to the user.
 
     The tray is restarted in a `finally` block, so the user is never stranded
-    without a tray icon — even when the update itself fails.
+    without a tray icon - even when the update itself fails.
 
 .PARAMETER TrayPid
     PID of the running PlaudTools.exe (tray app) to wait for.
@@ -35,7 +35,7 @@
 .PARAMETER DispatcherPath
     Optional path to the %TEMP% dispatcher PS1 that invoked this script. Deleted
     after a successful run so %TEMP% does not accumulate stale .ps1 files. The
-    bundled update.ps1 itself is NEVER deleted — earlier versions self-deleted
+    bundled update.ps1 itself is NEVER deleted - earlier versions self-deleted
     it, which broke subsequent in-app updates.
 
 .PARAMETER NewVersion
@@ -68,7 +68,7 @@ Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 
 # ---------------------------------------------------------------------------
-# Diagnostics — transcript log + structured failure sentinel
+# Diagnostics - transcript log + structured failure sentinel
 # ---------------------------------------------------------------------------
 
 $logPath        = Join-Path $env:TEMP "plaud_update_$TrayPid.log"
@@ -102,7 +102,7 @@ function Write-FailureSentinel {
         } | ConvertTo-Json -Compress
         Set-Content -Path $failSentinel -Value $payload -Encoding UTF8 -ErrorAction Stop
     } catch {
-        # Best effort — the reason is still in the transcript log.
+        # Best effort - the reason is still in the transcript log.
     }
     # A failed update must not leave the success sentinel behind, otherwise the
     # restarted (still-old) tray would falsely announce a successful upgrade.
@@ -177,13 +177,13 @@ function Remove-StaleDistInfo {
 # scoped process has been alive for $StableMs milliseconds. Returns $false if
 # a supervisor keeps respawning processes after $MaxAttempts attempts.
 #
-# This is the bug the v0.2.0 → 0.2.1 update path hit: when Claude Desktop
+# This is the bug the v0.2.0 -> 0.2.1 update path hit: when Claude Desktop
 # launches plaud-mcp, killing the process just causes Claude to relaunch it
 # almost immediately, and the respawned exe keeps mcp\_internal\*.dll locked,
 # causing Expand-Archive to throw and the script to bail.
 #
 # Using path-based discovery (rather than name-based) also catches ffmpeg and
-# any other child processes that plaud-mcp may have spawned — Stop-Process on
+# any other child processes that plaud-mcp may have spawned - Stop-Process on
 # the parent does NOT kill children on Windows.
 # ---------------------------------------------------------------------------
 
@@ -205,7 +205,7 @@ function Stop-PlaudMcpScoped {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $procs = & $findProcs
         if (-not $procs) {
-            # Nothing alive — wait $StableMs to make sure nobody respawns it.
+            # Nothing alive - wait $StableMs to make sure nobody respawns it.
             Start-Sleep -Milliseconds $StableMs
             if (-not (& $findProcs)) {
                 Write-Host "All install-dir processes confirmed stopped (attempt $attempt)"
@@ -278,7 +278,7 @@ try {
     Write-Host "Extraction complete"
 
     # 4. Cleanup: remove the zip and the %TEMP% dispatcher. The bundled
-    #    update.ps1 (this very script) is NOT deleted — earlier versions
+    #    update.ps1 (this very script) is NOT deleted - earlier versions
     #    self-deleted via $MyInvocation.MyCommand.Path, which broke subsequent
     #    in-app updates because the script vanished after the first successful
     #    upgrade.
@@ -292,8 +292,8 @@ try {
 
     # 6. Write the success sentinel ONLY now that extraction has actually
     #    succeeded. (Earlier the tray pre-wrote this before launching the
-    #    updater, so a silently-failed update — e.g. the updater process being
-    #    killed before it ran — still left the sentinel behind and the old tray
+    #    updater, so a silently-failed update - e.g. the updater process being
+    #    killed before it ran - still left the sentinel behind and the old tray
     #    falsely announced success. The tray additionally verifies the running
     #    version matches before showing the success banner.)
     if ($NewVersion) {
@@ -315,7 +315,7 @@ catch {
 finally {
     # 5. Always restart the tray so the user is not stranded after a failed
     #    update. If the new tray bundle is in place, we get the new version;
-    #    if extraction failed, we get the old one back — better than nothing.
+    #    if extraction failed, we get the old one back - better than nothing.
     $trayExe = Join-Path $InstallDir 'PlaudTools.exe'
     if (Test-Path $trayExe) {
         try {
@@ -325,7 +325,7 @@ finally {
             Write-Host "Could not restart tray: $($_.Exception.Message)"
         }
     } else {
-        Write-Host "Tray exe missing at $trayExe — cannot restart"
+        Write-Host "Tray exe missing at $trayExe - cannot restart"
     }
 
     try { Stop-Transcript | Out-Null } catch {}

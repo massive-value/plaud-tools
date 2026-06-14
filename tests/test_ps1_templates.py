@@ -167,6 +167,28 @@ def test_update_ps1_accepts_new_version_param():
     assert "NewVersion" in content
 
 
+def test_update_ps1_is_ascii_only():
+    """update.ps1 MUST be pure ASCII.
+
+    The updater launches Windows PowerShell 5.1, which reads a BOM-less .ps1
+    as the system ANSI codepage (Windows-1252), NOT UTF-8. A non-ASCII byte
+    inside a string literal (e.g. an em-dash) misdecodes — the 0x94 trailing
+    byte becomes a stray closing quote — and the whole script fails to parse,
+    so update.ps1 silently never runs and the in-app update appears to do
+    nothing. Keep this file 7-bit clean (issue #131).
+    """
+    raw = (scripts_dir() / "update.ps1").read_bytes()
+    offenders = [(i, b) for i, b in enumerate(raw) if b > 0x7F]
+    assert not offenders, f"non-ASCII bytes in update.ps1 at offsets {offenders[:5]}"
+
+
+def test_uninstall_ps1_is_ascii_only():
+    """uninstall.ps1 runs under the same Windows PowerShell 5.1 — keep it ASCII (issue #131)."""
+    raw = (scripts_dir() / "uninstall.ps1").read_bytes()
+    offenders = [(i, b) for i, b in enumerate(raw) if b > 0x7F]
+    assert not offenders, f"non-ASCII bytes in uninstall.ps1 at offsets {offenders[:5]}"
+
+
 def test_update_ps1_prunes_stale_dist_info():
     """Overlay extraction (Expand-Archive -Force) leaves the old version's
     plaud_tools-*.dist-info behind, so importlib.metadata resolves the OLD
