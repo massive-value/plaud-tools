@@ -10,12 +10,19 @@ breakaway (CreateProcess raises OSError / ERROR_ACCESS_DENIED).
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from plaud_tools.tray import updater
 from plaud_tools.tray.updater import _CREATE_BREAKAWAY_FROM_JOB, _launch_updater
+
+# _launch_updater uses Windows-only creation flags (CREATE_NO_WINDOW etc.); the
+# in-app updater only ever runs on the frozen Windows bundle. Skip elsewhere.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32", reason="updater launch is Windows-only (CREATE_NO_WINDOW)"
+)
 
 
 class _FakeProc:
