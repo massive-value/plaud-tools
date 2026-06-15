@@ -234,6 +234,32 @@ _TOOLS: list[types.Tool] = [
         ),
     ),
     types.Tool(
+        name="correct_transcript",
+        description="Fix transcript text by literal find-and-replace across all segments (e.g. correct a misheard word or name). Speaker labels are unaffected — use rename_speaker for those.",  # noqa: E501
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recording_id": {"type": "string"},
+                "find": {
+                    "type": "string",
+                    "description": "Exact text to find in the transcript (case-sensitive, literal — not a regex)",  # noqa: E501
+                },
+                "replace": {
+                    "type": "string",
+                    "description": "Replacement text (may be empty to delete the matched text)",
+                },
+            },
+            "required": ["recording_id", "find", "replace"],
+        },
+        # Reversible content edit — rerun with swapped find/replace to undo.
+        # idempotentHint omitted: once the text is replaced, re-running with the
+        # same find returns "no occurrences" (an error), so it is not a no-op.
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
+    ),
+    types.Tool(
         name="upload_recording",
         description="Upload a local audio file to Plaud.",
         inputSchema={

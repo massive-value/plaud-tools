@@ -339,6 +339,26 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def correct_transcript(
+        recording_id: str,
+        find: str,
+        replace: str,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            result = client.correct_transcript(recording_id, find, replace)
+            return _json_result(
+                {
+                    "ok": True,
+                    "recording_id": recording_id,
+                    "find": find,
+                    "replace": replace,
+                    "replacements": result["replacements"],
+                    "segments_changed": result["segments_changed"],
+                }
+            )
+
+        return _call(get_client, inner)
+
     def upload_recording(
         file_path: str,
         title: str | None = None,
@@ -481,6 +501,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "mutate_recording": mutate_recording,
         "delete_recording": delete_recording,
         "rename_speaker": rename_speaker,
+        "correct_transcript": correct_transcript,
         "upload_recording": upload_recording,
         "process_recording": process_recording,
         "list_folders": list_folders,

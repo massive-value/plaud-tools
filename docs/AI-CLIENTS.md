@@ -62,7 +62,7 @@ In Claude, paste:
 List the MCP tools you have available for Plaud.
 ```
 
-You should see seven tools: `browse_recordings`, `get_recording`, `mutate_recording`, `upload_recording`, `process_recording`, `list_folders`, and `merge_recordings`.
+You should see ten tools: `browse_recordings`, `get_recording`, `mutate_recording`, `delete_recording`, `rename_speaker`, `correct_transcript`, `upload_recording`, `process_recording`, `list_folders`, and `merge_recordings`.
 
 ---
 
@@ -160,7 +160,10 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 |---|---|
 | `browse_recordings` | List and filter recordings by date, title, folder |
 | `get_recording` | Full detail for one recording; opt in to transcript / speakers / summary |
-| `mutate_recording` | Rename, trash, restore, delete, move to folder, rename speaker |
+| `mutate_recording` | Rename, trash, restore, or move a recording to a folder |
+| `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
+| `rename_speaker` | Rename a speaker label across all transcript segments (matches the displayed name or the original `Speaker N`) |
+| `correct_transcript` | Fix transcript text by literal find-and-replace across all segments |
 | `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
 | `process_recording` | Trigger transcription + summarization; block until both complete |
 | `list_folders` | List Plaud folders (id, name, color, icon) |

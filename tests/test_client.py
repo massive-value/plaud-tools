@@ -605,7 +605,7 @@ def test_rename_speaker_rejects_missing_label_match(tmp_path):
         ]
     )
     client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match='no segments found with original_speaker "Speaker 1"'):
+    with pytest.raises(ValueError, match='no segments found for speaker "Speaker 1"'):
         client.rename_speaker("rec1", "Speaker 1", "Alex")
 
 
@@ -616,6 +616,179 @@ def test_rename_speaker_rejects_blank_labels(tmp_path):
         client.rename_speaker("rec1", "", "Alex")
     with pytest.raises(ValueError, match="new_name cannot be empty"):
         client.rename_speaker("rec1", "Speaker 1", "   ")
+
+
+def _detail_and_transcript_transport(segments):
+    """Build a StubTransport for the GET /file/detail → S3 transcript → PATCH flow."""
+    return StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "transaction",
+                                    "task_status": 1,
+                                    "data_link": "https://s3.fake/rec1-transcript.json",
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps(segments).encode(), {}),
+            HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
+        ]
+    )
+
+
+def test_rename_speaker_matches_display_name(tmp_path):
+    """Plaud auto-resolves enrolled voices, so the displayed `speaker` can differ
+    from `original_speaker`. Renaming by the displayed name must work (issue: agent
+    reported rename_speaker fails for named/bracketed labels)."""
+    manager, _ = make_manager(tmp_path)
+    transport = _detail_and_transcript_transport(
+        [
+            {
+                "start_time": 0,
+                "end_time": 5,
+                "content": "hi",
+                "speaker": "Kadin Bullock",
+                "original_speaker": "Speaker 1",
+            },
+            {
+                "start_time": 5,
+                "end_time": 9,
+                "content": "yo",
+                "speaker": "Speaker 2",
+                "original_speaker": "Speaker 2",
+            },
+            {
+                "start_time": 9,
+                "end_time": 12,
+                "content": "ok",
+                "speaker": "Kadin Bullock",
+                "original_speaker": "Speaker 1",
+            },
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.rename_speaker("rec1", "Kadin Bullock", "Advisor")
+    assert result == {"segments_updated": 2}
+    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
+    assert write_body["trans_result"][0]["speaker"] == "Advisor"
+    assert write_body["trans_result"][2]["speaker"] == "Advisor"
+    # original_speaker is preserved; the untouched speaker is left alone.
+    assert write_body["trans_result"][0]["original_speaker"] == "Speaker 1"
+    assert write_body["trans_result"][1]["speaker"] == "Speaker 2"
+
+
+def test_rename_speaker_matches_original_speaker_label(tmp_path):
+    """Renaming by the generic 'Speaker N' label still works when the display
+    name has been auto-resolved to something else."""
+    manager, _ = make_manager(tmp_path)
+    transport = _detail_and_transcript_transport(
+        [
+            {
+                "start_time": 0,
+                "end_time": 5,
+                "content": "hi",
+                "speaker": "Kadin Bullock",
+                "original_speaker": "Speaker 1",
+            },
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.rename_speaker("rec1", "Speaker 1", "Advisor")
+    assert result == {"segments_updated": 1}
+    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
+    assert write_body["trans_result"][0]["speaker"] == "Advisor"
+
+
+def test_correct_transcript_replaces_text_and_patches(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = _detail_and_transcript_transport(
+        [
+            {
+                "start_time": 0,
+                "end_time": 5,
+                "content": "Flourish Cache account",
+                "speaker": "A",
+                "original_speaker": "Speaker 1",
+            },
+            {
+                "start_time": 5,
+                "end_time": 9,
+                "content": "no match here",
+                "speaker": "B",
+                "original_speaker": "Speaker 2",
+            },
+            {
+                "start_time": 9,
+                "end_time": 12,
+                "content": "another Cache and Cache",
+                "speaker": "A",
+                "original_speaker": "Speaker 1",
+            },
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.correct_transcript("rec1", "Cache", "Cash")
+    assert result == {"replacements": 3, "segments_changed": 2}
+    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
+    assert write_body["support_mul_summ"] is True
+    assert write_body["trans_result"][0]["content"] == "Flourish Cash account"
+    assert write_body["trans_result"][1]["content"] == "no match here"
+    assert write_body["trans_result"][2]["content"] == "another Cash and Cash"
+    # Speaker labels are untouched by a text correction.
+    assert write_body["trans_result"][0]["speaker"] == "A"
+
+
+def test_correct_transcript_rejects_no_match(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = _detail_and_transcript_transport(
+        [
+            {
+                "start_time": 0,
+                "end_time": 5,
+                "content": "hello",
+                "speaker": "A",
+                "original_speaker": "Speaker 1",
+            }
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(ValueError, match='no occurrences of "zzz" found'):
+        client.correct_transcript("rec1", "zzz", "x")
+
+
+def test_correct_transcript_rejects_empty_find(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="find text cannot be empty"):
+        client.correct_transcript("rec1", "", "x")
+
+
+def test_correct_transcript_rejects_missing_transcript(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(ValueError, match="has no transcript yet"):
+        client.correct_transcript("rec1", "a", "b")
 
 
 def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
