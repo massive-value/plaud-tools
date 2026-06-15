@@ -206,12 +206,29 @@ def test_update_ps1_writes_success_sentinel_on_success():
     tray falsely announces success.
     """
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
-    # Sentinel is written via Set-Content to $successSentinel, and must sit in
-    # the success path — before the "Update succeeded" marker.
-    assert "Set-Content -Path $successSentinel" in content
-    assert content.index("Set-Content -Path $successSentinel") < content.index(
+    # Sentinel is written to $successSentinel, and must sit in the success path
+    # — before the "Update succeeded" marker.
+    assert "Write-NoBom -Path $successSentinel" in content
+    assert content.index("Write-NoBom -Path $successSentinel") < content.index(
         'Write-Host "Update succeeded"'
     )
+
+
+def test_update_ps1_writes_sentinels_without_bom():
+    """Sentinels MUST be written BOM-less. Windows PowerShell 5.1's
+    `Set-Content -Encoding UTF8` prepends a UTF-8 BOM (EF BB BF); the tray's
+    version comparison and json.loads of the failure sentinel both break on a
+    leading U+FEFF, so a successful update was falsely reported as failed.
+    update.ps1 must route every sentinel write through Write-NoBom and never
+    fall back to `Set-Content ... -Encoding UTF8` for them.
+    """
+    content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
+    assert "UTF8Encoding($false)" in content  # the BOM-less writer
+    # No ACTIVE (non-comment) line may use `-Encoding UTF8` (PS 5.1 = BOM).
+    # Comment lines are allowed to mention it for documentation.
+    code_lines = [ln for ln in content.splitlines() if not ln.lstrip().startswith("#")]
+    offenders = [ln for ln in code_lines if "-Encoding UTF8" in ln]
+    assert not offenders, f"active line uses BOM-producing -Encoding UTF8: {offenders}"
 
 
 # ---------------------------------------------------------------------------

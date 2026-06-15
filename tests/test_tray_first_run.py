@@ -220,3 +220,48 @@ class TestInstallSentinelConsumed:
             hw.arm_welcome_banner()
 
         hw.arm_welcome_banner.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Update sentinel BOM tolerance (v0.4.1 — false "did not complete" banner)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSentinelBomTolerance:
+    """update.ps1 under Windows PowerShell 5.1 wrote the success sentinel via
+    `Set-Content -Encoding UTF8`, which prepends a UTF-8 BOM. str.strip() does
+    NOT remove U+FEFF, so a plain utf-8 read left the version as "﻿0.4.0" and the
+    tray's `updated_to == APP_VERSION` check failed — falsely reporting a
+    successful update as "did not complete". The reader now uses utf-8-sig.
+    """
+
+    def test_bom_prefixed_success_sentinel_matches_version(self, tmp_path):
+        version = "0.4.0"
+        sentinel = tmp_path / "plaud_just_updated.txt"
+        # Bytes exactly as PowerShell 5.1 `Set-Content -Encoding UTF8` writes them.
+        sentinel.write_bytes(b"\xef\xbb\xbf" + version.encode("utf-8"))
+
+        # The fix: utf-8-sig strips the BOM so the comparison succeeds.
+        assert sentinel.read_text(encoding="utf-8-sig").strip() == version
+        # Regression witness: the old plain-utf-8 read did NOT match.
+        assert sentinel.read_text(encoding="utf-8").strip() != version
+
+    def test_bom_prefixed_failure_sentinel_parses_as_json(self, tmp_path):
+        import json
+
+        sentinel = tmp_path / "plaud_update_failed.txt"
+        payload = json.dumps({"reason": "boom", "log": "C:/t/x.log"})
+        sentinel.write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
+
+        # The fix: utf-8-sig lets json.loads succeed despite the BOM.
+        assert json.loads(sentinel.read_text(encoding="utf-8-sig"))["reason"] == "boom"
+
+    def test_app_reads_both_sentinels_with_utf8_sig(self):
+        """Source guard: both sentinel reads in app.py must use utf-8-sig so no
+        future edit silently reintroduces the BOM-mismatch bug."""
+        import plaud_tools.tray.app as app_mod
+
+        src = Path(app_mod.__file__).read_text(encoding="utf-8")
+        assert 'fail_sentinel.read_text(encoding="utf-8-sig")' in src
+        assert 'sentinel.read_text(encoding="utf-8-sig")' in src
+        assert 'read_text(encoding="utf-8")' not in src  # no plain-utf-8 sentinel reads

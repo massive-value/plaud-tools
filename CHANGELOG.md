@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-15
+
+### Fixed
+
+- **In-app updater falsely reported "Update to vX did not complete — still on
+  vX" after a successful update.** The updater writes the
+  `plaud_just_updated.txt` success sentinel via Windows PowerShell 5.1
+  `Set-Content -Encoding UTF8`, which prepends a UTF-8 BOM (`EF BB BF`). The
+  tray read it with `encoding="utf-8"` and `.strip()` — but `str.strip()` does
+  not remove U+FEFF (it is not whitespace), so the version became `"﻿0.4.0"`
+  and the `updated_to == APP_VERSION` check failed even though the update had
+  succeeded. The BOM also broke `json.loads` of the failure sentinel, silently
+  swallowing genuine failure reports. Same root-cause family as the v0.3.4
+  PowerShell 5.1 encoding bug, relocated to the sentinel files.
+  - Reader: the tray now reads both sentinels with `utf-8-sig`, which strips a
+    leading BOM. This is the load-bearing fix — the reader is always the
+    landing version, so any update onto v0.4.1+ reports correctly regardless of
+    which (BOM-writing) version it came from.
+  - Writer: `update.ps1` now writes all sentinels (success, failure, heartbeat)
+    BOM-less via `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))`,
+    validated to emit no BOM and to parse cleanly under Windows PowerShell 5.1.
+
 ## [0.4.0] - 2026-06-15
 
 ### Added
@@ -1286,7 +1308,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/massive-value/plaud-tools/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/massive-value/plaud-tools/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/massive-value/plaud-tools/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/massive-value/plaud-tools/compare/v0.3.2...v0.3.3
