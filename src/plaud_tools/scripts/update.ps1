@@ -75,11 +75,28 @@ $logPath        = Join-Path $env:TEMP "plaud_update_$TrayPid.log"
 $failSentinel   = Join-Path $env:TEMP "plaud_update_failed.txt"
 $successSentinel = Join-Path $env:TEMP "plaud_just_updated.txt"
 
+# Write text as UTF-8 WITHOUT a byte-order mark.
+#
+# Windows PowerShell 5.1 (what the updater launches) treats `-Encoding UTF8` as
+# "UTF-8 WITH BOM" and prepends EF BB BF. The tray reads plaud_just_updated.txt
+# and compares its contents to the running version; the leading U+FEFF made an
+# otherwise-correct "0.4.0" mismatch "0.4.0", so a successful update was falsely
+# reported as "did not complete". It also broke json.loads of the failure
+# sentinel. .NET's UTF8Encoding($false) writes BOM-less UTF-8 on every PS
+# version. Errors are swallowed to preserve the prior best-effort semantics.
+function Write-NoBom {
+    param([string]$Path, [string]$Value)
+    try {
+        [System.IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        # Best effort - the equivalent information is still in the transcript log.
+    }
+}
+
 # Heartbeat: written before Start-Transcript so we can tell whether the script
 # reached PowerShell at all (vs. PowerShell crashing before running any code).
-Set-Content -Path "$env:TEMP\plaud_update_$TrayPid.alive.txt" `
-    -Value "update.ps1 reached at $(Get-Date -Format 'o')" `
-    -Encoding UTF8 -ErrorAction SilentlyContinue
+Write-NoBom -Path "$env:TEMP\plaud_update_$TrayPid.alive.txt" `
+    -Value "update.ps1 reached at $(Get-Date -Format 'o')"
 
 # Wipe any stale failure sentinel from a previous run so we never surface an
 # old failure on top of a successful update.
@@ -100,7 +117,7 @@ function Write-FailureSentinel {
             time     = (Get-Date).ToString('o')
             tray_pid = $TrayPid
         } | ConvertTo-Json -Compress
-        Set-Content -Path $failSentinel -Value $payload -Encoding UTF8 -ErrorAction Stop
+        Write-NoBom -Path $failSentinel -Value $payload
     } catch {
         # Best effort - the reason is still in the transcript log.
     }
@@ -297,7 +314,7 @@ try {
     #    falsely announced success. The tray additionally verifies the running
     #    version matches before showing the success banner.)
     if ($NewVersion) {
-        Set-Content -Path $successSentinel -Value $NewVersion -Encoding UTF8 -ErrorAction SilentlyContinue
+        Write-NoBom -Path $successSentinel -Value $NewVersion
     }
 
     Write-Host "Update succeeded"
