@@ -581,9 +581,7 @@ class PlaudClient:
         self.edit_transcript(recording_id, next_segments)
         return {"segments_updated": updated}
 
-    def correct_transcript(
-        self, recording_id: str, find: str, replace: str
-    ) -> dict[str, int]:
+    def correct_transcript(self, recording_id: str, find: str, replace: str) -> dict[str, int]:
         """Find-and-replace literal text across all transcript segment content.
 
         This is the same operation the Plaud web app performs for transcript
