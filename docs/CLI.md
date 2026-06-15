@@ -176,7 +176,21 @@ plaud-tools rename <recording-id> "New title"
 plaud-tools rename-speaker <recording-id> <original-label> "New name"
 ```
 
-`<original-label>` is the speaker label from the transcript (e.g., `Speaker 0`, `Speaker 1`).
+`<original-label>` is the speaker label as shown in the transcript. This can
+be a generic label (`Speaker 1`) **or** a name Plaud already resolved from an
+enrolled voice or a prior rename (e.g. `Benjamin Everitt`) — either matches.
+
+### `correct-transcript`
+
+```
+plaud-tools correct-transcript <recording-id> "<find>" "<replace>"
+```
+
+Literal (case-sensitive) find-and-replace across every transcript segment —
+useful for fixing a misheard word or name. Reports the number of occurrences
+replaced and segments changed. Speaker labels are not affected; use
+`rename-speaker` for those. Pass an empty `<replace>` to delete the matched
+text.
 
 ### `trash` / `restore` / `delete`
 

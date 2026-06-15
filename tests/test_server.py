@@ -18,6 +18,7 @@ _EXPECTED_TOOL_NAMES = {
     "mutate_recording",
     "delete_recording",
     "rename_speaker",
+    "correct_transcript",
     "upload_recording",
     "process_recording",
     "list_folders",

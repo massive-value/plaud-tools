@@ -144,6 +144,31 @@
     "name": "rename_speaker"
   },
   {
+    "description": "Fix transcript text by literal find-and-replace across all segments (e.g. correct a misheard word or name). Speaker labels are unaffected \u2014 use rename_speaker for those.",
+    "inputSchema": {
+      "properties": {
+        "find": {
+          "description": "Exact text to find in the transcript (case-sensitive, literal \u2014 not a regex)",
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        },
+        "replace": {
+          "description": "Replacement text (may be empty to delete the matched text)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "find",
+        "replace"
+      ],
+      "type": "object"
+    },
+    "name": "correct_transcript"
+  },
+  {
     "description": "Upload a local audio file to Plaud.",
     "inputSchema": {
       "properties": {

@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     rename_speaker_cmd.add_argument("original_label")
     rename_speaker_cmd.add_argument("new_name")
 
+    correct_transcript_cmd = sub.add_parser("correct-transcript")
+    correct_transcript_cmd.add_argument("recording_id")
+    correct_transcript_cmd.add_argument("find")
+    correct_transcript_cmd.add_argument("replace")
+
     transcribe_cmd = sub.add_parser("transcribe")
     transcribe_cmd.add_argument("recording_id")
     transcribe_cmd.add_argument("--template")
@@ -436,6 +441,21 @@ def _handle_rename_speaker(args: argparse.Namespace, client: PlaudClient) -> str
     )
 
 
+def _handle_correct_transcript(args: argparse.Namespace, client: PlaudClient) -> str:
+    correct_result = client.correct_transcript(args.recording_id, args.find, args.replace)
+    return json.dumps(
+        {
+            "ok": True,
+            "recording_id": args.recording_id,
+            "find": args.find,
+            "replace": args.replace,
+            "replacements": correct_result["replacements"],
+            "segments_changed": correct_result["segments_changed"],
+        },
+        indent=2,
+    )
+
+
 def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
     import tempfile
 
@@ -589,6 +609,7 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "trash-move": _handle_trash_move,
     "trash-restore": _handle_trash_restore,
     "rename-speaker": _handle_rename_speaker,
+    "correct-transcript": _handle_correct_transcript,
     "upload": _handle_upload,
     "merge": _handle_merge,
     "transcribe": _handle_transcribe,

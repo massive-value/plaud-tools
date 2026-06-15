@@ -557,20 +557,70 @@ class PlaudClient:
         if not segments:
             raise ValueError(f"recording {recording_id} has no transcript yet")
 
+        # Match the label against BOTH the displayed `speaker` and the
+        # `original_speaker` fields.  Plaud auto-resolves enrolled voices, so a
+        # never-renamed segment can already show `speaker="Kadin Bullock"` while
+        # `original_speaker="Speaker 1"`.  Callers naturally pass whatever label
+        # they see in the transcript — the display name — so matching only
+        # `original_speaker` silently failed for every recording that had an
+        # enrolled or previously-renamed speaker.  Matching either field lets a
+        # caller rename by the current display name ("Benjamin Everitt") or by
+        # the generic original ("Speaker 1") interchangeably.
         updated = 0
         next_segments: list[dict[str, Any]] = []
         for segment in segments:
-            if segment.get("original_speaker") == original_label:
+            if original_label in (segment.get("speaker"), segment.get("original_speaker")):
                 updated += 1
                 next_segments.append({**segment, "speaker": new_name})
             else:
                 next_segments.append(segment)
 
         if updated == 0:
-            raise ValueError(f'no segments found with original_speaker "{original_label}"')
+            raise ValueError(f'no segments found for speaker "{original_label}"')
 
         self.edit_transcript(recording_id, next_segments)
         return {"segments_updated": updated}
+
+    def correct_transcript(self, recording_id: str, find: str, replace: str) -> dict[str, int]:
+        """Find-and-replace literal text across all transcript segment content.
+
+        This is the same operation the Plaud web app performs for transcript
+        text corrections: it rewrites the `content` of every segment that
+        contains *find* and PATCHes the full ``trans_result`` back (see
+        ``edit_transcript``).  Matching is literal (not regex) and
+        case-sensitive, mirroring the web client.  Speaker labels are left
+        untouched — use ``rename_speaker`` for those.
+
+        Returns the number of individual occurrences replaced and the number of
+        segments that changed.
+        """
+        if not find:
+            raise ValueError("find text cannot be empty")
+
+        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
+        raw = data.get("data", data)
+        segments = self._fetch_transcript_segments(raw)
+        if not segments:
+            raise ValueError(f"recording {recording_id} has no transcript yet")
+
+        replacements = 0
+        segments_changed = 0
+        next_segments: list[dict[str, Any]] = []
+        for segment in segments:
+            content = segment.get("content") or ""
+            count = content.count(find)
+            if count:
+                replacements += count
+                segments_changed += 1
+                next_segments.append({**segment, "content": content.replace(find, replace)})
+            else:
+                next_segments.append(segment)
+
+        if replacements == 0:
+            raise ValueError(f'no occurrences of "{find}" found in transcript')
+
+        self.edit_transcript(recording_id, next_segments)
+        return {"replacements": replacements, "segments_changed": segments_changed}
 
     def _request_json(
         self,

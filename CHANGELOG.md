@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-15
+
+### Added
+
+- **`correct_transcript` MCP tool / `correct-transcript` CLI command.** Fixes
+  transcript text by literal find-and-replace across every segment (e.g.
+  correcting a misheard word or name), then PATCHes the full transcript back —
+  the same operation the Plaud web app performs for text corrections. Returns
+  the number of occurrences replaced and segments changed; speaker labels are
+  untouched. Previously there was no API surface for transcript text
+  corrections, so agents reported them as impossible.
+
+### Fixed
+
+- **`rename_speaker` now matches the *displayed* speaker label, not just the
+  original `Speaker N`.** Plaud auto-resolves enrolled voices, so a
+  never-renamed segment can already display `speaker: "Benjamin Everitt"`
+  while `original_speaker` stays `"Speaker 1"`. The tool matched only
+  `original_speaker`, so renaming by the label a caller actually sees (a name,
+  or a `[Bracketed]` label) found zero segments and failed with *"no segments
+  found"* — for every recording with an enrolled or previously-renamed
+  speaker. It now matches against either `speaker` or `original_speaker`, so a
+  caller can rename by the current display name or the generic original
+  interchangeably.
+
 ## [0.3.4] - 2026-06-14
 
 ### Fixed
@@ -1261,7 +1286,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/massive-value/plaud-tools/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/massive-value/plaud-tools/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/massive-value/plaud-tools/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/massive-value/plaud-tools/compare/v0.3.1...v0.3.2

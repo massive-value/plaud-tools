@@ -138,6 +138,10 @@ class StubClient:
         self.rename_speaker_call = (recording_id, original_label, new_name)
         return {"segments_updated": 7}
 
+    def correct_transcript(self, recording_id, find, replace):
+        self.correct_transcript_call = (recording_id, find, replace)
+        return {"replacements": 3, "segments_changed": 2}
+
     def wait_for_transcription(self, recording_id, **kwargs):
         pass
 
@@ -359,6 +363,35 @@ def test_cli_rename_speaker_shapes_success_response():
         "original_label": "Speaker 1",
         "new_name": "Alex Riley",
         "segments_updated": 7,
+    }
+
+
+def test_cli_correct_transcript_shapes_success_response():
+    client = StubClient()
+    output = run_cli(["correct-transcript", "rec1", "Cache", "Cash"], client)
+    payload = json.loads(output)
+    assert client.correct_transcript_call == ("rec1", "Cache", "Cash")
+    assert payload == {
+        "ok": True,
+        "recording_id": "rec1",
+        "find": "Cache",
+        "replace": "Cash",
+        "replacements": 3,
+        "segments_changed": 2,
+    }
+
+
+def test_mcp_correct_transcript_shapes_success_response():
+    handlers = build_handlers(lambda: StubClient())
+    result = handlers["correct_transcript"]("rec1", find="Cache", replace="Cash")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {
+        "ok": True,
+        "recording_id": "rec1",
+        "find": "Cache",
+        "replace": "Cash",
+        "replacements": 3,
+        "segments_changed": 2,
     }
 
 
