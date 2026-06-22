@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-21
+
+### Fixed
+
+- **MCP refused every call (`session_expired`) after Plaud shortened token
+  lifetimes to 30 days.** `SessionManager.require()` rejects any token within
+  `TOKEN_REFRESH_BUFFER_SECONDS` of expiry; that buffer was **30 days**, sized
+  for the old ~291-day tokens. Once Plaud began issuing 30-day tokens, every
+  freshly-issued token was already inside the buffer, so `require()` raised
+  `PlaudSessionExpiredError` on every call — even immediately after signing in.
+  The buffer is now **3 days**, enough lead time to prompt a re-sign-in without
+  refusing otherwise-valid tokens. The tray's "expiring soon" warning threshold
+  moved from 30 to 3 days for the same reason (it would otherwise show
+  permanently on a healthy fresh token).
+
+### Added
+
+- **`plaud refresh` CLI command.** Re-authenticates the stored session,
+  reusing the saved email and region so only the password is needed
+  (`--email` / `--region` / `--password` override). Plaud has no
+  refresh-token grant, so this is a full credential re-auth — the same flow as
+  `plaud login`, minus retyping. No MCP equivalent is provided by design:
+  routing a password through an AI client's context is avoided.
+
 ## [0.4.1] - 2026-06-15
 
 ### Fixed
@@ -1308,7 +1332,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/massive-value/plaud-tools/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/massive-value/plaud-tools/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/massive-value/plaud-tools/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/massive-value/plaud-tools/compare/v0.3.3...v0.3.4

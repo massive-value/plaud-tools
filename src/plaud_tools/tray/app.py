@@ -98,7 +98,7 @@ class TrayApp(_BackgroundMixin):
         days = self._manager.days_until_expiry()
         if days is None or days == 0:
             return "expired"
-        if days <= 30:
+        if days <= 3:
             return "expiring"
         return "signed-in"
 

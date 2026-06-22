@@ -16,7 +16,11 @@ from .errors import PlaudSessionExpiredError
 
 log = logging.getLogger(__name__)
 
-TOKEN_REFRESH_BUFFER_SECONDS = 30 * 24 * 60 * 60
+# Hard gate: require() refuses a token within this window of expiry.  Plaud
+# now issues 30-day tokens (was ~291 days), so a 30-day buffer rejected every
+# freshly-issued token and bricked the MCP.  3 days is enough lead time to
+# prompt a re-sign-in without refusing otherwise-valid tokens.
+TOKEN_REFRESH_BUFFER_SECONDS = 3 * 24 * 60 * 60
 _SECONDS_PER_DAY = 86_400
 
 
