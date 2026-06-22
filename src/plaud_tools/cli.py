@@ -134,6 +134,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     login_cmd.add_argument("--region", choices=["us", "eu"], default="us")
 
+    # 'refresh' is 'login' with email/region defaulted from the stored session,
+    # for re-authing an expired/expiring token without retyping them.  Plaud has
+    # no refresh-token grant, so this is still a full credential re-auth.
+    refresh_cmd = sub.add_parser(
+        "refresh",
+        help="Re-authenticate the stored session (reuses saved email/region; prompts for password).",
+    )
+    refresh_cmd.add_argument("--email", help="Override the stored email.")
+    refresh_cmd.add_argument("--password", help="If omitted, you will be prompted securely.")
+    refresh_cmd.add_argument("--region", choices=["us", "eu"], help="Override the stored region.")
+
     session_cmd = sub.add_parser("session")
     session_sub = session_cmd.add_subparsers(dest="session_command", required=True)
 
@@ -194,6 +205,24 @@ def _handle_login(
             "region": session.region,
             "status": "stored",
         },
+        indent=2,
+    )
+
+
+def _handle_refresh(
+    args: argparse.Namespace,
+    store: SessionStore,
+    auth: PlaudAuth | None,
+) -> str:
+    stored = store.load()
+    email = args.email or (stored.email if stored else None)
+    if not email:
+        raise ValueError("No stored email to refresh; run 'plaud login --email ...' instead.")
+    region = args.region or (stored.region if stored else "us")
+    password = args.password or getpass.getpass(f"Plaud password for {email}: ")
+    session = (auth or PlaudAuth(store)).login(email, password, region)
+    return json.dumps(
+        {"ok": True, "email": session.email, "region": session.region, "status": "refreshed"},
         indent=2,
     )
 
@@ -586,6 +615,7 @@ def _handle_ping(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa:
 # Signature: (args, store, auth) -> str  (auth is only used by login)
 _PRE_CLIENT_HANDLERS: dict[str, Callable[..., str]] = {
     "login": _handle_login,
+    "refresh": _handle_refresh,
     "session": _handle_session,
     "update": _handle_update,
     "doctor": _handle_doctor,
@@ -632,6 +662,8 @@ def run_cli(
     # --- Pre-client commands (no PlaudClient needed) ---
     if args.command == "login":
         return _handle_login(args, store, auth)
+    if args.command == "refresh":
+        return _handle_refresh(args, store, auth)
     if args.command == "session":
         return _handle_session(args, store)
     if args.command == "update":
