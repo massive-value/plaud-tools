@@ -495,6 +495,128 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def edit_summary(
+        recording_id: str,
+        operation: str,
+        find: str | None = None,
+        replace: str | None = None,
+        content: str | None = None,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            if operation == "correct":
+                if find is None or replace is None:
+                    return _error_result(
+                        "find and replace are required for operation=correct",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                result = client.correct_summary(recording_id, find, replace)
+                return _json_result(
+                    {
+                        "ok": True,
+                        "recording_id": recording_id,
+                        "operation": "correct",
+                        "find": find,
+                        "replace": replace,
+                        "replacements": result["replacements"],
+                    }
+                )
+
+            if operation == "replace":
+                if content is None:
+                    return _error_result(
+                        "content is required for operation=replace",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                client.set_summary(recording_id, content)
+                return _json_result({"ok": True, "recording_id": recording_id, "operation": "replace"})
+
+            return _error_result(
+                f"unknown operation: {operation!r} (expected 'correct' or 'replace')",
+                error_code="validation",
+                retryable=False,
+            )
+
+        return _call(get_client, inner)
+
+    def mutate_folder(
+        action: str,
+        folder_id: str | None = None,
+        name: str | None = None,
+        color: str | None = None,
+        icon: str | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            if action == "create":
+                if not name:
+                    return _error_result(
+                        "name is required for action=create",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                tag = client.create_folder(name, color=color, icon=icon)
+                return _json_result(
+                    {
+                        "ok": True,
+                        "action": "create",
+                        "folder": {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon},
+                    }
+                )
+
+            if action == "edit":
+                if not folder_id:
+                    return _error_result(
+                        "folder_id is required for action=edit",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                if name is None and color is None and icon is None:
+                    return _error_result(
+                        "action=edit requires at least one of name, color, icon",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                tag = client.update_folder(folder_id, name=name, color=color, icon=icon)
+                return _json_result(
+                    {
+                        "ok": True,
+                        "action": "edit",
+                        "folder": {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon},
+                    }
+                )
+
+            if action == "delete":
+                if not folder_id:
+                    return _error_result(
+                        "folder_id is required for action=delete",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                # Deleting a folder is irreversible (the folder is gone; the
+                # recordings inside survive but become unfiled).  Gate it behind
+                # an explicit confirm, mirroring delete_recording — the stdio
+                # surface can show no interactive prompt.
+                if not confirm:
+                    return _error_result(
+                        "Deleting a folder cannot be undone (recordings inside are kept but "
+                        "become unfiled). Re-invoke with confirm=true only after the human has "
+                        "confirmed they want to delete this folder.",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                client.delete_folder(folder_id)
+                return _json_result({"ok": True, "action": "delete", "folder_id": folder_id})
+
+            return _error_result(
+                f"unknown action: {action!r} (expected 'create', 'edit', or 'delete')",
+                error_code="validation",
+                retryable=False,
+            )
+
+        return _call(get_client, inner)
+
     return {
         "browse_recordings": browse_recordings,
         "get_recording": get_recording,
@@ -506,4 +628,6 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "process_recording": process_recording,
         "list_folders": list_folders,
         "merge_recordings": merge_recordings,
+        "edit_summary": edit_summary,
+        "mutate_folder": mutate_folder,
     }

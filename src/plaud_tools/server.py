@@ -383,6 +383,88 @@ _TOOLS: list[types.Tool] = [
             openWorldHint=True,
         ),
     ),
+    types.Tool(
+        name="edit_summary",
+        description="Edit a recording's AI summary. operation='correct' does a literal find-and-replace (e.g. fix a misspelled name); operation='replace' overwrites the whole summary with new markdown. The recording must already have a generated summary.",  # noqa: E501
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recording_id": {"type": "string"},
+                "operation": {
+                    "type": "string",
+                    "enum": ["correct", "replace"],
+                    "description": "'correct' = find/replace text; 'replace' = overwrite entire summary",
+                },
+                "find": {
+                    "type": "string",
+                    "description": "Exact text to find (case-sensitive, literal). Required for operation=correct.",  # noqa: E501
+                },
+                "replace": {
+                    "type": "string",
+                    "description": "Replacement text (may be empty to delete). Required for operation=correct.",  # noqa: E501
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full replacement summary markdown. Required for operation=replace.",
+                },
+            },
+            "required": ["recording_id", "operation"],
+        },
+        # Reversible content edit — a 'correct' can be undone by re-running with
+        # swapped find/replace; a 'replace' overwrites, but the prior text can be
+        # re-supplied.  idempotentHint omitted: a second 'correct' with the same
+        # find returns "no occurrences" (an error), so it is not a no-op.
+        annotations=types.ToolAnnotations(
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
+    ),
+    types.Tool(
+        name="mutate_folder",
+        description="Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(mutation='move') instead.",  # noqa: E501
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "edit", "delete"],
+                },
+                "folder_id": {
+                    "type": "string",
+                    "description": "Folder ID (from `list_folders`); required for edit and delete",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Folder name; required for create, optional for edit",
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Hex color (e.g. '#4c8eff'); optional",
+                },
+                "icon": {
+                    "type": "string",
+                    "description": "Icon glyph codepoint (e.g. 'e627'); optional",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Required true for action=delete. Set only after the human confirms; "
+                        "deleting a folder is irreversible (recordings inside are kept but unfiled)."
+                    ),
+                },
+            },
+            "required": ["action"],
+        },
+        # create/edit are reversible; delete is irreversible for the folder
+        # itself (recordings survive), so it is gated by a required confirm=true
+        # in the handler.  destructiveHint=True flags the delete path to clients;
+        # idempotentHint=False because deleting a missing folder errors, not no-ops.
+        annotations=types.ToolAnnotations(
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=True,
+        ),
+    ),
 ]
 
 

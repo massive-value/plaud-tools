@@ -1178,3 +1178,210 @@ def test_fetch_summary_from_data_link_handles_plain_text():
     }
     result = client._fetch_summary_from_data_link(raw)
     assert result == "# My Summary\n\nContent here."
+
+
+# ---------------------------------------------------------------------------
+# edit_summary — MCP tool + CLI (correct-summary / set-summary)
+# ---------------------------------------------------------------------------
+
+
+class SummaryStub(StubClient):
+    def __init__(self):
+        self.correct_call = None
+        self.set_call = None
+
+    def correct_summary(self, recording_id, find, replace):
+        self.correct_call = (recording_id, find, replace)
+        return {"replacements": 3}
+
+    def set_summary(self, recording_id, content):
+        self.set_call = (recording_id, content)
+
+
+def test_mcp_edit_summary_correct_calls_correct_summary():
+    client = SummaryStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["edit_summary"](recording_id="rec1", operation="correct", find="Suzan", replace="Susan")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["replacements"] == 3
+    assert client.correct_call == ("rec1", "Suzan", "Susan")
+
+
+def test_mcp_edit_summary_correct_requires_find_and_replace():
+    handlers = build_handlers(lambda: SummaryStub())
+    result = handlers["edit_summary"](recording_id="rec1", operation="correct", find="x")
+    assert result["isError"] is True
+    payload = json.loads(result["content"][0]["text"])
+    assert "find and replace" in payload["error"]
+
+
+def test_mcp_edit_summary_replace_calls_set_summary():
+    client = SummaryStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["edit_summary"](recording_id="rec1", operation="replace", content="# New")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert client.set_call == ("rec1", "# New")
+
+
+def test_mcp_edit_summary_replace_requires_content():
+    handlers = build_handlers(lambda: SummaryStub())
+    result = handlers["edit_summary"](recording_id="rec1", operation="replace")
+    assert result["isError"] is True
+    assert "content is required" in json.loads(result["content"][0]["text"])["error"]
+
+
+def test_mcp_edit_summary_rejects_unknown_operation():
+    handlers = build_handlers(lambda: SummaryStub())
+    result = handlers["edit_summary"](recording_id="rec1", operation="frobnicate")
+    assert result["isError"] is True
+    assert "unknown operation" in json.loads(result["content"][0]["text"])["error"]
+
+
+def test_cli_correct_summary_calls_client():
+    client = SummaryStub()
+    output = run_cli(["correct-summary", "rec1", "Suzan", "Susan"], client)
+    payload = json.loads(output)
+    assert payload["replacements"] == 3
+    assert client.correct_call == ("rec1", "Suzan", "Susan")
+
+
+def test_cli_set_summary_from_content_flag():
+    client = SummaryStub()
+    output = run_cli(["set-summary", "rec1", "--content", "# Fresh summary"], client)
+    payload = json.loads(output)
+    assert payload["ok"] is True
+    assert client.set_call == ("rec1", "# Fresh summary")
+
+
+def test_cli_set_summary_from_content_file(tmp_path):
+    md = tmp_path / "summary.md"
+    md.write_text("# From file\n\nbody", encoding="utf-8")
+    client = SummaryStub()
+    output = run_cli(["set-summary", "rec1", "--content-file", str(md)], client)
+    payload = json.loads(output)
+    assert payload["ok"] is True
+    assert client.set_call == ("rec1", "# From file\n\nbody")
+
+
+# ---------------------------------------------------------------------------
+# mutate_folder — MCP tool + CLI (folder create/edit/delete)
+# ---------------------------------------------------------------------------
+
+
+class FolderStub(StubClient):
+    def __init__(self):
+        self.create_call = None
+        self.update_call = None
+        self.delete_call = None
+
+    def create_folder(self, name, *, color=None, icon=None):
+        self.create_call = (name, color, icon)
+        return FileTag(id="new1", name=name, color=color or "", icon=icon or "")
+
+    def update_folder(self, folder_id, *, name=None, color=None, icon=None):
+        self.update_call = (folder_id, name, color, icon)
+        return FileTag(id=folder_id, name=name or "old", color=color or "", icon=icon or "")
+
+    def delete_folder(self, folder_id):
+        self.delete_call = folder_id
+
+
+def test_mcp_mutate_folder_create():
+    client = FolderStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["mutate_folder"](action="create", name="Clients", color="#111", icon="e627")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["folder"]["id"] == "new1"
+    assert client.create_call == ("Clients", "#111", "e627")
+
+
+def test_mcp_mutate_folder_create_requires_name():
+    handlers = build_handlers(lambda: FolderStub())
+    result = handlers["mutate_folder"](action="create")
+    assert result["isError"] is True
+    assert "name is required" in json.loads(result["content"][0]["text"])["error"]
+
+
+def test_mcp_mutate_folder_edit():
+    client = FolderStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["mutate_folder"](action="edit", folder_id="f1", name="Renamed")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert client.update_call == ("f1", "Renamed", None, None)
+
+
+def test_mcp_mutate_folder_edit_requires_a_field():
+    handlers = build_handlers(lambda: FolderStub())
+    result = handlers["mutate_folder"](action="edit", folder_id="f1")
+    assert result["isError"] is True
+    assert "at least one of name, color, icon" in json.loads(result["content"][0]["text"])["error"]
+
+
+def test_mcp_mutate_folder_delete_requires_confirm():
+    client = FolderStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["mutate_folder"](action="delete", folder_id="f1")
+    assert result["isError"] is True
+    assert "confirm=true" in json.loads(result["content"][0]["text"])["error"]
+    assert client.delete_call is None  # not deleted without confirm
+
+
+def test_mcp_mutate_folder_delete_with_confirm():
+    client = FolderStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["mutate_folder"](action="delete", folder_id="f1", confirm=True)
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert client.delete_call == "f1"
+
+
+def test_mcp_mutate_folder_rejects_unknown_action():
+    handlers = build_handlers(lambda: FolderStub())
+    result = handlers["mutate_folder"](action="obliterate")
+    assert result["isError"] is True
+    assert "unknown action" in json.loads(result["content"][0]["text"])["error"]
+
+
+def test_cli_folder_create():
+    client = FolderStub()
+    output = run_cli(["folder", "create", "Clients", "--color", "#111", "--icon", "e627"], client)
+    payload = json.loads(output)
+    assert payload["ok"] is True
+    assert client.create_call == ("Clients", "#111", "e627")
+
+
+def test_cli_folder_edit():
+    client = FolderStub()
+    output = run_cli(["folder", "edit", "f1", "--name", "Renamed"], client)
+    payload = json.loads(output)
+    assert payload["action"] == "edit"
+    assert client.update_call == ("f1", "Renamed", None, None)
+
+
+def test_cli_folder_edit_requires_a_field():
+    import pytest
+
+    client = FolderStub()
+    with pytest.raises(ValueError, match="at least one of --name, --color, --icon"):
+        run_cli(["folder", "edit", "f1"], client)
+
+
+def test_cli_folder_delete_requires_yes():
+    import pytest
+
+    client = FolderStub()
+    with pytest.raises(ValueError, match="cannot be undone"):
+        run_cli(["folder", "delete", "f1"], client)
+    assert client.delete_call is None
+
+
+def test_cli_folder_delete_with_yes():
+    client = FolderStub()
+    output = run_cli(["folder", "delete", "f1", "--yes"], client)
+    payload = json.loads(output)
+    assert payload["ok"] is True
+    assert client.delete_call == "f1"

@@ -36,8 +36,9 @@ from plaud_tools.server import _TOOLS
 
 _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 
-# 1.1 * 387 word baseline; update intentionally if descriptions change
-_TOKEN_BUDGET_WORDS = 425
+# 1.1 * 442 word baseline (12 tools, incl. edit_summary + mutate_folder added in
+# v0.6.0); update intentionally if descriptions change
+_TOKEN_BUDGET_WORDS = 486
 
 
 def _serialize_tools() -> str:

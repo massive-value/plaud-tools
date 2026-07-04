@@ -92,10 +92,13 @@ jobs:
 
       - name: Download ffmpeg (pinned)
         run: |
-          # Pinned to ffmpeg 8.1.1 (essentials build) — same pin as release.yml.
-          # SHA-256 sourced from https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.1-essentials_build.zip.sha256
-          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.1-essentials_build.zip"
-          $expectedHash = "6F58CE889F59C311410F7D2B18895B33C03456463486F3B1EBC93D97A0F54541"
+          # Pinned to ffmpeg 8.1.2 (essentials build) — same pin as release.yml.
+          # NOTE: gyan.dev only hosts the latest version-pinned build; older ones 404,
+          # so this pin must be bumped whenever gyan.dev publishes a new release
+          # (was 8.1.1, rotated away 2026-07). Keep release.yml's pin in lockstep.
+          # SHA-256 sourced from https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip.sha256
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"
+          $expectedHash = "DB580001CAA24AC104C8CB856CD113A87B0A443F7BDF47D8C12B1D740584A2EC"
           Invoke-WebRequest $ffmpegUrl -OutFile ffmpeg.zip
           $actualHash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
           if ($actualHash -ne $expectedHash) {

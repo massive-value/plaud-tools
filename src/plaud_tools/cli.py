@@ -57,6 +57,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     folders_cmd = sub.add_parser("folders")  # noqa: F841  # side-effect: registers subparser
 
+    folder_cmd = sub.add_parser("folder", help="Create, edit, or delete folders.")
+    folder_sub = folder_cmd.add_subparsers(dest="folder_command", required=True)
+
+    folder_create = folder_sub.add_parser("create")
+    folder_create.add_argument("name")
+    folder_create.add_argument("--color", help="Hex color, e.g. '#4c8eff'")
+    folder_create.add_argument("--icon", help="Icon glyph codepoint, e.g. 'e627'")
+
+    folder_edit = folder_sub.add_parser("edit")
+    folder_edit.add_argument("folder_id")
+    folder_edit.add_argument("--name")
+    folder_edit.add_argument("--color")
+    folder_edit.add_argument("--icon")
+
+    folder_delete = folder_sub.add_parser("delete")
+    folder_delete.add_argument("folder_id")
+    folder_delete.add_argument("--yes", action="store_true")
+
     move_to_folder_cmd = sub.add_parser("move-to-folder")
     move_to_folder_cmd.add_argument("recording_id")
     move_to_folder_cmd.add_argument("folder_id")
@@ -74,6 +92,19 @@ def build_parser() -> argparse.ArgumentParser:
     correct_transcript_cmd.add_argument("recording_id")
     correct_transcript_cmd.add_argument("find")
     correct_transcript_cmd.add_argument("replace")
+
+    correct_summary_cmd = sub.add_parser("correct-summary")
+    correct_summary_cmd.add_argument("recording_id")
+    correct_summary_cmd.add_argument("find")
+    correct_summary_cmd.add_argument("replace")
+
+    set_summary_cmd = sub.add_parser("set-summary")
+    set_summary_cmd.add_argument("recording_id")
+    set_summary_group = set_summary_cmd.add_mutually_exclusive_group(required=True)
+    set_summary_group.add_argument("--content", help="New summary markdown")
+    set_summary_group.add_argument(
+        "--content-file", help="Path to a file containing the new summary markdown"
+    )
 
     transcribe_cmd = sub.add_parser("transcribe")
     transcribe_cmd.add_argument("recording_id")
@@ -409,6 +440,29 @@ def _handle_folders(args: argparse.Namespace, client: PlaudClient) -> str:  # no
     )
 
 
+def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
+    def _shape(tag: Any) -> dict[str, Any]:
+        return {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
+
+    if args.folder_command == "create":
+        tag = client.create_folder(args.name, color=args.color, icon=args.icon)
+        return json.dumps({"ok": True, "action": "create", "folder": _shape(tag)}, indent=2)
+    if args.folder_command == "edit":
+        if args.name is None and args.color is None and args.icon is None:
+            raise ValueError("folder edit requires at least one of --name, --color, --icon")
+        tag = client.update_folder(args.folder_id, name=args.name, color=args.color, icon=args.icon)
+        return json.dumps({"ok": True, "action": "edit", "folder": _shape(tag)}, indent=2)
+    if args.folder_command == "delete":
+        if not args.yes:
+            raise ValueError(
+                f"Deleting folder {args.folder_id!r} cannot be undone (recordings inside are kept "
+                f"but become unfiled). Re-run with --yes to confirm."
+            )
+        client.delete_folder(args.folder_id)
+        return json.dumps({"ok": True, "action": "delete", "folder_id": args.folder_id}, indent=2)
+    raise AssertionError(f"unhandled folder command: {args.folder_command}")
+
+
 def _handle_move(args: argparse.Namespace, client: PlaudClient) -> str:
     folder_id = None if args.folder_id == "-" else args.folder_id
     client.set_recording_folder(args.recording_id, folder_id)
@@ -481,6 +535,35 @@ def _handle_correct_transcript(args: argparse.Namespace, client: PlaudClient) ->
             "replacements": correct_result["replacements"],
             "segments_changed": correct_result["segments_changed"],
         },
+        indent=2,
+    )
+
+
+def _handle_correct_summary(args: argparse.Namespace, client: PlaudClient) -> str:
+    result = client.correct_summary(args.recording_id, args.find, args.replace)
+    return json.dumps(
+        {
+            "ok": True,
+            "recording_id": args.recording_id,
+            "find": args.find,
+            "replace": args.replace,
+            "replacements": result["replacements"],
+        },
+        indent=2,
+    )
+
+
+def _handle_set_summary(args: argparse.Namespace, client: PlaudClient) -> str:
+    if args.content_file:
+        path = Path(args.content_file)
+        if not path.exists():
+            raise ValueError(f"file not found: {args.content_file}")
+        content = path.read_text(encoding="utf-8")
+    else:
+        content = args.content
+    client.set_summary(args.recording_id, content)
+    return json.dumps(
+        {"ok": True, "recording_id": args.recording_id, "mutation": "set-summary"},
         indent=2,
     )
 
@@ -631,6 +714,7 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "summary": _handle_summary,
     "rename": _handle_rename,
     "folders": _handle_folders,
+    "folder": _handle_folder,
     "move-to-folder": _handle_move,
     "move": _handle_move,
     "trash": _handle_trash,
@@ -640,6 +724,8 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "trash-restore": _handle_trash_restore,
     "rename-speaker": _handle_rename_speaker,
     "correct-transcript": _handle_correct_transcript,
+    "correct-summary": _handle_correct_summary,
+    "set-summary": _handle_set_summary,
     "upload": _handle_upload,
     "merge": _handle_merge,
     "transcribe": _handle_transcribe,

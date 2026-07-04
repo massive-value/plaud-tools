@@ -275,5 +275,81 @@
       "type": "object"
     },
     "name": "merge_recordings"
+  },
+  {
+    "description": "Edit a recording's AI summary. operation='correct' does a literal find-and-replace (e.g. fix a misspelled name); operation='replace' overwrites the whole summary with new markdown. The recording must already have a generated summary.",
+    "inputSchema": {
+      "properties": {
+        "content": {
+          "description": "Full replacement summary markdown. Required for operation=replace.",
+          "type": "string"
+        },
+        "find": {
+          "description": "Exact text to find (case-sensitive, literal). Required for operation=correct.",
+          "type": "string"
+        },
+        "operation": {
+          "description": "'correct' = find/replace text; 'replace' = overwrite entire summary",
+          "enum": [
+            "correct",
+            "replace"
+          ],
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        },
+        "replace": {
+          "description": "Replacement text (may be empty to delete). Required for operation=correct.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "name": "edit_summary"
+  },
+  {
+    "description": "Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(mutation='move') instead.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "enum": [
+            "create",
+            "edit",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "color": {
+          "description": "Hex color (e.g. '#4c8eff'); optional",
+          "type": "string"
+        },
+        "confirm": {
+          "description": "Required true for action=delete. Set only after the human confirms; deleting a folder is irreversible (recordings inside are kept but unfiled).",
+          "type": "boolean"
+        },
+        "folder_id": {
+          "description": "Folder ID (from `list_folders`); required for edit and delete",
+          "type": "string"
+        },
+        "icon": {
+          "description": "Icon glyph codepoint (e.g. 'e627'); optional",
+          "type": "string"
+        },
+        "name": {
+          "description": "Folder name; required for create, optional for edit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "mutate_folder"
   }
 ]

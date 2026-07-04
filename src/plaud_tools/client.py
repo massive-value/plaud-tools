@@ -55,6 +55,14 @@ def _jitter(lo: float, hi: float) -> float:
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE = 1.0  # seconds — see formula above
 
+# Defaults for folder (filetag) creation.  The Plaud web client always sends an
+# icon and color when creating a folder; the API appears to require both.  These
+# mirror the values Plaud assigns to most existing folders (icon "e627" is the
+# common default folder glyph) so a folder created via the API is visually
+# indistinguishable from one created in the web app when the caller omits them.
+_DEFAULT_FOLDER_ICON = "e627"
+_DEFAULT_FOLDER_COLOR = "#4c8eff"
+
 
 @dataclass(slots=True)
 class PlaudRecordingQuery:
@@ -439,19 +447,89 @@ class PlaudClient:
             body={"filename": filename},
         )
 
+    def _normalize_file_tag(self, item: dict[str, Any]) -> FileTag:
+        return FileTag(
+            id=str(item.get("id") or item.get("filetag_id") or ""),
+            name=str(item.get("name") or ""),
+            color=str(item.get("color") or ""),
+            icon=str(item.get("icon") or ""),
+            raw=item,
+        )
+
     def list_file_tags(self) -> list[FileTag]:
         data = self._request_json("GET", "/filetag/", strict=True)
         items = data.get("data_filetag_list") or data.get("data") or data.get("filetags") or []
-        return [
-            FileTag(
-                id=str(item.get("id") or item.get("filetag_id") or ""),
-                name=str(item.get("name") or ""),
-                color=str(item.get("color") or ""),
-                icon=str(item.get("icon") or ""),
-                raw=item,
-            )
-            for item in items
-        ]
+        return [self._normalize_file_tag(item) for item in items]
+
+    def create_folder(
+        self,
+        name: str,
+        *,
+        color: str | None = None,
+        icon: str | None = None,
+    ) -> FileTag:
+        """Create a new folder (filetag) and return it.
+
+        Mirrors the web client's ``POST /filetag/`` call.  ``color`` and ``icon``
+        default to Plaud's common folder defaults when omitted (see
+        ``_DEFAULT_FOLDER_*``).  A duplicate name is rejected by Plaud with
+        ``status:-2 msg:"filetag name existed"``, which surfaces here as a
+        ``PlaudApiError`` via the strict-status check in ``_request_json``.
+        """
+        if not name.strip():
+            raise ValueError("folder name cannot be empty")
+        data = self._request_json(
+            "POST",
+            "/filetag/",
+            strict=True,
+            body={
+                "name": name,
+                "icon": icon or _DEFAULT_FOLDER_ICON,
+                "color": color or _DEFAULT_FOLDER_COLOR,
+            },
+        )
+        return self._normalize_file_tag(data.get("data_filetag") or {})
+
+    def update_folder(
+        self,
+        folder_id: str,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+        icon: str | None = None,
+    ) -> FileTag:
+        """Edit an existing folder's name, color, and/or icon (``PATCH /filetag/{id}``).
+
+        Only the supplied fields are sent; at least one of name/color/icon is
+        required.  Returns the updated folder as echoed back by Plaud.
+        """
+        if not folder_id:
+            raise ValueError("folder_id cannot be empty")
+        body: dict[str, Any] = {}
+        if name is not None:
+            if not name.strip():
+                raise ValueError("folder name cannot be empty")
+            body["name"] = name
+        if color is not None:
+            body["color"] = color
+        if icon is not None:
+            body["icon"] = icon
+        if not body:
+            raise ValueError("update_folder requires at least one of name, color, icon")
+        data = self._request_json("PATCH", f"/filetag/{folder_id}", strict=True, body=body)
+        return self._normalize_file_tag(data.get("data_filetag") or {})
+
+    def delete_folder(self, folder_id: str) -> None:
+        """Delete a folder (``DELETE /filetag/{id}``).
+
+        Deletes only the folder itself — recordings inside it are not deleted;
+        they lose the folder association and become unfiled.  There is no undo
+        for the folder, so callers should gate this behind an explicit
+        confirmation (the CLI ``--yes`` flag / the MCP ``confirm`` parameter).
+        """
+        if not folder_id:
+            raise ValueError("folder_id cannot be empty")
+        self._request_json("DELETE", f"/filetag/{folder_id}", strict=True)
 
     def list_trash(self) -> list[Recording]:
         return self.list_recordings(PlaudRecordingQuery(is_trash=1))
@@ -621,6 +699,79 @@ class PlaudClient:
 
         self.edit_transcript(recording_id, next_segments)
         return {"replacements": replacements, "segments_changed": segments_changed}
+
+    def _get_summary_note(self, recording_id: str) -> tuple[str, str]:
+        """Return ``(note_id, current_content)`` for a recording's AI summary.
+
+        The ``note_id`` is the ``data_id`` of the completed ``auto_sum_note``
+        entry in the detail's ``content_list`` — exactly what
+        ``/ai/update_note_info`` expects.  The current content is read inline
+        when present and otherwise fetched from the summary's ``data_link``.
+
+        Raises ``ValueError`` if the recording has no completed summary.
+        """
+        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
+        raw = data.get("data", data)
+        note_id: str | None = None
+        for item in raw.get("content_list") or []:
+            if item.get("data_type") == "auto_sum_note" and item.get("task_status") == 1:
+                note_id = item.get("data_id")
+                break
+        if not note_id:
+            raise ValueError(f"recording {recording_id} has no summary yet")
+        content = self._extract_inline_summary(raw, note_id)
+        if content is None:
+            content = self._fetch_summary_from_data_link(raw)
+        return note_id, content or ""
+
+    def _update_summary_note(self, recording_id: str, note_id: str, content: str) -> None:
+        """POST the full summary body back to Plaud (``/ai/update_note_info``).
+
+        The web app replaces the entire ``note_content`` on every edit — there
+        is no partial-patch endpoint — so callers pass the complete new text.
+        """
+        self._request_json(
+            "POST",
+            "/ai/update_note_info",
+            strict=True,
+            body={
+                "file_id": recording_id,
+                "note_id": note_id,
+                "note_type": "auto_sum_note",
+                "note_content": content,
+            },
+        )
+
+    def set_summary(self, recording_id: str, content: str) -> None:
+        """Overwrite a recording's AI summary with ``content`` (full replace).
+
+        The recording must already have a generated summary — this edits the
+        existing note, it does not create one (use ``transcribe_and_summarize``
+        to generate a summary first).
+        """
+        if not content.strip():
+            raise ValueError("summary content cannot be empty")
+        note_id, _ = self._get_summary_note(recording_id)
+        self._update_summary_note(recording_id, note_id, content)
+
+    def correct_summary(self, recording_id: str, find: str, replace: str) -> dict[str, int]:
+        """Find-and-replace literal text in a recording's AI summary.
+
+        The summary equivalent of ``correct_transcript`` — the intended use is
+        fixing a misspelled name or term in an otherwise-good summary.  Matching
+        is literal (not regex) and case-sensitive.  Returns the number of
+        occurrences replaced.  Raises ``ValueError`` if the text is not found.
+        """
+        if not find:
+            raise ValueError("find text cannot be empty")
+        note_id, content = self._get_summary_note(recording_id)
+        if not content:
+            raise ValueError(f"recording {recording_id} has no summary text to edit")
+        count = content.count(find)
+        if count == 0:
+            raise ValueError(f'no occurrences of "{find}" found in summary')
+        self._update_summary_note(recording_id, note_id, content.replace(find, replace))
+        return {"replacements": count}
 
     def _request_json(
         self,
