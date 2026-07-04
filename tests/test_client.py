@@ -791,6 +791,301 @@ def test_correct_transcript_rejects_missing_transcript(tmp_path):
         client.correct_transcript("rec1", "a", "b")
 
 
+# ---------------------------------------------------------------------------
+# Summary editing (set_summary / correct_summary) — POST /ai/update_note_info
+# ---------------------------------------------------------------------------
+
+
+def _detail_with_inline_summary(summary_text, *, note_id="auto_sum:hash:rec1"):
+    """GET /file/detail response carrying an inline auto_sum_note summary."""
+    return HttpResponse(
+        200,
+        json.dumps(
+            {
+                "status": 0,
+                "data": {
+                    "file_id": "rec1",
+                    "file_name": "Meeting",
+                    "content_list": [
+                        {
+                            "data_type": "auto_sum_note",
+                            "task_status": 1,
+                            "data_id": note_id,
+                            "data_link": "https://s3.fake/summary.json",
+                        }
+                    ],
+                    "pre_download_content_list": [
+                        {"data_id": note_id, "data_content": json.dumps({"ai_content": summary_text})}
+                    ],
+                },
+            }
+        ).encode(),
+        {},
+    )
+
+
+def test_correct_summary_replaces_text_and_posts_note_update(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            _detail_with_inline_summary("Customer: Suzan met with Suzan again."),
+            HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.correct_summary("rec1", "Suzan", "Susan")
+    assert result == {"replacements": 2}
+    # No S3 fetch was needed (inline summary); detail + note-update = 2 calls.
+    assert len(transport.calls) == 2
+    post = transport.calls[1]
+    assert post["method"] == "POST"
+    assert post["url"] == "https://api-euc1.plaud.ai/ai/update_note_info"
+    body = json.loads(post["body"].decode("utf-8"))
+    assert body == {
+        "file_id": "rec1",
+        "note_id": "auto_sum:hash:rec1",
+        "note_type": "auto_sum_note",
+        "note_content": "Customer: Susan met with Susan again.",
+    }
+
+
+def test_correct_summary_rejects_no_match(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport([_detail_with_inline_summary("nothing to change here")])
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(ValueError, match='no occurrences of "zzz" found in summary'):
+        client.correct_summary("rec1", "zzz", "x")
+
+
+def test_correct_summary_rejects_empty_find(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="find text cannot be empty"):
+        client.correct_summary("rec1", "", "x")
+
+
+def test_correct_summary_rejects_missing_summary(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    # content_list has a transcript but no completed auto_sum_note.
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [{"data_type": "transaction", "task_status": 1}],
+                        },
+                    }
+                ).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(ValueError, match="has no summary yet"):
+        client.correct_summary("rec1", "a", "b")
+
+
+def test_correct_summary_fetches_content_from_data_link(tmp_path):
+    """When the summary is not inlined, correct_summary fetches it from data_link."""
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data": {
+                            "file_id": "rec1",
+                            "file_name": "Meeting",
+                            "content_list": [
+                                {
+                                    "data_type": "auto_sum_note",
+                                    "task_status": 1,
+                                    "data_id": "auto_sum:hash:rec1",
+                                    "data_link": "https://s3.fake/summary.json",
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"ai_content": "Meeting with Bxb"}).encode(), {}),
+            HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    result = client.correct_summary("rec1", "Bxb", "Bob")
+    assert result == {"replacements": 1}
+    assert transport.calls[1]["url"] == "https://s3.fake/summary.json"
+    body = json.loads(transport.calls[2]["body"].decode("utf-8"))
+    assert body["note_content"] == "Meeting with Bob"
+
+
+def test_set_summary_overwrites_full_content(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            _detail_with_inline_summary("old summary"),
+            HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {}),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.set_summary("rec1", "# Brand New Summary\n\n- point")
+    post = transport.calls[1]
+    body = json.loads(post["body"].decode("utf-8"))
+    assert body["note_content"] == "# Brand New Summary\n\n- point"
+    assert body["note_id"] == "auto_sum:hash:rec1"
+
+
+def test_set_summary_rejects_empty_content(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="summary content cannot be empty"):
+        client.set_summary("rec1", "   ")
+
+
+# ---------------------------------------------------------------------------
+# Folder CRUD (create_folder / update_folder / delete_folder) — /filetag/
+# ---------------------------------------------------------------------------
+
+
+def test_create_folder_posts_name_icon_color_and_returns_tag(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data_filetag": {
+                            "id": "new1",
+                            "name": "Clients",
+                            "icon": "e708",
+                            "color": "#f9a251",
+                        },
+                    }
+                ).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    tag = client.create_folder("Clients", color="#f9a251", icon="e708")
+    assert tag.id == "new1"
+    assert tag.name == "Clients"
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api-euc1.plaud.ai/filetag/"
+    assert json.loads(call["body"].decode("utf-8")) == {
+        "name": "Clients",
+        "icon": "e708",
+        "color": "#f9a251",
+    }
+
+
+def test_create_folder_defaults_icon_and_color(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": 0, "data_filetag": {"id": "x", "name": "N"}}).encode(), {})]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.create_folder("N")
+    body = json.loads(transport.calls[0]["body"].decode("utf-8"))
+    assert body["icon"] == client_mod._DEFAULT_FOLDER_ICON
+    assert body["color"] == client_mod._DEFAULT_FOLDER_COLOR
+
+
+def test_create_folder_rejects_blank_name(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="folder name cannot be empty"):
+        client.create_folder("   ")
+
+
+def test_create_folder_duplicate_name_raises_api_error(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": -2, "msg": "filetag name existed", "data_filetag": None}).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    with pytest.raises(PlaudApiError, match="filetag name existed"):
+        client.create_folder("Existing")
+
+
+def test_update_folder_patches_only_supplied_fields(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "status": 0,
+                        "data_filetag": {"id": "f1", "name": "Renamed", "icon": "e604", "color": "#fb5c5c"},
+                    }
+                ).encode(),
+                {},
+            )
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    tag = client.update_folder("f1", name="Renamed", color="#fb5c5c")
+    assert tag.name == "Renamed"
+    call = transport.calls[0]
+    assert call["method"] == "PATCH"
+    assert call["url"] == "https://api-euc1.plaud.ai/filetag/f1"
+    # icon was not supplied, so it must not be in the body.
+    assert json.loads(call["body"].decode("utf-8")) == {"name": "Renamed", "color": "#fb5c5c"}
+
+
+def test_update_folder_requires_at_least_one_field(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="at least one of name, color, icon"):
+        client.update_folder("f1")
+
+
+def test_update_folder_rejects_blank_id(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="folder_id cannot be empty"):
+        client.update_folder("", name="X")
+
+
+def test_delete_folder_uses_delete_method(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    transport = StubTransport(
+        [HttpResponse(200, json.dumps({"status": 0, "msg": "delete success"}).encode(), {})]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.delete_folder("f1")
+    call = transport.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["url"] == "https://api-euc1.plaud.ai/filetag/f1"
+    assert call["body"] is None
+
+
+def test_delete_folder_rejects_blank_id(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    client = PlaudClient(manager, transport=StubTransport([]))
+    with pytest.raises(ValueError, match="folder_id cannot be empty"):
+        client.delete_folder("")
+
+
 def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
     manager, _ = make_manager(tmp_path)
     transport = StubTransport(

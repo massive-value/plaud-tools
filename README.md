@@ -73,16 +73,17 @@ Open the tray menu, click **Uninstall…**, review the checklist, and click **Un
 
 ## What PlaudTools can do
 
-PlaudTools gives your AI assistant seven tools for working with your Plaud account. You don't call these directly — you ask in plain English, and the assistant picks the right one.
+PlaudTools gives your AI assistant a set of tools for working with your Plaud account. You don't call these directly — you ask in plain English, and the assistant picks the right one.
 
 | What it does | What you'd ask |
 |---|---|
 | Find recordings | *"Show me my recordings from last week."* |
 | Read a recording | *"What did I say in the Henderson meeting?"* |
 | Rename, move, or trash | *"Rename yesterday's 9am recording to 'Tax planning call'."* |
+| Fix a transcript or summary | *"Fix the spelling of the client's name in yesterday's summary."* |
 | Upload audio | *"Upload this audio file and transcribe it."* (with attachment) |
 | Transcribe and summarize | *"Transcribe and summarize yesterday's recording."* |
-| List folders | *"What folders do I have in Plaud?"* |
+| List and manage folders | *"Create a 'Client Calls' folder"* / *"What folders do I have in Plaud?"* |
 | Merge recordings | *"Merge these three call segments into one recording."* |
 
 ## Other ways to install

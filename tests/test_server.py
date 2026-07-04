@@ -23,11 +23,31 @@ _EXPECTED_TOOL_NAMES = {
     "process_recording",
     "list_folders",
     "merge_recordings",
+    "edit_summary",
+    "mutate_folder",
 }
 
 
 def test_server_exposes_expected_tools():
     assert {t.name for t in _TOOLS} == _EXPECTED_TOOL_NAMES
+
+
+def test_server_edit_summary_requires_recording_id_and_operation():
+    tool = next(t for t in _TOOLS if t.name == "edit_summary")
+    assert set(tool.inputSchema["required"]) == {"recording_id", "operation"}
+    assert tool.inputSchema["properties"]["operation"]["enum"] == ["correct", "replace"]
+
+
+def test_server_mutate_folder_requires_only_action():
+    tool = next(t for t in _TOOLS if t.name == "mutate_folder")
+    assert tool.inputSchema["required"] == ["action"]
+    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"create", "edit", "delete"}
+
+
+def test_server_mutate_folder_is_flagged_destructive():
+    # The delete path is irreversible for the folder; the annotation warns clients.
+    tool = next(t for t in _TOOLS if t.name == "mutate_folder")
+    assert tool.annotations.destructiveHint is True
 
 
 def test_server_list_folders_has_no_required_fields():

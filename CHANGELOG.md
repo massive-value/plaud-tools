@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-04
+
+### Added
+
+- **Summary editing (`edit_summary` MCP tool / `correct-summary` + `set-summary`
+  CLI).** Previously AI summaries were read-only. You can now fix text in a
+  generated summary — the reported case being correcting a misspelled name.
+  `operation="correct"` does a literal, case-sensitive find-and-replace (the
+  summary counterpart of `correct_transcript`); `operation="replace"` overwrites
+  the whole summary with new markdown. Backed by Plaud's
+  `POST /ai/update_note_info`. The recording must already have a generated
+  summary (this edits the existing note; it does not create one).
+- **Folder management (`mutate_folder` MCP tool / `folder create|edit|delete`
+  CLI).** Previously folders could only be listed and moved between; there was
+  no way to create, rename/recolor, or delete a folder from the tools.
+  `mutate_folder` adds all three via Plaud's `POST/PATCH/DELETE /filetag/`.
+  `edit` sends only the fields you supply (name/color/icon), preserving the
+  rest. `delete` is irreversible for the folder itself — recordings inside are
+  kept but become unfiled — so it is gated behind a required `confirm=true`
+  (MCP) / `--yes` (CLI), mirroring `delete_recording`. New folders default to a
+  standard icon/color when omitted.
+
+The MCP surface grows from 10 to 12 tools.
+
 ## [0.5.0] - 2026-06-21
 
 ### Fixed
@@ -1332,7 +1356,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/massive-value/plaud-tools/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/massive-value/plaud-tools/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/massive-value/plaud-tools/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/massive-value/plaud-tools/compare/v0.3.4...v0.4.0
