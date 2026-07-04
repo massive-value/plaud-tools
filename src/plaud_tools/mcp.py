@@ -530,9 +530,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         retryable=False,
                     )
                 client.set_summary(recording_id, content)
-                return _json_result(
-                    {"ok": True, "recording_id": recording_id, "operation": "replace"}
-                )
+                return _json_result({"ok": True, "recording_id": recording_id, "operation": "replace"})
 
             return _error_result(
                 f"unknown operation: {operation!r} (expected 'correct' or 'replace')",
