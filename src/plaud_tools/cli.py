@@ -5,7 +5,6 @@ import getpass
 import json
 import sys
 from collections.abc import Callable, Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +12,14 @@ from . import __version__
 from .auth import PlaudAuth
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, folder_dict, parse_isoish, summarize_recording
+from .query import (
+    BROWSE_PAGE_SIZE,
+    collect_filtered_paged,
+    detail_summary_dict,
+    folder_dict,
+    parse_isoish,
+    summarize_recording,
+)
 from .session import PlaudSession, SessionManager, SessionStore
 
 
@@ -457,22 +463,9 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
 
 def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
     detail = client.get_recording(args.recording_id, include_transcript=True)
-    extra = detail.extra_data or {}
-    headline = (extra.get("aiContentHeader") or {}).get("headline")
-    return json.dumps(
-        {
-            "id": detail.id,
-            "title": detail.filename,
-            "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
-            "duration_minutes": round(detail.duration / 60000),
-            "folder_id": detail.folder_id,
-            "is_trans": detail.is_trans,
-            "is_summary": detail.is_summary,
-            "speakers": detail.speakers,
-            "headline": headline,
-        },
-        indent=2,
-    )
+    output = detail_summary_dict(detail)
+    output["speakers"] = detail.speakers
+    return json.dumps(output, indent=2)
 
 
 def _handle_summary(args: argparse.Namespace, client: PlaudClient) -> str:

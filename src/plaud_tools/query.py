@@ -130,6 +130,30 @@ def folder_dict(tag: Any) -> dict[str, Any]:
     return {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
 
 
+def detail_summary_dict(detail: Any) -> dict[str, Any]:
+    """Produce the base summary dict for a RecordingDetail (a "show" view).
+
+    Shared core of cli.py's ``_handle_show`` (inline dict) and mcp.py's
+    ``_summarize_detail`` (near-identical near-twins before Wave 5's §7.5
+    consolidation) -- id/title/date/duration_minutes/folder_id/is_trans/
+    is_summary/headline. mcp.py's ``get_recording`` handler adds its own
+    extra fields (is_trash, language, used_template) on top of this base;
+    cli.py's ``show`` command uses the base as-is to keep its existing
+    output shape unchanged.
+    """
+    extra = detail.extra_data or {}
+    return {
+        "id": detail.id,
+        "title": detail.filename,
+        "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
+        "duration_minutes": round(detail.duration / 60000),
+        "folder_id": detail.folder_id,
+        "is_trans": detail.is_trans,
+        "is_summary": detail.is_summary,
+        "headline": (extra.get("aiContentHeader") or {}).get("headline"),
+    }
+
+
 def summarize_recording(item: Any) -> dict[str, Any]:
     """Produce the standard summary dict for a Recording.
 

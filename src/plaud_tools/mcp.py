@@ -5,14 +5,20 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .appdata import events_path as _events_path
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, folder_dict, parse_isoish, summarize_recording
+from .query import (
+    BROWSE_PAGE_SIZE,
+    collect_filtered_paged,
+    detail_summary_dict,
+    folder_dict,
+    parse_isoish,
+    summarize_recording,
+)
 from .session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
@@ -182,21 +188,16 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
 
 
 def _summarize_detail(detail: Any) -> dict[str, Any]:
+    """mcp.py's ``get_recording`` shape: query.detail_summary_dict()'s base
+    fields plus the MCP-specific extras (is_trash, language, used_template)."""
     extra = detail.extra_data or {}
-    return {
-        "id": detail.id,
-        "title": detail.filename,
-        "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
-        "duration_minutes": round(detail.duration / 60000),
-        "folder_id": detail.folder_id,
-        "is_trash": detail.is_trash,
-        "is_trans": detail.is_trans,
-        "is_summary": detail.is_summary,
-        "headline": (extra.get("aiContentHeader") or {}).get("headline"),
-        "language": (extra.get("tranConfig") or {}).get("language"),
-        "used_template": extra.get("used_template")
-        or (extra.get("aiContentHeader") or {}).get("used_template"),
-    }
+    output = detail_summary_dict(detail)
+    output["is_trash"] = detail.is_trash
+    output["language"] = (extra.get("tranConfig") or {}).get("language")
+    output["used_template"] = extra.get("used_template") or (extra.get("aiContentHeader") or {}).get(
+        "used_template"
+    )
+    return output
 
 
 def _slice_transcript(transcript: str, offset: int, max_chars: int | None) -> tuple[str, bool]:
