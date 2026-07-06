@@ -62,7 +62,7 @@ include = ["plaud_tools*"]
 plaud_tools = ["py.typed"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pyinstaller>=6", "build>=1.0", "mypy>=1.10"]
+dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy>=1.10"]
 tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4", "psutil>=5.9"]
 
 [tool.pytest.ini_options]
@@ -102,6 +102,19 @@ ignore = [
 [tool.ruff.lint.isort]
 # Keep isort consistent with the existing "from __future__ import annotations" style.
 force-sort-within-sections = false
+
+# ---------------------------------------------------------------------------
+# coverage.py — Wave 5 / §5.5
+# Not wired into default `pytest -q` (would slow every local run); CI's
+# coverage job invokes `pytest --cov` explicitly and uploads the report as a
+# non-gating artifact (no --cov-fail-under; a coverage drop does not fail CI).
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["plaud_tools"]
+
+[tool.coverage.report]
+skip_covered = false
+show_missing = true
 
 # ---------------------------------------------------------------------------
 # mypy — Wave 1 / B2

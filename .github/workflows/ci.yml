@@ -84,6 +84,24 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      # Coverage is informational only (§5.5): no --cov-fail-under, so a drop
+      # never fails CI. Runs on a single leg to avoid 9x redundant reports;
+      # ubuntu-latest/3.12 is arbitrary but stable so the artifact name below
+      # never collides across re-runs of the same matrix.
+      - name: Coverage report (non-gating)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: pytest -q --cov=plaud_tools --cov-report=term-missing --cov-report=html
+        continue-on-error: true
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14
+          if-no-files-found: warn
+
   # PS 5.1 parse gate — both shipped updater regressions (v0.3.4, v0.4.1)
   # were Windows PowerShell 5.1 execution failures that a PowerShell-Core-only
   # check would not have caught.  `windows-latest` ships Windows PowerShell
