@@ -3,7 +3,7 @@
 Coverage:
 - parse_isoish: bare date, full datetime, Z-suffix, end_of_day flag, invalid input
 - filter_recordings: date range, query/text match, folder_id, unfiled=True,
-  unfiled/folder_id="" equivalence, combined filters, sort order, empty list
+  combined filters, sort order, empty list
 - summarize_recording: shape and field values for a representative Recording
 """
 
@@ -214,7 +214,7 @@ class TestFilterRecordings:
         )
         assert result == []
 
-    # --- unfiled / folder_id="" equivalence (audit callout) ---
+    # --- unfiled (single convention post Wave 5 / §7.8) ---
 
     def test_unfiled_true_returns_items_without_any_folder(self):
         items = self._make_items()
@@ -224,21 +224,19 @@ class TestFilterRecordings:
         ids = {item.id for item in result}
         assert ids == {"b", "d"}  # a=folder1, c=folder2; b and d have []
 
-    def test_folder_id_empty_string_returns_items_without_any_folder(self):
-        # mcp.py convention: folder_id="" means "no folder assigned"
+    def test_bare_folder_id_empty_string_no_longer_special_cased(self):
+        """folder_id="" without unfiled=True is just a (non-matching) folder id.
+
+        Before Wave 5's §7.8 consolidation, filter_recordings treated
+        folder_id="" as an alternate "unfiled" sentinel — a second convention
+        alongside unfiled=True. mcp.py was the only caller that ever passed
+        folder_id="" and now translates it to unfiled=True itself before
+        calling here (see mcp.py's browse_recordings), so filter_recordings
+        only needs the one convention.
+        """
         items = self._make_items()
         result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id="")
-        ids = {item.id for item in result}
-        assert ids == {"b", "d"}
-
-    def test_unfiled_and_folder_id_empty_are_equivalent(self):
-        # Core audit requirement: both conventions must produce identical results.
-        items = self._make_items()
-        via_unfiled = filter_recordings(
-            items, since_ms=None, until_ms=None, query=None, folder_id=None, unfiled=True
-        )
-        via_empty_str = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id="")
-        assert [item.id for item in via_unfiled] == [item.id for item in via_empty_str]
+        assert result == []
 
     def test_unfiled_true_takes_priority_over_nonblank_folder_id(self):
         # When unfiled=True, folder_id (non-empty) should be ignored — unfiled wins.

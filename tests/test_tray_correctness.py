@@ -233,48 +233,32 @@ def test_test_connection_timeout_constant_is_fifteen():
 
 
 def test_mcp_upload_recording_catches_ffmpeg_runtime_error(tmp_path, monkeypatch):
-    """upload_recording must convert RuntimeError from transcode_to_mp3 to an MCP error."""
+    """upload_recording must convert a RuntimeError from ffmpeg to an MCP error.
+
+    The MCP handler delegates transcoding to
+    ``transcode.upload_with_transcode``, which shells out via
+    ``transcode_to_mp3_path`` -- patch that (the real production call site,
+    not the file's own get_file_type/transcode split) so this pins actual
+    behaviour rather than a hand-rolled reimplementation of the handler.
+    """
     from plaud_tools.mcp import build_handlers
 
-    mp3_file = tmp_path / "audio.mp3"
-    mp3_file.write_bytes(b"fake mp3")
+    # .wav needs transcoding (unlike .mp3, which is uploaded natively).
+    wav_file = tmp_path / "audio.wav"
+    wav_file.write_bytes(b"fake wav")
 
-    # Patch get_file_type to say this file needs transcoding (so transcode_to_mp3 is called).
     import plaud_tools.transcode as transcode_module
 
     monkeypatch.setattr(
         transcode_module,
-        "get_file_type",
-        lambda path: ("MP3", True),
+        "transcode_to_mp3_path",
+        lambda src, dest, **kw: (_ for _ in ()).throw(RuntimeError("ffmpeg not found")),
     )
-    monkeypatch.setattr(
-        transcode_module,
-        "transcode_to_mp3",
-        lambda data, suffix: (_ for _ in ()).throw(RuntimeError("ffmpeg not found")),
-    )
-
-    # Patch the mcp module's import of transcode to use the monkeypatched version.
-
-    def patched_inner_upload(client):
-        from plaud_tools import transcode as t
-
-        path = mp3_file
-        file_type, needs_transcode = t.get_file_type(path)
-        raw_bytes = path.read_bytes()
-        try:
-            t.transcode_to_mp3(raw_bytes, path.suffix)
-        except RuntimeError as exc:
-            from plaud_tools.mcp import _json_result
-
-            return _json_result({"error": str(exc)}, is_error=True)
 
     client_mock = MagicMock()
     handlers = build_handlers(lambda: client_mock)
 
-    # More direct: test _call does NOT catch it, and upload_recording handler does.
-    # We already tested _call above; here just verify the handler returns isError.
-    result = handlers["upload_recording"](str(mp3_file))
-    # The file exists but transcode_to_mp3 is monkeypatched to raise RuntimeError.
+    result = handlers["upload_recording"](str(wav_file))
     assert result.get("isError") is True
     payload = json.loads(result["content"][0]["text"])
     assert "ffmpeg" in payload["error"]

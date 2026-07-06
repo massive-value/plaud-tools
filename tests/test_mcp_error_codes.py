@@ -475,42 +475,21 @@ class TestDiagnoseSessionState:
 
 
 class TestTraySessionExpiredToast:
-    """Verify that the tray event poll loop calls _show_session_expired_toast."""
+    """Verify that the tray event poll loop calls _show_session_expired_toast.
 
-    def test_show_session_expired_toast_winrt_path(self, monkeypatch):
-        """If winrt is importable, CreateToastNotifier is used.
+    Wave 5 (2026-07-06 audit, §7.4) deleted the in-process winrt toast path —
+    it was always dead in the shipped bundle (no winrt in the frozen build) —
+    so every toast now goes through the PowerShell path unconditionally.
+    """
 
-        After the module-level winrt detection refactor, tests patch the cached
-        winrt names on the toasts module directly.
-        """
-        from plaud_tools.tray import toasts
-
-        mock_notifier = MagicMock()
-        mock_manager = MagicMock()
-        mock_manager.create_toast_notifier.return_value = mock_notifier
-        mock_xml_doc_cls = MagicMock(return_value=MagicMock())
-        mock_toast_cls = MagicMock(return_value=MagicMock())
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", True)
-        monkeypatch.setattr(toasts, "_WINRT_TNM", mock_manager)
-        monkeypatch.setattr(toasts, "_WINRT_TN", mock_toast_cls)
-        monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
-
-        toasts._show_session_expired_toast()
-
-        mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
-        mock_notifier.show.assert_called_once()
-
-    def test_show_session_expired_toast_powershell_fallback(self, monkeypatch):
-        """Without winrt, a hidden PowerShell process is spawned."""
+    def test_show_session_expired_toast_spawns_powershell(self, monkeypatch):
+        """A hidden PowerShell process is spawned to show the toast."""
         import sys
 
         if sys.platform != "win32":
             pytest.skip("PowerShell fallback is Windows-only")
 
         from plaud_tools.tray import toasts
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         spawned: list[tuple] = []
 
@@ -532,8 +511,6 @@ class TestTraySessionExpiredToast:
             pytest.skip("PowerShell fallback is Windows-only")
 
         from plaud_tools.tray import toasts
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         def boom(*a, **kw):
             raise OSError("no powershell")

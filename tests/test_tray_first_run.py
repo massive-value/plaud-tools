@@ -13,41 +13,19 @@ from unittest.mock import MagicMock
 
 
 class TestShowInstallToast:
-    """Unit tests for _show_install_toast() — the sentinel-driven toast helper."""
+    """Unit tests for _show_install_toast() — the sentinel-driven toast helper.
 
-    def test_winrt_path_called_when_available(self, monkeypatch):
-        """If winrt is importable, CreateToastNotifier is used and we return early.
+    Wave 5 (2026-07-06 audit, §7.4) deleted the in-process winrt toast path —
+    it was always dead in the shipped bundle (no winrt in the frozen build) —
+    so every toast now goes through the PowerShell path unconditionally.
+    """
 
-        After the module-level winrt detection refactor, tests patch the cached
-        winrt names on the toasts module directly rather than mucking with
-        sys.modules — more honest, and immune to import-order surprises.
-        """
-        from plaud_tools.tray import toasts
-
-        mock_notifier = MagicMock()
-        mock_manager = MagicMock()
-        mock_manager.create_toast_notifier.return_value = mock_notifier
-        mock_xml_doc_cls = MagicMock(return_value=MagicMock())
-        mock_toast_cls = MagicMock(return_value=MagicMock())
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", True)
-        monkeypatch.setattr(toasts, "_WINRT_TNM", mock_manager)
-        monkeypatch.setattr(toasts, "_WINRT_TN", mock_toast_cls)
-        monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
-
-        toasts._show_install_toast()
-
-        mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
-        mock_notifier.show.assert_called_once()
-
-    def test_powershell_fallback_when_winrt_unavailable(self, monkeypatch):
-        """Without winrt, a hidden PowerShell process is spawned."""
+    def test_powershell_toast_spawned(self, monkeypatch):
+        """A hidden PowerShell process is spawned to show the toast."""
         if sys.platform != "win32":
-            return  # PowerShell fallback is Windows-only; skip on other platforms
+            return  # PowerShell path is Windows-only; skip on other platforms
 
         from plaud_tools.tray import toasts
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         spawned: list[tuple] = []
 
@@ -67,8 +45,6 @@ class TestShowInstallToast:
             return
 
         from plaud_tools.tray import toasts
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         def boom(*a, **kw):
             raise OSError("no powershell")

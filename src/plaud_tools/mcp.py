@@ -12,7 +12,7 @@ from typing import Any
 from .appdata import events_path as _events_path
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, parse_isoish, summarize_recording
+from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, folder_dict, parse_isoish, summarize_recording
 from .session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
@@ -304,6 +304,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             # (is_trash=1) instead of active recordings (is_trash=0) — a real
             # gap the MCP had no way to discover trashed IDs to restore.
             is_trash_flag = 1 if trash else 0
+            # The MCP `folder` parameter documents "" as the unfiled sentinel
+            # (see server.py's tool schema); translate it into query.py's
+            # single internal `unfiled` convention here rather than relying
+            # on filter_recordings' own folder_id=="" special case (§7.8).
+            is_unfiled = folder == ""
             if has_filters:
                 page, has_more = collect_filtered_paged(
                     lambda skip, page_size: client.list_recordings(
@@ -319,7 +324,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     since_ms=since_ms,
                     until_ms=until_ms,
                     query=query,
-                    folder_id=folder,
+                    folder_id=None if is_unfiled else folder,
+                    unfiled=is_unfiled,
                     after=after,
                     limit=limit,
                 )
@@ -670,9 +676,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     def list_folders() -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             tags = client.list_file_tags()
-            return _json_result(
-                [{"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon} for tag in tags]
-            )
+            return _json_result([folder_dict(tag) for tag in tags])
 
         return _call(get_client, inner)
 
@@ -765,7 +769,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     {
                         "ok": True,
                         "action": "create",
-                        "folder": {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon},
+                        "folder": folder_dict(tag),
                     }
                 )
 
@@ -787,7 +791,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     {
                         "ok": True,
                         "action": "edit",
-                        "folder": {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon},
+                        "folder": folder_dict(tag),
                     }
                 )
 

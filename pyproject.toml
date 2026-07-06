@@ -123,8 +123,8 @@ python_version = "3.11"
 # type-checked under this setting.  Revisit (e.g. add a second `--platform linux`
 # mypy pass) when the Mac/Linux bundles land in D2.
 platform = "win32"
-# ignore_missing_imports covers optional extras (pystray, comtypes, winrt,
-# sv_ttk) and stubs that do not exist on the CI runner's platform.
+# ignore_missing_imports covers optional extras (pystray, comtypes, sv_ttk)
+# and stubs that do not exist on the CI runner's platform.
 ignore_missing_imports = true
 # warn_unused_ignores catches stale # type: ignore comments after future fixes.
 warn_unused_ignores = false

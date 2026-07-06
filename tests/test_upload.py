@@ -10,7 +10,7 @@ import pytest
 from plaud_tools.client import _CHUNK_SIZE, PlaudClient
 from plaud_tools.errors import PlaudApiError
 from plaud_tools.session import FileSessionStore, PlaudSession, SessionManager
-from plaud_tools.transcode import get_file_type, transcode_to_mp3, transcode_to_mp3_path
+from plaud_tools.transcode import get_file_type, transcode_to_mp3_path
 from plaud_tools.transport import HttpResponse
 
 # ---------------------------------------------------------------------------
@@ -609,59 +609,13 @@ def test_wait_for_transcription_times_out(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_transcode_invokes_ffmpeg_correctly(tmp_path, monkeypatch):
-
-    fake_ff = tmp_path / "ffmpeg"
-    fake_ff.write_bytes(b"")
-    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
-
-    expected_output = b"fake mp3 bytes"
-    captured = {}
-
-    def fake_run(cmd, capture_output):
-        captured["cmd"] = cmd
-        Path(cmd[-1]).write_bytes(expected_output)
-        return type("R", (), {"returncode": 0, "stderr": b""})()
-
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
-    result = transcode_to_mp3(b"raw audio", ".m4a")
-
-    assert result == expected_output
-    assert str(fake_ff) == captured["cmd"][0]
-    assert "-codec:a" in captured["cmd"]
-    assert "libmp3lame" in captured["cmd"]
-    assert "-map_metadata" in captured["cmd"]
-    cmd_str = " ".join(captured["cmd"])
-    assert ".m4a" in cmd_str  # temp input file has source extension
-    assert cmd_str.endswith(".mp3")  # temp output is mp3
-
-
-def test_transcode_raises_on_ffmpeg_failure(tmp_path, monkeypatch):
-
-    fake_ff = tmp_path / "ffmpeg"
-    fake_ff.write_bytes(b"")
-    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
-
-    def fake_run(cmd, capture_output):
-        return type(
-            "R",
-            (),
-            {
-                "returncode": 1,
-                "stderr": b"error: Invalid data found when processing input",
-            },
-        )()
-
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
-    with pytest.raises(RuntimeError, match="ffmpeg exited 1"):
-        transcode_to_mp3(b"bad audio", ".m4a")
-
-
-def test_transcode_raises_when_ffmpeg_not_found(monkeypatch):
+def test_transcode_raises_when_ffmpeg_not_found(tmp_path, monkeypatch):
     monkeypatch.delenv("FFMPEG_BIN", raising=False)
     monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: None)
+    src = tmp_path / "audio.wav"
+    src.write_bytes(b"x")
     with pytest.raises(RuntimeError, match="Could not locate ffmpeg"):
-        transcode_to_mp3(b"x", ".wav")
+        transcode_to_mp3_path(src, tmp_path / "out.mp3")
 
 
 def test_find_ffmpeg_frozen_sibling(tmp_path, monkeypatch):
@@ -720,28 +674,6 @@ def test_find_ffmpeg_frozen_no_bundle_falls_back_to_path(tmp_path, monkeypatch):
     monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: "/usr/bin/ffmpeg")
 
     assert _find_ffmpeg() == "/usr/bin/ffmpeg"
-
-
-def test_transcode_cleans_up_temp_files(tmp_path, monkeypatch):
-    """Temp input and output files must be removed even when ffmpeg fails."""
-
-    fake_ff = tmp_path / "ffmpeg"
-    fake_ff.write_bytes(b"")
-    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
-    monkeypatch.setattr("plaud_tools.transcode.tempfile.gettempdir", lambda: str(tmp_path))
-
-    def fake_run(cmd, capture_output):
-        return type("R", (), {"returncode": 1, "stderr": b"fail"})()
-
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
-
-    before = set(tmp_path.iterdir())
-    with pytest.raises(RuntimeError):
-        transcode_to_mp3(b"x", ".m4a")
-
-    after = set(tmp_path.iterdir())
-    new_files = after - before - {fake_ff}
-    assert new_files == set(), f"Temp files not cleaned up: {new_files}"
 
 
 # ---------------------------------------------------------------------------
