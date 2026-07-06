@@ -14,7 +14,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 # conftest.py already stubs pystray / PIL so this import succeeds on CI.
-from plaud_tools.tray_app import UninstallDialog
+from plaud_tools.tray.uninstaller import UninstallDialog
 
 # ---------------------------------------------------------------------------
 # Pure-predicate tests — no display required

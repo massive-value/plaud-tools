@@ -20,7 +20,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from plaud_tools.session import TRAY_EXPIRY_WARNING_DAYS
-from plaud_tools.tray_app import TrayApp
+from plaud_tools.tray.app import TrayApp
 
 
 def _make_app(days: int | None, signed_in: bool = True) -> TrayApp:

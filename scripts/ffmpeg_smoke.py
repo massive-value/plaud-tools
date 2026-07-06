@@ -15,7 +15,9 @@ Exit code 0 = pass, non-zero = fail.
 from __future__ import annotations
 
 import sys
+import tempfile
 import wave
+from pathlib import Path
 
 
 def _generate_silence_wav() -> bytes:
@@ -63,18 +65,24 @@ def main() -> int:
     wav_bytes = _generate_silence_wav()
     print(f"Generated WAV: {len(wav_bytes)} bytes")
 
-    # 2. Transcode to MP3 via the real ffmpeg subprocess.
-    from plaud_tools.transcode import transcode_to_mp3
+    # 2. Transcode to MP3 via the real ffmpeg subprocess (path-in/path-out —
+    #    the same function production upload flows use).
+    from plaud_tools.transcode import transcode_to_mp3_path
 
+    tmp_dir = Path(tempfile.mkdtemp(prefix="plaud-ffmpeg-smoke-"))
+    src_path = tmp_dir / "silence.wav"
+    dest_path = tmp_dir / "silence.mp3"
+    src_path.write_bytes(wav_bytes)
     try:
-        mp3_bytes = transcode_to_mp3(wav_bytes, ".wav")
+        transcode_to_mp3_path(src_path, dest_path)
     except RuntimeError as exc:
-        print(f"FAIL: transcode_to_mp3 raised RuntimeError: {exc}", file=sys.stderr)
+        print(f"FAIL: transcode_to_mp3_path raised RuntimeError: {exc}", file=sys.stderr)
         return 1
 
     # 3. Assert non-empty output.
+    mp3_bytes = dest_path.read_bytes()
     if not mp3_bytes:
-        print("FAIL: transcode_to_mp3 returned empty bytes", file=sys.stderr)
+        print("FAIL: transcode_to_mp3_path produced an empty file", file=sys.stderr)
         return 1
     print(f"MP3 output: {len(mp3_bytes)} bytes")
 

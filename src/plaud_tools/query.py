@@ -44,10 +44,9 @@ def filter_recordings(
       ``elif folder_id is not None`` branch so that ``unfiled=True`` took
       priority over any ``folder_id``.
     - mcp.py had no ``unfiled`` kwarg and instead used ``folder_id=""`` as the
-      sentinel for "no folder assigned".
-    - The canonical version supports both conventions: ``unfiled=True`` OR
-      ``folder_id=""`` each trigger the "no filetag" filter so that neither
-      caller needs to change its existing calling pattern.
+      sentinel for "no folder assigned"; it now translates its own
+      ``folder=""`` MCP parameter into ``unfiled=True`` before calling here
+      (Wave 5, §7.8), so ``unfiled=True`` is the single internal convention.
     - mcp.py did NOT sort; cli.py sorted descending by start_time.  The sort is
       included here so callers get consistent ordering regardless of surface.
     """
@@ -59,7 +58,7 @@ def filter_recordings(
     if query:
         query_lower = query.lower()
         filtered = [item for item in filtered if query_lower in item.filename.lower()]
-    if unfiled or folder_id == "":
+    if unfiled:
         filtered = [item for item in filtered if not item.filetag_id_list]
     elif folder_id is not None:
         filtered = [item for item in filtered if folder_id in item.filetag_id_list]
@@ -121,14 +120,48 @@ def collect_filtered_paged(
     return page, has_more
 
 
+def folder_dict(tag: Any) -> dict[str, Any]:
+    """Produce the standard {id, name, color, icon} dict for a FileTag.
+
+    Built independently four times across cli.py (_handle_folders,
+    _handle_folder) and mcp.py (list_folders, mutate_folder create/edit)
+    before Wave 5's §7.5 consolidation.
+    """
+    return {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
+
+
+def detail_summary_dict(detail: Any) -> dict[str, Any]:
+    """Produce the base summary dict for a RecordingDetail (a "show" view).
+
+    Shared core of cli.py's ``_handle_show`` (inline dict) and mcp.py's
+    ``_summarize_detail`` (near-identical near-twins before Wave 5's §7.5
+    consolidation) -- id/title/date/duration_minutes/folder_id/is_trans/
+    is_summary/headline. mcp.py's ``get_recording`` handler adds its own
+    extra fields (is_trash, language, used_template) on top of this base;
+    cli.py's ``show`` command uses the base as-is to keep its existing
+    output shape unchanged.
+    """
+    extra = detail.extra_data or {}
+    return {
+        "id": detail.id,
+        "title": detail.filename,
+        "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
+        "duration_minutes": round(detail.duration / 60000),
+        "folder_id": detail.folder_id,
+        "is_trans": detail.is_trans,
+        "is_summary": detail.is_summary,
+        "headline": (extra.get("aiContentHeader") or {}).get("headline"),
+    }
+
+
 def summarize_recording(item: Any) -> dict[str, Any]:
     """Produce the standard summary dict for a Recording.
 
     Reconciliation note: mcp.py defined ``_summarize_recording`` locally;
     client.py exported an identical ``summarize_recording_for_cli`` used by
     cli.py.  Both functions produced the same output; this is the single
-    canonical version.  ``summarize_recording_for_cli`` in client.py is kept
-    as a thin re-export for any external callers that may depend on it.
+    canonical version.  The client.py re-export had no remaining callers and
+    was deleted in Wave 5 (2026-07-06 audit, §7.4).
     """
     return {
         "id": item.id,

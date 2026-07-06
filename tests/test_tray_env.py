@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# We import from tray_app directly; conftest.py already stubs pystray / PIL.
+# We import from plaud_tools.tray.setup directly; conftest.py already stubs
+# pystray / PIL.
 # ---------------------------------------------------------------------------
-from plaud_tools.tray_app import (
-    APP_NAME,
+from plaud_tools.tray.setup import (
     EnvStatus,
     _check_cli_path,
     _check_ps_completions,
@@ -143,13 +143,13 @@ class TestVerifyEnvDevMode:
 
     def test_verify_env_dev_mode_all_ok(self):
         # sys.frozen is not set in test mode → _cli_dir() returns None
-        with patch("plaud_tools.tray_app._autostart_enabled", return_value=True):
+        with patch("plaud_tools.tray.setup._autostart_enabled", return_value=True):
             status = _verify_env()
         assert status.path_ok is True
         assert status.completions_ok is True
 
     def test_verify_env_dev_mode_autostart_missing(self):
-        with patch("plaud_tools.tray_app._autostart_enabled", return_value=False):
+        with patch("plaud_tools.tray.setup._autostart_enabled", return_value=False):
             status = _verify_env()
         assert status.autostart_ok is False
         assert not status.all_ok
@@ -169,8 +169,8 @@ class TestAutostartOptOut:
 
     def test_verify_env_treats_opt_out_marker_as_autostart_ok(self):
         with (
-            patch("plaud_tools.tray_app._autostart_enabled", return_value=False),
-            patch("plaud_tools.tray_app._autostart_opted_out", return_value=True),
+            patch("plaud_tools.tray.setup._autostart_enabled", return_value=False),
+            patch("plaud_tools.tray.setup._autostart_opted_out", return_value=True),
         ):
             status = _verify_env()
         assert status.autostart_ok is True, (
@@ -181,8 +181,8 @@ class TestAutostartOptOut:
 
     def test_verify_env_missing_when_neither_enabled_nor_opted_out(self):
         with (
-            patch("plaud_tools.tray_app._autostart_enabled", return_value=False),
-            patch("plaud_tools.tray_app._autostart_opted_out", return_value=False),
+            patch("plaud_tools.tray.setup._autostart_enabled", return_value=False),
+            patch("plaud_tools.tray.setup._autostart_opted_out", return_value=False),
         ):
             status = _verify_env()
         assert status.autostart_ok is False
@@ -363,7 +363,7 @@ class TestCheckCliPath:
 
         cli = tmp_path / "cli"
         # Fake frozen mode so _cli_dir returns a path
-        with patch("plaud_tools.tray_app._cli_dir", return_value=cli):
+        with patch("plaud_tools.tray.setup._cli_dir", return_value=cli):
             with patch("winreg.OpenKey") as mock_key:
                 mock_key.return_value.__enter__ = lambda s: s
                 mock_key.return_value.__exit__ = MagicMock(return_value=False)
@@ -375,7 +375,7 @@ class TestCheckCliPath:
         import winreg
 
         cli = tmp_path / "cli"
-        with patch("plaud_tools.tray_app._cli_dir", return_value=cli):
+        with patch("plaud_tools.tray.setup._cli_dir", return_value=cli):
             with patch("winreg.OpenKey") as mock_key:
                 mock_key.return_value.__enter__ = lambda s: s
                 mock_key.return_value.__exit__ = MagicMock(return_value=False)
@@ -401,14 +401,14 @@ class TestCheckPsCompletions:
         profile = tmp_path / "profile.ps1"
         profile.write_text(source_line + "\n", encoding="utf-8")
 
-        with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            with patch("plaud_tools.tray_app.Path") as mock_path_cls:  # noqa: F841
+        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
+            with patch("plaud_tools.tray.setup.Path") as mock_path_cls:  # noqa: F841
                 # We only need to patch the home() call inside _check_ps_completions
                 # to point at our tmp tree; easier to patch at a higher level.
                 pass
         # Direct test: patch the profile list
-        with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            import plaud_tools.tray_app as ta
+        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
+            import plaud_tools.tray.setup as ta
 
             orig = ta._check_ps_completions  # noqa: F841  # captured for reference only
             # Monkey-patch profiles list via Path.home()
@@ -426,8 +426,8 @@ class TestCheckPsCompletions:
         ps1 = tmp_path / "completions" / "plaud-tools.ps1"
         ps1.parent.mkdir()
         ps1.write_text("# completions\n")
-        with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            import plaud_tools.tray_app as ta
+        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
+            import plaud_tools.tray.setup as ta
 
             with patch.object(Path, "home", return_value=tmp_path / "home"):
                 docs = tmp_path / "home" / "Documents"
@@ -450,82 +450,27 @@ class TestCheckPsCompletions:
 
 
 class TestInstallPs1:
-    """Verify install.ps1 contains the expected idempotency patterns."""
+    """Verify install.ps1 contains the expected idempotency patterns.
+
+    PATH / PowerShell-completions / autostart setup used to be install.ps1's
+    own step (a second-language reimplementation of tray/setup.py's
+    _setup_cli_path / _setup_ps_completions / _set_autostart). Wave 5
+    (2026-07-06 audit, §7.6) deleted that step once Wave 3 proved the tray's
+    own auto-heal pass (_run_verify_env / _auto_repair_env) reliably restores
+    all three on every launch, including the first one -- so those patterns
+    (and the tests that pinned them here) no longer exist in install.ps1.
+    """
 
     @pytest.fixture()
     def script_text(self) -> str:
         ps1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
         return ps1.read_text(encoding="utf-8")
 
-    def test_sets_up_path(self, script_text: str):
-        assert "HKCU:\\Environment" in script_text
-        assert "$cliDir" in script_text
-
-    def test_sets_up_completions(self, script_text: str):
-        assert "plaud-tools.ps1" in script_text
-        assert "$sourceLine" in script_text
-
-    def test_sets_up_autostart(self, script_text: str):
-        assert "CurrentVersion\\Run" in script_text or "CurrentVersion/Run" in script_text
-        assert "PlaudTools" in script_text
-
-    def test_autostart_name_matches_python_app_name(self, script_text: str):
-        """install.ps1's HKCU Run value name MUST match _AUTOSTART_NAME (= APP_NAME).
-
-        Regression for the install.ps1 / Python mismatch where the script wrote
-        'PlaudTools' (no space) but the tray read 'Plaud Tools' (with space),
-        making _autostart_enabled() always report missing autostart after a
-        fresh install.  We pin the script to use APP_NAME verbatim in a quoted
-        form so a future rename in Python is caught by CI.
-        """
-        # The script should reference the exact APP_NAME literal in a quoted
-        # form (single- or double-quoted) on the Set-ItemProperty / -Name path.
-        single_quoted = f"'{APP_NAME}'"
-        double_quoted = f'"{APP_NAME}"'
-        assert single_quoted in script_text or double_quoted in script_text, (
-            f"install.ps1 must reference the Python APP_NAME ({APP_NAME!r}) as a "
-            f"quoted literal for the HKCU\\...\\Run value name.  Found neither "
-            f"{single_quoted!r} nor {double_quoted!r} in the script."
-        )
-
-    def test_autostart_cleans_up_legacy_name(self, script_text: str):
-        """install.ps1 must remove the stale 'PlaudTools' (no-space) Run value.
-
-        Older revisions of the script wrote the wrong name; users who upgraded
-        through the buggy version have two Run entries.  The script must strip
-        the legacy one on every run so they get auto-cleaned the next time
-        they reinstall.
-        """
-        assert "Remove-ItemProperty" in script_text
-        # And the target of that Remove-ItemProperty must be the legacy name.
-        assert "'PlaudTools'" in script_text
-
-    def test_regex_anchored_to_install_dir(self, script_text: str):
-        """The stale-sourcing pattern in install.ps1 must reference $completionsDir / $escapedDir."""
-        assert "$escapedDir" in script_text or "$stalePattern" in script_text
-
-    def test_five_steps(self, script_text: str):
-        """install.ps1 now has 5 steps, not 4."""
-        assert "[5/5]" in script_text
-        assert "[4/5]" in script_text
-        assert "[1/5]" in script_text
-
-    def test_idempotent_path(self, script_text: str):
-        """PATH update guard: only add if not already present."""
-        assert "$parts -notcontains $cliDir" in script_text or "notcontains" in script_text
-
-    def test_idempotent_autostart(self, script_text: str):
-        """Autostart should only be set if value differs."""
-        assert "$existing -ne $exePathQuoted" in script_text
-
-    def test_autostart_value_is_quoted(self, script_text: str):
-        """The Run-key value must be double-quoted (#160): an unquoted spaced
-        install path (a Windows username with a space under %LOCALAPPDATA%)
-        is split into multiple arguments by the Run-key launcher, and an
-        unquoted spaced path also opens a PATH-hijacking window.
-        """
-        assert "$exePathQuoted = '\"' + $exePath + '\"'" in script_text
-        assert "-Value $exePathQuoted" in script_text
+    def test_four_steps(self, script_text: str):
+        """install.ps1 has 4 steps since §7.6 removed the environment-setup step."""
+        assert "[4/4]" in script_text
+        assert "[3/4]" in script_text
+        assert "[1/4]" in script_text
 
     def test_installed_newer_than_latest_branch_exists(self, script_text: str):
         """#159: an installed>latest branch must exist and must NOT fall
@@ -544,96 +489,15 @@ class TestInstallPs1:
 
 
 # ---------------------------------------------------------------------------
-# install.ps1 — behavioural tests via pwsh (PATH array bug, #141)
-# ---------------------------------------------------------------------------
-
-_PATH_APPEND_PS1 = r"""
-param([string]$CurrentPath, [string]$CliDir)
-$ErrorActionPreference = 'Stop'
-$parts = @(($CurrentPath -split ';') | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim() })
-if ($parts -notcontains $CliDir) {
-    $newPath = ($parts + $CliDir) -join ';'
-} else {
-    $newPath = $CurrentPath
-}
-Write-Host $newPath
-"""
-
-
-def _run_path_append(tmp_path: Path, current_path: str, cli_dir: str) -> str:
-    harness = tmp_path / "path_append.ps1"
-    harness.write_text(_PATH_APPEND_PS1, encoding="utf-8")
-    result = subprocess.run(
-        [
-            "pwsh",
-            "-NoProfile",
-            "-NonInteractive",
-            "-File",
-            str(harness),
-            "-CurrentPath",
-            current_path,
-            "-CliDir",
-            cli_dir,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
-    return result.stdout.strip()
-
-
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
-class TestInstallPs1PathArrayFix:
-    """Reproduces #141: a single-entry PATH must not be corrupted.
-
-    Before the ``@(...)`` fix, piping a single-item result through
-    Where-Object/ForEach-Object collapsed it from an array to a bare string;
-    ``$parts + $cliDir`` on two bare strings is then plain string
-    concatenation (no separator), and the following ``-join`` operated on
-    that single merged string -- silently destroying the sole existing PATH
-    entry (observed against the real WindowsApps alias on a fresh profile).
-    """
-
-    def test_single_entry_path_appends_with_semicolon(self, tmp_path: Path):
-        result = _run_path_append(
-            tmp_path,
-            current_path=r"C:\Users\test\AppData\Local\Microsoft\WindowsApps",
-            cli_dir=r"C:\Users\test\AppData\Local\Programs\PlaudTools\cli",
-        )
-        assert result == (
-            r"C:\Users\test\AppData\Local\Microsoft\WindowsApps;"
-            r"C:\Users\test\AppData\Local\Programs\PlaudTools\cli"
-        )
-        # Regression witness: the corrupted output has no semicolon separator
-        # and instead runs the two paths together.
-        assert "WindowsAppsC:" not in result
-
-    def test_empty_path_appends_without_leading_semicolon(self, tmp_path: Path):
-        result = _run_path_append(tmp_path, current_path="", cli_dir=r"C:\Programs\PlaudTools\cli")
-        assert result == r"C:\Programs\PlaudTools\cli"
-
-    def test_multi_entry_path_still_appends_correctly(self, tmp_path: Path):
-        """Multi-entry PATH was never broken (Where-Object preserves array-ness
-        for >1 item) -- pinned here as a no-regression witness."""
-        result = _run_path_append(
-            tmp_path,
-            current_path=r"C:\A;C:\B",
-            cli_dir=r"C:\Programs\PlaudTools\cli",
-        )
-        assert result == r"C:\A;C:\B;C:\Programs\PlaudTools\cli"
-
-    def test_already_present_is_not_duplicated(self, tmp_path: Path):
-        result = _run_path_append(
-            tmp_path,
-            current_path=r"C:\Programs\PlaudTools\cli",
-            cli_dir=r"C:\Programs\PlaudTools\cli",
-        )
-        assert result == r"C:\Programs\PlaudTools\cli"
-
-
-# ---------------------------------------------------------------------------
 # install.ps1 — behavioural test for the installed>latest branch (#159)
+#
+# The #141 PATH-array-append regression test (TestInstallPs1PathArrayFix) that
+# used to live here was deleted in Wave 5 (2026-07-06 audit, §7.6) along with
+# the install.ps1 PATH-setup step it pinned -- see TestInstallPs1's docstring
+# above.  Python's tray.setup._setup_cli_path (covered by test_tray_env.py's
+# own TestSetupCliPath in test_lifecycle_helpers.py) is now the only PATH
+# writer, so the PowerShell-specific array-context bug class no longer has
+# any production code to regress.
 # ---------------------------------------------------------------------------
 
 _VERSION_BRANCH_PS1 = r"""

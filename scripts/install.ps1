@@ -136,7 +136,7 @@ try {
     $zipTemp    = Join-Path $env:TEMP 'PlaudTools.zip'
 
     # --- Step 1: resolve the latest release (needed for version checks too) ---
-    Write-Host '[1/5] Fetching latest release info...'
+    Write-Host '[1/4] Fetching latest release info...'
     $release       = Invoke-RestMethod -Uri 'https://api.github.com/repos/massive-value/plaud-tools/releases/latest' -UseBasicParsing
     $asset         = $release.assets | Where-Object { $_.name -eq 'PlaudTools.zip' } | Select-Object -First 1
     $latestVersion = $release.tag_name.TrimStart('v')
@@ -235,7 +235,7 @@ try {
     }
 
     # --- Step 2: download the zip to temp ---
-    Write-Host '[2/5] Downloading...'
+    Write-Host '[2/4] Downloading...'
     Get-FileWithProgress -Uri $asset.browser_download_url -OutFile $zipTemp
     Write-Host '    Download complete.'
 
@@ -278,7 +278,7 @@ try {
     # whether the zip has a top-level PlaudTools\ folder (shape A) or ships
     # files at the root (shape B).
     $extractDir = Get-ZipExtractDestination -ZipPath $zipTemp -InstallDir $installDir
-    Write-Host "[3/5] Extracting to $installDir ..."
+    Write-Host "[3/4] Extracting to $installDir ..."
     if (-not (Test-Path $extractDir)) {
         New-Item -ItemType Directory -Path $extractDir | Out-Null
     }
@@ -286,124 +286,18 @@ try {
     Remove-Item -Path $zipTemp -ErrorAction SilentlyContinue
     Write-Host '    Extraction complete.'
 
-    # --- Step 4: PATH / completions / autostart setup ---
-    Write-Host '[4/5] Configuring environment...'
-
-    # 4a. Add PlaudTools\cli\ to user PATH (idempotent)
-    $cliDir = Join-Path $installDir 'cli'
-    if (Test-Path $cliDir) {
-        try {
-            $regPath = 'HKCU:\Environment'
-            $currentPath = (Get-ItemProperty -Path $regPath -Name Path -ErrorAction SilentlyContinue).Path
-            if (-not $currentPath) { $currentPath = '' }
-            # @(...) forces array context (#141): when $currentPath has exactly
-            # one entry (e.g. a fresh profile whose PATH is just the
-            # WindowsApps alias), piping through Where-Object/ForEach-Object
-            # collapses a single-item pipeline result to a bare string. `+` on
-            # two bare strings below is then STRING CONCATENATION (no
-            # separator), and the subsequent `-join` operates on that one
-            # already-merged string -- corrupting the sole existing PATH entry
-            # instead of appending to it. @() pins $parts as a real array
-            # (including the 0-element case) so `+` appends and `-join`
-            # inserts the semicolon as intended.
-            $parts = @(($currentPath -split ';') | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim() })
-            if ($parts -notcontains $cliDir) {
-                $newPath = ($parts + $cliDir) -join ';'
-                Set-ItemProperty -Path $regPath -Name Path -Value $newPath -Type ExpandString
-                # Notify open shells that the user environment changed
-                $sig = '[DllImport("user32.dll")]public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
-                $type = Add-Type -MemberDefinition $sig -Name 'NativeMethods' -Namespace 'Win32' -PassThru -ErrorAction SilentlyContinue
-                if ($type) {
-                    $result = [UIntPtr]::Zero
-                    $type::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
-                }
-                Write-Host "    Added $cliDir to user PATH."
-            } else {
-                Write-Host '    PATH already contains cli directory.'
-            }
-        } catch {
-            Write-Warning "    Could not update user PATH: $_"
-        }
-    }
-
-    # 4b. Source plaud-tools.ps1 from PowerShell profiles (idempotent)
-    $completionsDir = Join-Path $installDir 'completions'
-    $ps1File = Join-Path $completionsDir 'plaud-tools.ps1'
-    if (Test-Path $ps1File) {
-        # Regex anchored to the install dir - only our sourcing lines are touched
-        $escapedDir  = [regex]::Escape($completionsDir)
-        $stalePattern = "^\. `"$($escapedDir -replace '\\\\','[/\\\\]')[/\\\\]plaud[^`"]*\.ps1`""
-        $sourceLine  = ". `"$ps1File`""
-        $userDocs    = [Environment]::GetFolderPath('MyDocuments')
-        $profiles    = @(
-            (Join-Path $userDocs 'PowerShell\Microsoft.PowerShell_profile.ps1'),
-            (Join-Path $userDocs 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
-        )
-        foreach ($prof in $profiles) {
-            try {
-                if (Test-Path $prof) {
-                    $content = Get-Content $prof -Raw -Encoding UTF8
-                    if (-not $content) { $content = '' }
-                    # Strip any stale plaud sourcing lines from this install dir
-                    $lines = ($content -split "`n") | Where-Object { $_.Trim() -notmatch $stalePattern }
-                    $content = $lines -join "`n"
-                    if ($content -notlike "*$sourceLine*") {
-                        $content = $content.TrimEnd("`n") + "`n" + $sourceLine + "`n"
-                        Set-Content -Path $prof -Value $content -Encoding UTF8 -NoNewline
-                        Write-Host "    Added completions sourcing to $prof."
-                    } else {
-                        Write-Host "    Completions already sourced in $prof."
-                    }
-                } else {
-                    $null = New-Item -ItemType Directory -Path (Split-Path $prof -Parent) -Force
-                    Set-Content -Path $prof -Value ($sourceLine + "`n") -Encoding UTF8 -NoNewline
-                    Write-Host "    Created $prof with completions sourcing."
-                }
-            } catch {
-                Write-Warning "    Could not update profile $prof`: $_"
-            }
-        }
-    }
-
-    # 4c. Register autostart in HKCU Run key (idempotent)
+    # --- Step 4: launch the tray app ---
     #
-    # The value name MUST match plaud_tools.tray.setup._AUTOSTART_NAME ("Plaud
-    # Tools", with a space) - that is what the tray reads in _autostart_enabled
-    # and writes in _set_autostart.  Earlier revisions of this script wrote
-    # "PlaudTools" (no space); we strip that stale name on every run so users
-    # who upgraded through the buggy version do not end up with two Run keys
-    # firing on login.
-    $runKey       = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    $autostartName = 'Plaud Tools'
-    try {
-        # Remove the stale "PlaudTools" (no-space) value if it was left behind
-        # by a previous buggy install.  Harmless when absent.
-        if ($null -ne (Get-ItemProperty -Path $runKey -Name 'PlaudTools' -ErrorAction SilentlyContinue)) {
-            Remove-ItemProperty -Path $runKey -Name 'PlaudTools' -ErrorAction SilentlyContinue
-            Write-Host '    Removed legacy "PlaudTools" autostart entry (now using "Plaud Tools").'
-        }
-
-        # Quoted so a spaced install path (e.g. a Windows username with a
-        # space under %LOCALAPPDATA%) is not split into multiple arguments by
-        # the Run-key launcher -- also closes a PATH-hijacking window an
-        # unquoted spaced path opens (#160). Must match the quoting
-        # plaud_tools.tray.setup._set_autostart writes on the Python side.
-        $exePathQuoted = '"' + $exePath + '"'
-        $existing = (Get-ItemProperty -Path $runKey -Name $autostartName -ErrorAction SilentlyContinue).$autostartName
-        if ($existing -ne $exePathQuoted) {
-            Set-ItemProperty -Path $runKey -Name $autostartName -Value $exePathQuoted -Type String
-            Write-Host "    Registered '$autostartName' for autostart."
-        } else {
-            Write-Host '    Autostart already registered.'
-        }
-    } catch {
-        Write-Warning "    Could not register autostart: $_"
-    }
-
-    Write-Host '    Environment configuration complete.'
-
-    # --- Step 5: launch the tray app ---
-    Write-Host '[5/5] Launching PlaudTools...'
+    # PATH / PowerShell-completions / autostart setup used to happen here as
+    # its own step (a second-language reimplementation of
+    # plaud_tools.tray.setup._setup_cli_path / _setup_ps_completions /
+    # _set_autostart). Wave 3 hardened the tray's own auto-heal pass
+    # (_run_verify_env / _auto_repair_env in tray/background.py), which now
+    # runs unconditionally on every launch -- including this first one -- and
+    # silently restores anything missing. Deleting the installer step (Wave 5,
+    # 2026-07-06 audit, S7.6) removes the duplicate PowerShell implementation
+    # entirely; first launch below configures everything instead.
+    Write-Host '[4/4] Launching PlaudTools...'
     if (-not (Test-Path $exePath)) {
         throw "PlaudTools.exe not found at '$exePath' after extraction. The zip layout may have changed."
     }

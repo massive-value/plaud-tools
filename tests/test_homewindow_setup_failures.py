@@ -8,14 +8,15 @@ Covers:
 - Idempotency: calling repair on a healthy install does nothing observable.
 
 All tests are display-free (no real Tk window) — widgets are MagicMocks.
-``conftest.py`` already stubs pystray / PIL so tray_app is importable in CI.
+``conftest.py`` already stubs pystray / PIL so the tray modules are importable in CI.
 """
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from plaud_tools.tray_app import EnvStatus, HomeWindow
+from plaud_tools.tray.setup import EnvStatus
+from plaud_tools.tray.windows.home import HomeWindow
 
 # ---------------------------------------------------------------------------
 # Helpers

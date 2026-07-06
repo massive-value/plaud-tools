@@ -19,9 +19,11 @@ Token budget
 ------------
 ``test_tool_descriptions_within_token_budget`` uses a coarse word-count proxy
 (splitting the compact JSON serialization on whitespace) to guard against
-description inflation.  The budget is 1.1x the post-#30 baseline (387 words).
-If ``tiktoken`` is ever added as a dev dependency the proxy can be swapped for
-an exact cl100k_base count without changing the budget constant.
+description inflation.  The budget (``_TOKEN_BUDGET_WORDS``, see its own
+comment for the baseline it was set against) leaves roughly 10% headroom over
+the actual current count.  If ``tiktoken`` is ever added as a dev dependency
+the proxy can be swapped for an exact cl100k_base count without changing the
+budget constant.
 """
 
 from __future__ import annotations
@@ -36,8 +38,11 @@ from plaud_tools.server import _TOOLS
 
 _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 
-# 1.1 * 442 word baseline (12 tools, incl. edit_summary + mutate_folder added in
-# v0.6.0); update intentionally if descriptions change
+# 1.1 * 442 word baseline set at v0.6.0's 12-tool surface. Wave 4A (v0.7.0)
+# merged rename_speaker + correct_transcript into edit_transcript(action=...),
+# dropping the count to 11 tools and the actual live count to ~439 words --
+# comfortably under this budget, so it was left as-is rather than re-tightened.
+# Update intentionally (and re-baseline the comment) if descriptions change.
 _TOKEN_BUDGET_WORDS = 486
 
 
@@ -100,9 +105,10 @@ def test_tool_descriptions_match_golden(tmp_path: Path) -> None:
 def test_tool_descriptions_within_token_budget() -> None:
     """Total word count of the compact JSON serialization must stay under budget.
 
-    This is a coarse proxy for token cost.  The budget is set at 1.1x the
-    post-#30 baseline (387 words → budget 425).  Exceeding it means descriptions
-    have been inflated and should be trimmed before merging.
+    This is a coarse proxy for token cost.  See ``_TOKEN_BUDGET_WORDS``'s own
+    comment for what baseline the current 486-word budget was set against.
+    Exceeding it means descriptions have been inflated and should be trimmed
+    before merging.
     """
     compact = json.dumps(
         [

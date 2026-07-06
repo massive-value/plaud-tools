@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -68,55 +67,6 @@ def _find_ffmpeg() -> str:
         "Could not locate ffmpeg. Install ffmpeg and ensure it is on PATH, "
         "or set the FFMPEG_BIN environment variable."
     )
-
-
-def transcode_to_mp3(source_bytes: bytes, source_ext: str, *, quality: int = 4) -> bytes:
-    """Transcode audio bytes to MP3 using ffmpeg, returning the result as bytes.
-
-    source_ext is the source file extension (with or without a leading dot).
-    It is used as the temp-file suffix so ffmpeg picks the right demuxer.
-    Seekable containers like m4a/mp4 need a real file on disk, not stdin.
-
-    quality is the VBR -qscale:a value: 0 = best (~245 kbps), 4 = speech
-    default (~165 kbps), 9 = worst (~65 kbps).
-
-    For large files prefer ``transcode_to_mp3_path`` which avoids loading
-    the transcoded MP3 back into memory.
-    """
-    ff = _find_ffmpeg()
-    ext = source_ext if source_ext.startswith(".") else f".{source_ext}"
-    tmp_dir = tempfile.gettempdir()
-    in_path = os.path.join(tmp_dir, f"plaud-transcode-{uuid.uuid4()}{ext}")
-    out_path = os.path.join(tmp_dir, f"plaud-transcode-{uuid.uuid4()}.mp3")
-    try:
-        Path(in_path).write_bytes(source_bytes)
-        result = subprocess.run(
-            [
-                ff,
-                "-y",
-                "-i",
-                in_path,
-                "-codec:a",
-                "libmp3lame",
-                "-qscale:a",
-                str(quality),
-                "-map_metadata",
-                "-1",
-                out_path,
-            ],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            tail = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
-            msg = " ".join(tail[-3:])[:500]
-            raise RuntimeError(f"ffmpeg exited {result.returncode}: {msg}")
-        return Path(out_path).read_bytes()
-    finally:
-        for p in (in_path, out_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
 
 
 def transcode_to_mp3_path(source_path: Path, dest_path: Path, *, quality: int = 4) -> None:

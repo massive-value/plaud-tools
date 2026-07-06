@@ -5,7 +5,6 @@ import getpass
 import json
 import sys
 from collections.abc import Callable, Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +12,14 @@ from . import __version__
 from .auth import PlaudAuth
 from .client import PlaudClient, PlaudRecordingQuery
 from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import BROWSE_PAGE_SIZE, collect_filtered_paged, parse_isoish, summarize_recording
+from .query import (
+    BROWSE_PAGE_SIZE,
+    collect_filtered_paged,
+    detail_summary_dict,
+    folder_dict,
+    parse_isoish,
+    summarize_recording,
+)
 from .session import PlaudSession, SessionManager, SessionStore
 
 
@@ -457,22 +463,9 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
 
 def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
     detail = client.get_recording(args.recording_id, include_transcript=True)
-    extra = detail.extra_data or {}
-    headline = (extra.get("aiContentHeader") or {}).get("headline")
-    return json.dumps(
-        {
-            "id": detail.id,
-            "title": detail.filename,
-            "date": datetime.fromtimestamp(detail.start_time / 1000).isoformat()[:16],
-            "duration_minutes": round(detail.duration / 60000),
-            "folder_id": detail.folder_id,
-            "is_trans": detail.is_trans,
-            "is_summary": detail.is_summary,
-            "speakers": detail.speakers,
-            "headline": headline,
-        },
-        indent=2,
-    )
+    output = detail_summary_dict(detail)
+    output["speakers"] = detail.speakers
+    return json.dumps(output, indent=2)
 
 
 def _handle_summary(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -495,24 +488,18 @@ def _handle_rename(args: argparse.Namespace, client: PlaudClient) -> str:
 
 def _handle_folders(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
     tags = client.list_file_tags()
-    return json.dumps(
-        [{"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon} for tag in tags],
-        indent=2,
-    )
+    return json.dumps([folder_dict(tag) for tag in tags], indent=2)
 
 
 def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
-    def _shape(tag: Any) -> dict[str, Any]:
-        return {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
-
     if args.folder_command == "create":
         tag = client.create_folder(args.name, color=args.color, icon=args.icon)
-        return json.dumps({"ok": True, "action": "create", "folder": _shape(tag)}, indent=2)
+        return json.dumps({"ok": True, "action": "create", "folder": folder_dict(tag)}, indent=2)
     if args.folder_command == "edit":
         if args.name is None and args.color is None and args.icon is None:
             raise ValueError("folder edit requires at least one of --name, --color, --icon")
         tag = client.update_folder(args.folder_id, name=args.name, color=args.color, icon=args.icon)
-        return json.dumps({"ok": True, "action": "edit", "folder": _shape(tag)}, indent=2)
+        return json.dumps({"ok": True, "action": "edit", "folder": folder_dict(tag)}, indent=2)
     if args.folder_command == "delete":
         if not args.yes:
             raise ValueError(
@@ -759,16 +746,6 @@ def _handle_ping(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa:
 # ---------------------------------------------------------------------------
 # Dispatch registries
 # ---------------------------------------------------------------------------
-
-# Commands that do not require a PlaudClient.
-# Signature: (args, store, auth) -> str  (auth is only used by login)
-_PRE_CLIENT_HANDLERS: dict[str, Callable[..., str]] = {
-    "login": _handle_login,
-    "refresh": _handle_refresh,
-    "session": _handle_session,
-    "update": _handle_update,
-    "doctor": _handle_doctor,
-}
 
 # Commands that DO require a PlaudClient.
 # Signature: (args, client) -> str

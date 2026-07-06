@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
+import pytest
+
 from plaud_tools.cli import main, run_cli
+from plaud_tools.client import PlaudClient
 from plaud_tools.mcp import build_handlers
 from plaud_tools.models import FileTag, Recording, RecordingDetail
 from plaud_tools.session import SessionStore
@@ -105,8 +109,12 @@ class StubClient:
     def fetch_transcript(self, recording_id):
         return "full transcript text"
 
-    def rename_recording(self, recording_id, new_name):
-        self.rename_call = (recording_id, new_name)
+    def rename_recording(self, recording_id, filename):
+        # Parameter named to match PlaudClient.rename_recording's real
+        # signature (Wave 5, 2026-07-06 audit, S5.4) -- it used to be
+        # `new_name`, a harmless-in-practice drift (both call sites pass it
+        # positionally) that the signature-sync test below now catches.
+        self.rename_call = (recording_id, filename)
 
     def list_file_tags(self):
         return [FileTag(id="tag1", name="Work", color="#191919", icon="e627")]
@@ -1737,3 +1745,63 @@ def test_main_transcript_non_ascii_survives_cp1252_stdout(monkeypatch, tmp_path)
 
     assert code == 0
     assert buf.getvalue().decode("utf-8") == "café — 日本語 — résumé\n"
+
+
+# ---------------------------------------------------------------------------
+# StubClient / PlaudClient signature sync (Wave 5, §5.4)
+#
+# StubClient hand-rolls the PlaudClient facade for every test in this file.
+# It has drifted before (rename_recording's second parameter was called
+# `new_name` here vs `filename` on the real client -- harmless today because
+# both call sites pass it positionally, but a future keyword-argument test or
+# refactor could silently start exercising a code path the real client
+# doesn't support). These tests assert every StubClient method exists on
+# PlaudClient with a compatible signature so that drift fails CI instead of
+# rotting silently.
+# ---------------------------------------------------------------------------
+
+
+def _stub_client_public_methods() -> list[str]:
+    return sorted(
+        name
+        for name, value in vars(StubClient).items()
+        if not name.startswith("_") and inspect.isfunction(value)
+    )
+
+
+@pytest.mark.parametrize("method_name", _stub_client_public_methods())
+def test_stub_client_method_exists_on_plaud_client(method_name: str):
+    assert hasattr(PlaudClient, method_name), (
+        f"StubClient.{method_name} has no PlaudClient.{method_name} counterpart -- "
+        f"the test double no longer matches the real client facade."
+    )
+
+
+@pytest.mark.parametrize("method_name", _stub_client_public_methods())
+def test_stub_client_signature_is_compatible_with_plaud_client(method_name: str):
+    """Every named parameter StubClient declares must exist on PlaudClient too.
+
+    Comparison is by parameter *name* only (not order, kind, or defaults) --
+    StubClient methods are deliberately looser than the real client (e.g.
+    fewer defaults) but must not accept a name PlaudClient doesn't recognise,
+    since any test written against that name would pass here while silently
+    not matching what production code can actually call. A stub parameter
+    named ``kwargs``/``args`` (a ``**kwargs``/``*args`` catch-all) is exempt --
+    it is intentionally more permissive than the real signature.
+    """
+    real = getattr(PlaudClient, method_name, None)
+    if real is None:
+        pytest.skip(f"no PlaudClient.{method_name} (covered by the existence test above)")
+
+    stub_sig = inspect.signature(getattr(StubClient, method_name))
+    real_params = set(inspect.signature(real).parameters) - {"self"}
+
+    catch_all = {p.name for p in stub_sig.parameters.values() if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD)}
+    stub_params = (set(stub_sig.parameters) - {"self"}) - catch_all
+
+    extra = stub_params - real_params
+    assert not extra, (
+        f"StubClient.{method_name} declares parameter(s) {sorted(extra)} that "
+        f"PlaudClient.{method_name}{inspect.signature(real)} does not accept -- "
+        f"the stub has drifted from the real client."
+    )

@@ -13,7 +13,6 @@ from urllib.parse import urlencode
 
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .models import BASE_URLS, BROWSER_USER_AGENT, FileTag, Recording, RecordingDetail, TaskStatus
-from .query import summarize_recording as _summarize_recording_impl
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
 
@@ -1075,8 +1074,3 @@ class PlaudClient:
             content = segment.get("content") or ""
             parts.append(f"{speaker}: {content}" if speaker else content)
         return "\n\n".join(parts)
-
-
-def summarize_recording_for_cli(recording: Recording) -> dict[str, Any]:
-    """Re-export shim — canonical implementation lives in query.summarize_recording."""
-    return _summarize_recording_impl(recording)

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from plaud_tools.tray_app import HomeWindow
+from plaud_tools.tray.windows.home import HomeWindow
 
 
 def _make_home_window(session_label: str) -> HomeWindow:

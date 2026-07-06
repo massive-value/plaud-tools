@@ -331,6 +331,21 @@ class TestBrowseRecordingsMcpHandler:
         assert "items" in payload
         assert "next_after" in payload
 
+    def test_folder_empty_string_returns_only_unfiled_recordings(self):
+        """folder="" (the documented MCP "unfiled" sentinel, server.py's schema)
+        must still filter to recordings with no folder tag, now via mcp.py
+        translating it into query.py's single unfiled=True convention (§7.8)
+        instead of filter_recordings' own folder_id=="" special case.
+        """
+        filed = make_rec("filed", filename="Meeting A", start_time=1000, filetag_id_list=["f1"])
+        unfiled = make_rec("unfiled", filename="Meeting B", start_time=2000, filetag_id_list=[])
+        client, _ = self._make_client([[filed, unfiled]])
+        handlers = self._build_handlers(client)
+        result = handlers["browse_recordings"](limit=10, folder="")
+        payload = json.loads(result["content"][0]["text"])
+        ids = {item["id"] for item in payload["items"]}
+        assert ids == {"unfiled"}
+
     def test_has_more_false_when_fewer_than_limit_matches(self):
         recs = [make_rec(f"r{i}", filename="Meeting", start_time=i * 1000) for i in range(2)]
         client, _ = self._make_client([recs])

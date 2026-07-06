@@ -273,6 +273,12 @@ def test_setup_mcp_logging_writes_startup_banner(monkeypatch, tmp_path):
     finally:
         for h in root.handlers[:]:
             root.removeHandler(h)
+            if h not in saved_handlers:
+                # Close the file handler _setup_mcp_logging() opened -- left
+                # open, it's only closed at GC time, which fires a
+                # ResourceWarning attributed to whatever unrelated test
+                # happens to be running when the GC runs.
+                h.close()
         for h in saved_handlers:
             root.addHandler(h)
         root.setLevel(saved_level)
@@ -310,6 +316,8 @@ def test_setup_mcp_logging_attaches_even_when_root_already_has_handlers(monkeypa
     finally:
         for h in root.handlers[:]:
             root.removeHandler(h)
+            if h not in saved_handlers:
+                h.close()
         for h in saved_handlers:
             root.addHandler(h)
         root.setLevel(saved_level)

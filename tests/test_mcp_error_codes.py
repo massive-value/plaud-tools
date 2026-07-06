@@ -475,44 +475,21 @@ class TestDiagnoseSessionState:
 
 
 class TestTraySessionExpiredToast:
-    """Verify that the tray event poll loop calls _show_session_expired_toast."""
+    """Verify that the tray event poll loop calls _show_session_expired_toast.
 
-    def test_show_session_expired_toast_winrt_path(self, monkeypatch):
-        """If winrt is importable, CreateToastNotifier is used.
+    Wave 5 (2026-07-06 audit, §7.4) deleted the in-process winrt toast path —
+    it was always dead in the shipped bundle (no winrt in the frozen build) —
+    so every toast now goes through the PowerShell path unconditionally.
+    """
 
-        After the module-level winrt detection refactor, tests patch the cached
-        winrt names on the toasts module directly.
-        """
-        from plaud_tools.tray import toasts
-
-        mock_notifier = MagicMock()
-        mock_manager = MagicMock()
-        mock_manager.create_toast_notifier.return_value = mock_notifier
-        mock_xml_doc_cls = MagicMock(return_value=MagicMock())
-        mock_toast_cls = MagicMock(return_value=MagicMock())
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", True)
-        monkeypatch.setattr(toasts, "_WINRT_TNM", mock_manager)
-        monkeypatch.setattr(toasts, "_WINRT_TN", mock_toast_cls)
-        monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
-
-        import plaud_tools.tray_app as tray_app
-
-        tray_app._show_session_expired_toast()
-
-        mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
-        mock_notifier.show.assert_called_once()
-
-    def test_show_session_expired_toast_powershell_fallback(self, monkeypatch):
-        """Without winrt, a hidden PowerShell process is spawned."""
+    def test_show_session_expired_toast_spawns_powershell(self, monkeypatch):
+        """A hidden PowerShell process is spawned to show the toast."""
         import sys
 
         if sys.platform != "win32":
             pytest.skip("PowerShell fallback is Windows-only")
 
         from plaud_tools.tray import toasts
-
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
 
         spawned: list[tuple] = []
 
@@ -522,9 +499,7 @@ class TestTraySessionExpiredToast:
 
         monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", fake_popen)
 
-        import plaud_tools.tray_app as tray_app
-
-        tray_app._show_session_expired_toast()
+        toasts._show_session_expired_toast()
 
         assert any("powershell" in a[0].lower() for a in spawned)
 
@@ -537,17 +512,13 @@ class TestTraySessionExpiredToast:
 
         from plaud_tools.tray import toasts
 
-        monkeypatch.setattr(toasts, "_WINRT_AVAILABLE", False)
-
         def boom(*a, **kw):
             raise OSError("no powershell")
 
         monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", boom)
 
-        import plaud_tools.tray_app as tray_app
-
         # Should not raise
-        tray_app._show_session_expired_toast()
+        toasts._show_session_expired_toast()
 
     def test_event_poll_loop_calls_toast_on_session_expired(self, tmp_path, monkeypatch):
         """_event_poll_loop reads events.jsonl, fires toast, and opens LoginWindow."""
@@ -561,15 +532,16 @@ class TestTraySessionExpiredToast:
             encoding="utf-8",
         )
 
-        import plaud_tools.tray_app as tray_app
+        import plaud_tools.tray.background as background
+        from plaud_tools.tray.app import TrayApp
 
         toast_calls: list[int] = []
         login_calls: list[int] = []
 
-        monkeypatch.setattr(tray_app, "_events_path", lambda: events_file)
-        monkeypatch.setattr(tray_app, "_show_session_expired_toast", lambda: toast_calls.append(1))
+        monkeypatch.setattr(background, "_events_path", lambda: events_file)
+        monkeypatch.setattr(background, "_show_session_expired_toast", lambda: toast_calls.append(1))
 
-        app = tray_app.TrayApp.__new__(tray_app.TrayApp)
+        app = TrayApp.__new__(TrayApp)
         app._root = MagicMock()
         # Capture the call to _open_login via root.after
         app._root.after = MagicMock(side_effect=lambda delay, fn: login_calls.append(1))
@@ -583,7 +555,7 @@ class TestTraySessionExpiredToast:
             if sleep_count[0] > 1:
                 raise SystemExit("stop loop")
 
-        monkeypatch.setattr(tray_app.time, "sleep", fast_sleep)
+        monkeypatch.setattr(background.time, "sleep", fast_sleep)
 
         with pytest.raises(SystemExit):
             app._event_poll_loop()

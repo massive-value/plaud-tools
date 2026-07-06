@@ -1,25 +1,21 @@
 """TrayApp — the main system tray application and ``main`` entry point.
 
-This module also defines the two toast helpers (first-run and session-expired).
-The helpers and the TrayApp methods look up several globals (``_events_path``,
-``_show_session_expired_toast``, ``PlaudClient``, ``subprocess``, ``tempfile``,
-etc.) so the test suite can monkeypatch them via ``plaud_tools.tray_app``.
-
-To preserve that contract the shim module ``plaud_tools.tray_app`` overrides
-``__setattr__`` and propagates assignments back into the submodules.  See
-``plaud_tools.tray_app`` for the propagation logic.
+Tests monkeypatch this module's own globals directly (e.g.
+``monkeypatch.setattr("plaud_tools.tray.app.PlaudClient", ...)``) rather than
+through a compatibility shim — the ``plaud_tools.tray_app`` shim module was
+deleted in Wave 5 (2026-07-06 audit, §7.2): it existed solely to propagate
+``setattr`` calls into this and other ``tray.*`` submodules for the test
+suite, and had no production caller of its own.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess  # noqa: F401  (re-exported via the tray_app shim)
 import sys
 import tempfile
 import threading
 import tkinter as tk
-import urllib.request  # noqa: F401  (kept for monkeypatch parity with old tray_app)
 from collections.abc import Callable
 from pathlib import Path
 
