@@ -24,6 +24,15 @@ Prompts for your Plaud password and stores the resulting access token in your OS
 
 If you signed up for Plaud with Google, use "Forgot password" on [web.plaud.ai](https://web.plaud.ai) first to set a password — `plaud-tools login` is password-based.
 
+### `refresh`
+
+```
+plaud-tools refresh
+plaud-tools refresh --email you@example.com --region us
+```
+
+Re-authenticates using the email/region already saved in the stored session (no need to retype them) and prompts for the password. This is the designated way to unbrick an expired or soon-to-expire session — Plaud has no refresh-token grant, so it's still a full credential re-auth under the hood, just without retyping email/region. `--email` and `--region` override the stored values if given.
+
 **Avoid `--password` in scripts.** Passing `--password` on the command line exposes it via process listings (`ps`, Task Manager) and shell history. Omit the flag to be prompted securely instead. For scripting and CI, use the safer alternatives described below.
 
 ### `session show`
@@ -102,7 +111,7 @@ plaud-tools search "henderson account"
 plaud-tools search "tax" --since 2025-01-01
 ```
 
-Like `list --query` but with `query` as a positional argument and ranking optimized for finding a specific recording.
+Shorthand for `list --query QUERY` — identical filtering, just with `query` as a positional argument instead of a flag. No separate ranking.
 
 ### `show`
 
@@ -119,7 +128,7 @@ plaud-tools detail <recording-id>
 plaud-tools detail <recording-id> --include-transcript
 ```
 
-Lower-level dump of the recording's API fields. Use `--include-transcript` to fetch the linked transcript content.
+Lower-level dump of the recording's API fields. Always includes the AI summary (`null` if none exists yet). Use `--include-transcript` to also fetch the linked transcript content.
 
 ### `transcript`
 
@@ -148,6 +157,18 @@ plaud-tools folders
 ```
 
 Lists all folders with `id`, `name`, `color`, `icon`.
+
+### `folder create` / `folder edit` / `folder delete`
+
+```
+plaud-tools folder create "Client Calls"
+plaud-tools folder create "Client Calls" --color "#4c8eff" --icon e627
+plaud-tools folder edit <folder-id> --name "Renamed folder"
+plaud-tools folder edit <folder-id> --color "#4c8eff"
+plaud-tools folder delete <folder-id> --yes
+```
+
+`create` requires a name; `--color` (hex, e.g. `#4c8eff`) and `--icon` (glyph codepoint, e.g. `e627`) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `delete` is irreversible for the folder itself — recordings inside are kept but become unfiled — and requires `--yes`.
 
 ### `move`
 
@@ -192,15 +213,33 @@ replaced and segments changed. Speaker labels are not affected; use
 `rename-speaker` for those. Pass an empty `<replace>` to delete the matched
 text.
 
+### `correct-summary`
+
+```
+plaud-tools correct-summary <recording-id> "<find>" "<replace>"
+```
+
+Literal (case-sensitive) find-and-replace on a recording's AI summary text. Requires a summary to already exist. Pass an empty `<replace>` to delete the matched text.
+
+### `set-summary`
+
+```
+plaud-tools set-summary <recording-id> --content "New summary markdown"
+plaud-tools set-summary <recording-id> --content-file summary.md
+```
+
+Overwrites a recording's AI summary entirely with new markdown. `--content` and `--content-file` are mutually exclusive; exactly one is required.
+
 ### `trash` / `restore` / `delete`
 
 ```
 plaud-tools trash <recording-id>
+plaud-tools trash --list
 plaud-tools restore <recording-id>
 plaud-tools delete <recording-id> --yes
 ```
 
-`trash` is reversible (moves to the trash folder). `delete` is permanent and requires `--yes`. Running `trash` with no argument lists trashed recordings.
+`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash; a bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
 
 ### `trash-move` / `trash-restore`
 
@@ -235,9 +274,12 @@ By default the command waits for transcription and summary to finish. `--detach`
 ```
 plaud-tools transcribe <recording-id>
 plaud-tools transcribe <recording-id> --template <template-type>
+plaud-tools transcribe <recording-id> --language en --diarization --llm <llm-id>
+plaud-tools transcribe <recording-id> --wait transcript
+plaud-tools transcribe <recording-id> --wait summary
 ```
 
-Triggers transcription + summarization on an existing recording.
+Triggers transcription + summarization on an existing recording. `--language` is a language code (default: auto-detect); `--diarization`/`--no-diarization` enables/disables speaker diarization (default: Plaud's default); `--llm` selects the summarization model (default: auto). `--wait` controls how long to block before returning: `none` (default — accept and return immediately), `transcript`, or `summary`.
 
 ### `status`
 

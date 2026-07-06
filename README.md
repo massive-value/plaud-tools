@@ -97,7 +97,7 @@ Full instructions for both: [docs/INSTALL-METHODS.md](docs/INSTALL-METHODS.md).
 
 ## Signing in again later
 
-Your Plaud sign-in is good for about a year. When it's a month from expiring, the tray menu shows **Session expires in N days — sign in again** — click it and re-enter your password. If you wait until it fully expires, your AI assistant will tell you it can't reach Plaud; open the tray menu, click **Sign in…**, and you're back.
+Your Plaud sign-in is good for about 30 days. Starting 5 days before it expires, the tray menu shows **Session expires in N days — sign in again** — click it and re-enter your password. If you wait until it fully expires, your AI assistant will tell you it can't reach Plaud; open the tray menu, click **Sign in…**, and you're back.
 
 ## Troubleshooting
 

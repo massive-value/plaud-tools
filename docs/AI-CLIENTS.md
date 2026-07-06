@@ -62,7 +62,7 @@ In Claude, paste:
 List the MCP tools you have available for Plaud.
 ```
 
-You should see ten tools: `browse_recordings`, `get_recording`, `mutate_recording`, `delete_recording`, `rename_speaker`, `correct_transcript`, `upload_recording`, `process_recording`, `list_folders`, and `merge_recordings`.
+You should see eleven tools: `browse_recordings`, `get_recording`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `merge_recordings`, `edit_summary`, and `mutate_folder`.
 
 ---
 
@@ -158,13 +158,14 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 
 | Tool | What it does |
 |---|---|
-| `browse_recordings` | List and filter recordings by date, title, folder |
-| `get_recording` | Full detail for one recording; opt in to transcript / speakers / summary |
-| `mutate_recording` | Rename, trash, restore, or move a recording to a folder |
+| `browse_recordings` | List and filter recordings by date, title, folder, or trash status |
+| `get_recording` | Full detail for one recording; opt in to transcript (with offset/length slicing) / speakers / summary |
+| `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`) |
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
-| `rename_speaker` | Rename a speaker label across all transcript segments (matches the displayed name or the original `Speaker N`) |
-| `correct_transcript` | Fix transcript text by literal find-and-replace across all segments |
+| `edit_transcript` | Rename a speaker label (`action="rename_speaker"`, matches the displayed name or the original `Speaker N`) or literal find-and-replace on transcript text (`action="correct"`, supports `dry_run`) |
 | `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
-| `process_recording` | Trigger transcription + summarization; block until both complete |
+| `process_recording` | Trigger transcription + summarization; `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
 | `list_folders` | List Plaud folders (id, name, color, icon) |
 | `merge_recordings` | Merge two or more recordings into a single new recording |
+| `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary |
+| `mutate_folder` | Create, edit, or delete a folder |

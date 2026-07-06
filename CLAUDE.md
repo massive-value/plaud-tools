@@ -7,8 +7,8 @@ This file provides working guidance for agents operating in this repository.
 The Python rewrite is complete. The active code lives under `src/plaud_tools/`:
 
 - `client.py` — Plaud domain/client layer (auth, session, all API flows)
-- `cli.py` — Python CLI (`plaud` / `pld` entry points)
-- `mcp.py` — MCP handler functions (12 tools: browse, get, mutate, delete, rename_speaker, correct_transcript, edit_summary, upload, process, list_folders, mutate_folder, merge_recordings)
+- `cli.py` — Python CLI (`plaud-tools` / `pt` entry points)
+- `mcp.py` — MCP handler functions (11 tools: browse_recordings, get_recording, mutate_recording, delete_recording, edit_transcript, upload_recording, process_recording, list_folders, merge_recordings, edit_summary, mutate_folder)
 - `server.py` — Python MCP server process (`plaud-mcp` entry point, stdio transport)
 
 The TypeScript prior art has been removed. The `har-captures/` directory contains live Plaud API traffic captures (gitignored — local reference only).
