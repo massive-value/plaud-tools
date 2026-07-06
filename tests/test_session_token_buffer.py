@@ -1,4 +1,4 @@
-"""Boundary + regression tests for TOKEN_REFRESH_BUFFER_SECONDS (#138).
+"""Boundary + regression tests for TOKEN_REFRESH_BUFFER_SECONDS (#138, Wave 4c).
 
 The v0.5.0 incident ("bricked MCP") happened because the buffer used to
 reject a freshly-issued 30-day token outright. That was fixed by shrinking
@@ -6,6 +6,13 @@ the buffer to 3 days, but the fix itself had never been pinned with a
 boundary test — every existing test used tokens that were either far in the
 future (~200-300 days) or already expired, so a regression at the boundary
 would not have been caught.
+
+Wave 4c shrank the buffer further, from 3 days to 24 hours (§6.1 of the
+2026-07-06 audit): a 3-day refuse buffer combined with a 3-day tray warning
+threshold meant the warning and the breakage started on the *same* day. The
+boundary tests below were updated (not weakened) to pin the new 24h value,
+and a new class pins the invariant that the tray warning threshold must
+strictly precede the refuse buffer.
 
 This file also pins #138 itself: the SessionManager cache's mtime probe made
 the expiry re-check unreachable on the hot path, so a long-lived MCP process
@@ -26,6 +33,7 @@ import pytest
 from plaud_tools.errors import PlaudSessionExpiredError
 from plaud_tools.session import (
     TOKEN_REFRESH_BUFFER_SECONDS,
+    TRAY_EXPIRY_WARNING_DAYS,
     FileSessionStore,
     PlaudSession,
     SessionManager,
@@ -42,25 +50,36 @@ def _make_jwt(seconds_from_now: float) -> str:
 
 
 _DAY = 86_400
+_HOUR = 3_600
 
 
 class TestTokenRefreshBufferBoundary:
-    """require() must reject tokens inside the buffer and accept tokens outside it."""
+    """require() must reject tokens inside the buffer and accept tokens outside it.
 
-    def test_two_days_out_is_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    Wave 4c shrank TOKEN_REFRESH_BUFFER_SECONDS from 3 days to 24 hours
+    (§6.1): a 3-day refuse buffer left ~10% of every 30-day token's life
+    unusable with no warning runway. These boundary cases were updated (not
+    removed) to pin the new 24h value at the same precision as before.
+    """
+
+    def test_twenty_three_hours_out_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Just inside the 24h buffer: must be refused."""
         monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
         session_path = tmp_path / "session.json"
-        jwt = _make_jwt(2 * _DAY)
+        jwt = _make_jwt(23 * _HOUR)
         FileSessionStore(session_path).save(PlaudSession(access_token=jwt, region="us"))
 
         manager = SessionManager(FileSessionStore(session_path))
         with pytest.raises(PlaudSessionExpiredError):
             manager.require()
 
-    def test_four_days_out_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_twenty_five_hours_out_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Just outside the 24h buffer: must be accepted."""
         monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
         session_path = tmp_path / "session.json"
-        jwt = _make_jwt(4 * _DAY)
+        jwt = _make_jwt(25 * _HOUR)
         FileSessionStore(session_path).save(PlaudSession(access_token=jwt, region="us"))
 
         manager = SessionManager(FileSessionStore(session_path))
@@ -80,10 +99,23 @@ class TestTokenRefreshBufferBoundary:
         session = manager.require()
         assert session.access_token == jwt
 
-    def test_buffer_constant_is_three_days(self) -> None:
+    def test_buffer_constant_is_24_hours(self) -> None:
         """Trip-wire: if someone changes the buffer, the boundary tests above
         must be revisited — pin the current value explicitly."""
-        assert TOKEN_REFRESH_BUFFER_SECONDS == 3 * _DAY
+        assert TOKEN_REFRESH_BUFFER_SECONDS == 24 * 60 * 60
+
+
+class TestExpiryWarningPrecedesRefusal:
+    """Pin §6.1's core UX invariant: the tray warning must fire days before
+    require() would ever refuse the same token, so users get real runway to
+    react instead of the warning and the breakage landing on the same day."""
+
+    def test_warning_threshold_strictly_exceeds_refresh_buffer(self) -> None:
+        assert TRAY_EXPIRY_WARNING_DAYS * _DAY > TOKEN_REFRESH_BUFFER_SECONDS
+
+    def test_warning_threshold_is_five_days(self) -> None:
+        """Trip-wire pin for the chosen value, alongside the 24h buffer above."""
+        assert TRAY_EXPIRY_WARNING_DAYS == 5
 
 
 class TestCachedSessionCrossesBuffer:
