@@ -7,14 +7,25 @@ import pytest
 from plaud_tools.client import PlaudClient, PlaudRecordingQuery
 from plaud_tools.session import FileSessionStore, SessionManager
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("PLAUD_LIVE_READS") != "1",
-    reason="Set PLAUD_LIVE_READS=1 to run live Plaud read tests against sacrificial data.",
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        os.getenv("PLAUD_LIVE_READS") != "1",
+        reason="Set PLAUD_LIVE_READS=1 to run live Plaud read tests against sacrificial data.",
+    ),
+]
 
 
 def test_live_list_and_detail_roundtrip():
-    store = FileSessionStore(os.getenv("PLAUD_SESSION_PATH"))
+    session_path = os.getenv("PLAUD_SESSION_PATH")
+    if not session_path:
+        # Skip cleanly rather than falling through to FileSessionStore(None),
+        # which resolves to appdata.session_path() -- redirected to an empty
+        # tmp_path by conftest.py's autouse fixture in every test process, so
+        # the failure mode without this guard is a confusing
+        # PlaudSessionExpiredError, not an actionable skip reason (§5.6).
+        pytest.skip("Set PLAUD_SESSION_PATH to run this test.")
+    store = FileSessionStore(session_path)
     client = PlaudClient(SessionManager(store))
 
     recordings = client.list_recordings(

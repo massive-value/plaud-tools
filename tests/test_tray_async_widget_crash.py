@@ -97,34 +97,66 @@ class TestRefreshUpdateBtnAfterClose:
 
 
 class TestTkErrorReporterSignature:
-    def test_class_level_handler_accepts_self(self):
+    def _run_setup_logging(self, tmp_path, monkeypatch):
+        """Call _setup_logging() with a clean root logger, closing the
+        RotatingFileHandler it opens once the test is done.
+
+        Only ``tk.Tk.report_callback_exception`` (assigned unconditionally)
+        is under test here, not the logging handler itself -- but
+        ``logging.basicConfig()`` is a no-op once the root logger already has
+        handlers, so without clearing them first the freshly-opened log file
+        would never get attached anywhere the test could close it, leaking
+        an open file handle until the next GC pass (surfacing as a
+        ResourceWarning attributed to whatever test happens to run then).
+        """
+        import logging
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        root = logging.getLogger()
+        original_handlers = root.handlers[:]
+        root.handlers.clear()
+
+        from plaud_tools.tray.setup import _setup_logging
+
+        _setup_logging()
+
+        def _cleanup():
+            for h in logging.getLogger().handlers:
+                h.close()
+            logging.getLogger().handlers = original_handlers
+
+        return _cleanup
+
+    def test_class_level_handler_accepts_self(self, tmp_path, monkeypatch):
         """report_callback_exception is set on tk.Tk, so it's called bound.
 
         It must accept (self, exc, val, tb) — exactly the 4 args Tk passes.
         """
         import tkinter as tk
 
-        from plaud_tools.tray.setup import _setup_logging
+        cleanup = self._run_setup_logging(tmp_path, monkeypatch)
+        try:
+            handler = tk.Tk.report_callback_exception
+            params = list(inspect.signature(handler).parameters)
+            assert len(params) == 4, f"expected (self, exc, val, tb), got {params}"
+        finally:
+            cleanup()
 
-        _setup_logging()
-        handler = tk.Tk.report_callback_exception
-        params = list(inspect.signature(handler).parameters)
-        assert len(params) == 4, f"expected (self, exc, val, tb), got {params}"
-
-    def test_handler_invocable_with_four_args(self):
+    def test_handler_invocable_with_four_args(self, tmp_path, monkeypatch):
         """Simulate Tk's bound-method call: handler(self_obj, exc, val, tb)."""
         import tkinter as tk
 
-        from plaud_tools.tray.setup import _setup_logging
-
-        _setup_logging()
-        handler = tk.Tk.report_callback_exception
+        cleanup = self._run_setup_logging(tmp_path, monkeypatch)
         try:
-            raise ValueError("boom")
-        except ValueError:
-            import sys
+            handler = tk.Tk.report_callback_exception
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                import sys
 
-            exc, val, tb = sys.exc_info()
-            # Must not raise TypeError about argument count.  (Pyright reads the
-            # tkinter stub's 3-arg signature, not our reassigned 4-arg handler.)
-            handler(MagicMock(), exc, val, tb)  # type: ignore[call-arg]
+                exc, val, tb = sys.exc_info()
+                # Must not raise TypeError about argument count.  (Pyright reads the
+                # tkinter stub's 3-arg signature, not our reassigned 4-arg handler.)
+                handler(MagicMock(), exc, val, tb)  # type: ignore[call-arg]
+        finally:
+            cleanup()

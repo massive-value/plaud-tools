@@ -67,6 +67,16 @@ tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4", "psutil>=
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: opt-in test that hits the real Plaud API against sacrificial data (gated by PLAUD_LIVE_READS / PLAUD_LIVE_UPLOADS env vars; run `pytest -m live` to select only these, or `pytest -m 'not live'` to skip collecting them at all)",
+]
+# Promote every warning to a hard failure (Wave 5, §5.8) so a new
+# ResourceWarning/DeprecationWarning/etc. fails CI immediately instead of
+# rotting silently in captured output. Fixed the handful of leaked
+# logging.RotatingFileHandler ResourceWarnings this surfaced (tests that call
+# _setup_logging()/_setup_mcp_logging() now close the handlers they open) —
+# no ignores were needed.
+filterwarnings = ["error"]
 
 [tool.ruff]
 # Target the project's minimum supported Python version (3.11–3.13).

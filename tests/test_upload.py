@@ -995,13 +995,12 @@ def test_upload_with_transcode_folder_move_failure_is_partial_success(tmp_path):
 # Opt-in live integration test
 # ---------------------------------------------------------------------------
 
-pytestmark_live = pytest.mark.skipif(
+
+@pytest.mark.live
+@pytest.mark.skipif(
     os.getenv("PLAUD_LIVE_UPLOADS") != "1",
     reason="Set PLAUD_LIVE_UPLOADS=1 to run live upload tests against sacrificial Plaud data.",
 )
-
-
-@pytestmark_live
 def test_live_upload_small_mp3():
     """Upload a small MP3 and confirm a transcript is produced."""
     import plaud_tools.session as session_mod

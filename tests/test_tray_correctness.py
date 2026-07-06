@@ -34,6 +34,12 @@ def test_setup_logging_uses_rotating_file_handler(tmp_path, monkeypatch):
             "Expected RotatingFileHandler but got: " + str(handler_types)
         )
     finally:
+        # Close the RotatingFileHandler _setup_logging() opened before
+        # dropping the reference -- otherwise the underlying file object is
+        # only closed at GC time, which fires a ResourceWarning attributed to
+        # whatever unrelated test happens to be running when the GC runs.
+        for h in logging.getLogger().handlers:
+            h.close()
         # Restore original handlers so other tests are unaffected.
         logging.getLogger().handlers = original_handlers
 
@@ -56,6 +62,8 @@ def test_setup_logging_rotating_handler_limits(tmp_path, monkeypatch):
         assert rfh.maxBytes == 1_000_000
         assert rfh.backupCount == 3
     finally:
+        for h in logging.getLogger().handlers:
+            h.close()
         logging.getLogger().handlers = original_handlers
 
 
@@ -82,6 +90,8 @@ def test_setup_logging_creates_log_file_in_localappdata(tmp_path, monkeypatch):
         log_path = Path(rfh.baseFilename)
         assert log_path == tmp_path / "PlaudTools" / "tray.log"
     finally:
+        for h in logging.getLogger().handlers:
+            h.close()
         logging.getLogger().handlers = original_handlers
 
 
