@@ -18,9 +18,22 @@ log = logging.getLogger(__name__)
 
 # Hard gate: require() refuses a token within this window of expiry.  Plaud
 # now issues 30-day tokens (was ~291 days), so a 30-day buffer rejected every
-# freshly-issued token and bricked the MCP.  3 days is enough lead time to
-# prompt a re-sign-in without refusing otherwise-valid tokens.
-TOKEN_REFRESH_BUFFER_SECONDS = 3 * 24 * 60 * 60
+# freshly-issued token and bricked the MCP; that was fixed by shrinking the
+# buffer to 3 days.  3 days still burned 10% of every token's life, and the
+# tray's expiry *warning* fired at the same 3-day threshold — so the warning
+# and the breakage started on the same day, giving users no runway to react.
+# 24 hours is enough lead time to force a re-sign-in immediately before Plaud
+# would reject the token outright, while leaving room for
+# TRAY_EXPIRY_WARNING_DAYS (below) to warn well in advance of this buffer.
+TOKEN_REFRESH_BUFFER_SECONDS = 24 * 60 * 60
+
+# Soft gate: the tray/HomeWindow show an expiry warning once the token has
+# this many days or fewer left.  Must strictly exceed
+# TOKEN_REFRESH_BUFFER_SECONDS (in days) so the warning always precedes
+# require() refusing the token -- see the buffer comment above for the
+# incident this pairs with.
+TRAY_EXPIRY_WARNING_DAYS = 5
+
 _SECONDS_PER_DAY = 86_400
 
 

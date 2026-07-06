@@ -28,6 +28,7 @@ class WizardWindow:
         self._win: tk.Toplevel | None = None
         self._row_widgets: dict[str, dict[str, object]] = {}
         self._help_var: tk.StringVar | None = None
+        self._help_label: ttk.Label | None = None
 
     def show(self) -> None:
         if self._win and self._win.winfo_exists():
@@ -70,6 +71,7 @@ class WizardWindow:
             frame, textvariable=self._help_var, foreground="#15803d", wraplength=420, justify="left"
         )
         help_label.pack(anchor="w", pady=(8, 0))
+        self._help_label = help_label
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
 
@@ -125,6 +127,20 @@ class WizardWindow:
                 command=lambda c=cid: self._do(c, "connect", mcp),  # type: ignore[misc]
             )
 
+    def _set_help(self, text: str, *, ok: bool = True) -> None:
+        """Show *text* in the help area below the client rows.
+
+        Replaces the old failure path of cramming the exception into the
+        12-char-wide row button (``Failed: {exc}`` — unreadable and it never
+        recovered the button to a usable state). Failures now render here,
+        in red, with the button restored to its normal Connect/Disconnect
+        label by the ``_render()`` call at each call site (§6.2).
+        """
+        if self._help_var is not None:
+            self._help_var.set(text)
+        if self._help_label is not None:
+            self._help_label.configure(foreground="#c0392b" if not ok else "#15803d")
+
     def _do(self, cid: str, action: str, mcp: str) -> None:
         widgets = self._row_widgets[cid]
         btn: ttk.Button = widgets["btn"]  # type: ignore[assignment]
@@ -135,18 +151,23 @@ class WizardWindow:
             else:
                 disconnect(cid)
         except Exception as exc:
-            btn.configure(text=f"Failed: {exc}", state="normal")
+            label = CLIENTS[cid]
+            verb = "connect" if action == "connect" else "disconnect"
+            self._set_help(f"Could not {verb} {label}: {exc}", ok=False)
+            # Restore the row's button to its actual current status instead of
+            # leaving it stuck on "Connecting…"/"Disconnecting…".
+            self._render()
             return
         self._render()
-        if self._help_var is not None:
+        if action == "connect":
             label = CLIENTS[cid]
-            if action == "connect":
-                self._help_var.set(
-                    f"✓ Connected {label}. Restart {label} to load the new MCP server, "
-                    "then ask it about your Plaud notes to confirm."
-                )
-            else:
-                self._help_var.set("")
+            self._set_help(
+                f"✓ Connected {label}. Restart {label} to load the new MCP server, "
+                "then ask it about your Plaud notes to confirm.",
+                ok=True,
+            )
+        else:
+            self._set_help("", ok=True)
         self._on_done()
 
 

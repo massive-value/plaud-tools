@@ -85,7 +85,7 @@ def _build_do_login(root, store, on_success, btn, error_var, win, auth_cls):
                 return
             if not _widget_alive(win):
                 return
-            error_var.set(str(error))
+            error_var.set(login_mod._error_message_with_hints(error))
             btn.config(state="normal", text="Sign in")
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -247,3 +247,65 @@ class TestLoginRunsOffTkThread:
 
         error_var.set.assert_called_once_with("")  # only the initial clear, not the error
         btn.config.assert_called_once_with(state="disabled", text="Signing in…")
+
+
+# ---------------------------------------------------------------------------
+# Google-SSO / app-password hint on HTTP 401 (§6.2)
+# ---------------------------------------------------------------------------
+
+
+class TestGoogleSsoHint:
+    """Plaud's login endpoint returns a bare 401 for Google-SSO accounts (no
+    password set), indistinguishable on the wire from a wrong-password 401.
+    Before this fix the login window showed only the raw "HTTP 401" with no
+    way for a stuck user to discover the fix (docs/TROUBLESHOOTING.md had the
+    guidance, but not where the user actually is)."""
+
+    def test_hint_appended_when_message_mentions_401(self):
+        message = login_mod._error_message_with_hints(PlaudApiError("Login request failed: HTTP 401"))
+        assert "HTTP 401" in message
+        assert "Forgot password" in message
+        assert "web.plaud.ai" in message
+
+    def test_hint_not_appended_for_other_errors(self):
+        message = login_mod._error_message_with_hints(PlaudApiError("bad credentials"))
+        assert message == "bad credentials"
+        assert "Forgot password" not in message
+
+    def test_hint_not_appended_for_other_http_statuses(self):
+        """A 500 (or any non-401 status) must not get the Google-SSO hint --
+        it would be actively misleading for an outage."""
+        message = login_mod._error_message_with_hints(PlaudApiError("Login request failed: HTTP 500"))
+        assert message == "Login request failed: HTTP 500"
+
+    def test_do_login_surfaces_hint_on_401_failure(self):
+        """End-to-end through the do_login/_worker/_finish closures: a 401
+        failure must reach error_var.set() with the hint appended, not the
+        bare HTTP 401."""
+        root = MagicMock()
+        scheduled: list = []
+        root.after.side_effect = lambda _delay, fn: scheduled.append(fn)
+        btn = MagicMock()
+        error_var = MagicMock()
+        win = MagicMock()
+        win.winfo_exists.return_value = True
+        on_success = MagicMock()
+
+        class _Unauthorized:
+            def __init__(self, store):
+                pass
+
+            def login(self, *a, **kw):
+                raise PlaudApiError("Login request failed: HTTP 401")
+
+        do_login = _build_do_login(root, MagicMock(), on_success, btn, error_var, win, _Unauthorized)
+        do_login("user@example.com", "wrong", "us")
+
+        deadline = time.monotonic() + 2
+        while not scheduled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        scheduled[0]()
+
+        (message,), _kwargs = error_var.set.call_args
+        assert "HTTP 401" in message
+        assert "Forgot password" in message

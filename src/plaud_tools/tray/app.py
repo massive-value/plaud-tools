@@ -29,7 +29,7 @@ from PIL import Image
 from .. import __version__ as APP_VERSION
 from ..client import PlaudClient
 from ..errors import PlaudSessionExpiredError
-from ..session import PlaudSession, SessionManager, SessionStore
+from ..session import TRAY_EXPIRY_WARNING_DAYS, PlaudSession, SessionManager, SessionStore
 from .background import _BackgroundMixin
 from .icons import _load_icon, _load_icons
 from .setup import (
@@ -98,7 +98,7 @@ class TrayApp(_BackgroundMixin):
         days = self._manager.days_until_expiry()
         if days is None or days == 0:
             return "expired"
-        if days <= 3:
+        if days <= TRAY_EXPIRY_WARNING_DAYS:
             return "expiring"
         return "signed-in"
 
@@ -250,11 +250,24 @@ class TrayApp(_BackgroundMixin):
         threading.Thread(target=_wait_and_deliver, daemon=True).start()
 
     def _session_label(self) -> str:
+        # Wording must stay truthful against SessionManager.require()'s own
+        # refuse buffer (TOKEN_REFRESH_BUFFER_SECONDS, 24h): days_until_expiry()
+        # floors to 0 for exactly the tokens require() is about to refuse (or
+        # has already refused), so "valid for N days" must never be shown for
+        # days == 0 -- that was the label-truth bug in §6.1 (HomeWindow saying
+        # "valid" while MCP was already refusing the same token).
         if self._session is None:
             return "Not signed in."
         days = self._manager.days_until_expiry()
         if days is None:
             return f"Signed in as {self._session.email}."
+        if days == 0:
+            return (
+                f"Signed in as {self._session.email}. "
+                "Token expires within a day — sign in again to avoid an interruption."
+            )
+        if days <= TRAY_EXPIRY_WARNING_DAYS:
+            return f"Signed in as {self._session.email}. Token expires in {days} days — sign in again soon."
         return f"Signed in as {self._session.email}. Token valid for {days} days."
 
     def _sign_out(self) -> None:

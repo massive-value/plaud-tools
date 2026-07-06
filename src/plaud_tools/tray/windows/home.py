@@ -42,6 +42,8 @@ class HomeWindow:
         self._on_open_help = on_open_help
         self._win: tk.Toplevel | None = None
         self._session_var: tk.StringVar | None = None
+        self._session_label_widget: ttk.Label | None = None
+        self._session_label_default_fg: str = ""
         self._status_var: tk.StringVar | None = None
         self._status_label: ttk.Label | None = None
         self._test_btn: ttk.Button | None = None
@@ -111,9 +113,16 @@ class HomeWindow:
             self._welcome_banner = banner
 
         self._session_var = tk.StringVar()
-        ttk.Label(frame, textvariable=self._session_var, font=("", 10, "bold"), wraplength=360).pack(
-            anchor="w"
+        session_label = ttk.Label(
+            frame, textvariable=self._session_var, font=("", 10, "bold"), wraplength=360
         )
+        session_label.pack(anchor="w")
+        self._session_label_widget = session_label
+        # Capture the theme's default foreground once, before any warning
+        # colour is applied, so the "ok" state can be restored exactly rather
+        # than hard-coding a colour that could clash with dark mode (#157-class
+        # concern: _apply_theme sets this per-theme, this widget must not fight it).
+        self._session_label_default_fg = str(session_label.cget("foreground"))
         self._refresh_session()
 
         ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
@@ -188,8 +197,20 @@ class HomeWindow:
         self._on_open_wizard()
 
     def _refresh_session(self) -> None:
-        if self._session_var is not None:
-            self._session_var.set(self._get_session_label())
+        if self._session_var is None:
+            return
+        label = self._get_session_label()
+        self._session_var.set(label)
+        # Truth-fix (§6.1): the session label now says "expires" rather than
+        # "valid" once the token is within the tray warning window or the
+        # require() refuse buffer -- colour the label to match instead of
+        # always rendering it in the same neutral/bold style regardless of
+        # urgency.
+        warn = "expires" in label.lower()
+        _configure_if_alive(
+            self._session_label_widget,
+            foreground="#c0392b" if warn else self._session_label_default_fg,
+        )
 
     def _refresh_update_btn(self) -> None:
         # Invoked asynchronously from the background update-poll thread (via
