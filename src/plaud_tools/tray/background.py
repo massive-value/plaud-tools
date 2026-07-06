@@ -130,21 +130,29 @@ class _BackgroundMixin:
         """Poll ``appdata.events_path()`` every 5 s for tray events.
 
         Currently handles ``session_expired`` events written by the MCP server.
-        Lines are consumed (the file is truncated) after reading so events are
-        not re-processed on the next poll.
+        Events are claimed by an atomic rename (to a sibling ``.processing``
+        path) before being read and deleted, rather than read-then-truncate
+        in place: the previous read+truncate had a window where an MCP-side
+        append landing between the read and the truncate was silently wiped
+        by the truncate, dropping the event (#162). A concurrent append after
+        the rename lands in a fresh file at the original path and is picked
+        up on the next poll instead of being lost.
         """
         events_path = _events_path()
+        claim_path = events_path.with_name(events_path.name + ".processing")
         while True:
             time.sleep(5)
             try:
                 if not events_path.exists():
                     continue
                 try:
-                    lines = events_path.read_text(encoding="utf-8").splitlines()
-                    # Truncate — clear processed events
-                    events_path.write_text("", encoding="utf-8")
+                    events_path.replace(claim_path)  # atomic claim
                 except OSError:
                     continue
+                try:
+                    lines = claim_path.read_text(encoding="utf-8").splitlines()
+                finally:
+                    claim_path.unlink(missing_ok=True)
                 for line in lines:
                     line = line.strip()
                     if not line:
@@ -263,10 +271,18 @@ class _BackgroundMixin:
                 self._env_status = _verify_env()
                 if self._root:
                     self._root.after(0, lambda: on_done(True, "Setup repaired successfully."))
-            except Exception as exc:  # noqa: F841  # captured by lambda on next line
+            except Exception as exc:
                 logging.warning("Repair setup failed", exc_info=True)
+                # Render the message into a plain string BEFORE scheduling the
+                # lambda (#152): `except Exception as exc:` implicitly runs
+                # `del exc` when the except block exits (CPython avoids a
+                # traceback reference cycle), so a lambda that captures `exc`
+                # by name raises NameError once it actually runs later via
+                # root.after() -- the Home window then hangs on
+                # "Repairing setup..." with no shown error and no log clue.
+                msg = f"Repair failed: {exc}"
                 if self._root:
-                    self._root.after(0, lambda: on_done(False, f"Repair failed: {exc}"))
+                    self._root.after(0, lambda: on_done(False, msg))
 
         threading.Thread(target=_work, daemon=True).start()
 

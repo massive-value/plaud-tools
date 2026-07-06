@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
@@ -10,7 +11,7 @@ from tkinter import ttk
 from ...auth import PlaudAuth
 from ...errors import PlaudApiError, PlaudSessionExpiredError
 from ...session import SessionStore
-from ..setup import APP_NAME, _set_app_icon
+from ..setup import APP_NAME, _set_app_icon, _widget_alive
 
 
 class LoginWindow:
@@ -70,24 +71,44 @@ class LoginWindow:
                 return
             btn.config(state="disabled", text="Signing in…")
             error_var.set("")
-            win.update()
-            try:
-                auth = PlaudAuth(self._store)
-                auth.login(email, password, region_var.get())
-                win.destroy()
-                self._on_success()
-            except (PlaudApiError, PlaudSessionExpiredError) as exc:
-                error_var.set(str(exc))
+
+            # auth.login() makes a network call that can take ~30s; running it
+            # on the Tk main thread freezes the entire tray (every window,
+            # every menu click) for the duration (#161). Do the network work
+            # on a daemon thread and marshal the result back via root.after().
+            region = region_var.get()
+
+            def _worker() -> None:
+                error: Exception | None = None
+                try:
+                    auth = PlaudAuth(self._store)
+                    auth.login(email, password, region)
+                except Exception as exc:  # noqa: BLE001  # re-raised via _finish on the Tk thread
+                    error = exc
+                if self._root:
+                    self._root.after(0, lambda: _finish(error))
+
+            def _finish(error: Exception | None) -> None:
+                if error is None:
+                    if _widget_alive(win):
+                        win.destroy()
+                    self._on_success()
+                    return
+                if not _widget_alive(win):
+                    return  # window closed while sign-in was in flight
+                if isinstance(error, (PlaudApiError, PlaudSessionExpiredError)):
+                    error_var.set(str(error))
+                else:
+                    # Defensive: anything not already wrapped as a Plaud error
+                    # (e.g. network errors that slipped past the transport,
+                    # JSON parsing failures, keyring backend bugs) should not
+                    # surface to the user as a raw traceback.  Log full
+                    # details, show a short friendly message inline.
+                    logging.error("Unexpected error during sign-in", exc_info=error)
+                    error_var.set(f"Sign-in failed: {error}")
                 btn.config(state="normal", text="Sign in")
-            except Exception as exc:
-                # Defensive: anything not already wrapped as a Plaud error
-                # (e.g. network errors that slipped past the transport, JSON
-                # parsing failures, keyring backend bugs) should not surface
-                # to the user as a raw traceback.  Log full details, show a
-                # short friendly message inline.
-                logging.exception("Unexpected error during sign-in")
-                error_var.set(f"Sign-in failed: {exc}")
-                btn.config(state="normal", text="Sign in")
+
+            threading.Thread(target=_worker, daemon=True).start()
 
         btn.config(command=do_login)
         win.bind("<Return>", lambda _: do_login())

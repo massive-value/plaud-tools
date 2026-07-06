@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 import tempfile
 import tkinter as tk
@@ -15,24 +14,18 @@ from ..appdata import data_dir as _data_dir
 from ..layout import InstallLayout
 from ..ps1_templates import render_uninstall_ps1
 from ..session import SessionStore
+from .process_launch import POWERSHELL_EXE as _POWERSHELL_EXE
+from .process_launch import launch_hidden_powershell
 from .setup import (
     APP_NAME,
     _cli_dir,
+    _read_profile_text,
     _set_app_icon,
     _set_autostart,
     _stale_sourcing_re,
     _unregister_com_activator,
+    _write_profile_text,
 )
-
-# Absolute path to PowerShell to prevent PATH-hijacking attacks.
-# %SystemRoot% is typically C:\Windows; fall back to the hard-coded canonical
-# path if the env var is absent (should never happen on a standard Windows
-# install, but defensive is better).
-_POWERSHELL_EXE: str = os.path.join(
-    os.environ.get("SystemRoot", r"C:\Windows"),
-    r"System32\WindowsPowerShell\v1.0\powershell.exe",
-)
-
 
 # ---------------------------------------------------------------------------
 # Uninstall helpers (inverses of the setup helpers above)
@@ -101,11 +94,16 @@ def _remove_ps_completions() -> None:
         if not profile.exists():
             continue
         try:
-            content = profile.read_text(encoding="utf-8-sig")
+            content, had_bom = _read_profile_text(profile)
+            if content is None:
+                logging.warning(
+                    "Could not decode PowerShell profile %s as UTF-8; leaving it untouched", profile
+                )
+                continue
             lines = [line for line in content.splitlines(keepends=True) if not stale_re.match(line.strip())]
             new_content = "".join(lines)
             if new_content != content:
-                profile.write_text(new_content, encoding="utf-8")
+                _write_profile_text(profile, new_content, had_bom)
                 logging.info("Removed plaud-tools completions from %s", profile)
         except OSError:
             logging.warning("Could not update PowerShell profile %s during uninstall", profile, exc_info=True)
@@ -157,12 +155,20 @@ def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> No
         log_dirs=log_dirs if log_dirs else None,
     )
     ps_path = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.ps1"
-    ps_path.write_text(ps_content, encoding="utf-8")
+    # utf-8-sig (BOM): Windows PowerShell 5.1 treats a BOM-less file as the
+    # system ANSI codepage, not UTF-8. A non-ASCII byte in a path embedded in
+    # the dispatcher (e.g. %TEMP% under a non-ASCII Windows username) can then
+    # misdecode and fail to parse. See #153, same family as the v0.3.4 fix.
+    ps_path.write_text(ps_content, encoding="utf-8-sig")
     logging.info("Launching uninstall helper: %s (will delete %s)", ps_path, install_dir)
-    subprocess.Popen(
+    # The tray quits moments after this call (see do_uninstall below), so the
+    # helper needs the same job-breakaway + safe-stdio launch as the in-app
+    # updater -- DETACHED_PROCESS alone crashes PowerShell instantly from a
+    # no-console frozen app (#142).
+    launch_hidden_powershell(
         [_POWERSHELL_EXE, "-NoProfile", "-WindowStyle", "Hidden", "-File", str(ps_path)],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         cwd=tempfile.gettempdir(),
+        breakaway=True,
     )
 
 

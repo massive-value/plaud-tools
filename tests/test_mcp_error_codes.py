@@ -426,7 +426,7 @@ class TestTraySessionExpiredToast:
             spawned.append(tuple(args))
             return MagicMock()
 
-        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", fake_popen)
 
         import plaud_tools.tray_app as tray_app
 
@@ -448,7 +448,7 @@ class TestTraySessionExpiredToast:
         def boom(*a, **kw):
             raise OSError("no powershell")
 
-        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", boom)
+        monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", boom)
 
         import plaud_tools.tray_app as tray_app
 
@@ -495,9 +495,11 @@ class TestTraySessionExpiredToast:
             app._event_poll_loop()
 
         assert len(toast_calls) == 1, "toast should have been called once"
-        # The events file should be cleared after processing
-        remaining = events_file.read_text(encoding="utf-8").strip()
-        assert remaining == ""
+        # The events file is claimed via an atomic rename-then-read (#162),
+        # not read-then-truncate in place, so after processing the original
+        # path is gone rather than left behind empty. _write_event (mcp.py)
+        # recreates it on the next append via `path.open("a", ...)`.
+        assert not events_file.exists()
 
 
 # ---------------------------------------------------------------------------
