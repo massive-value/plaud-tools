@@ -7,6 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+Consolidated release from a full second-engineering audit (27 findings, #138–#164).
+It folds in the fixes originally planned as 0.6.1 (session/protocol) and 0.6.2
+(Windows tray/installer) plus a breaking MCP/CLI surface pass. **This is a breaking
+release** — see _Changed_ and _Removed_ for the MCP tool-shape changes; the tool
+count goes from 12 to 11.
+
+### Added
+
+- **`edit_transcript` MCP tool** unifying the former `rename_speaker` and
+  `correct_transcript` under one `action` discriminator (`action="rename_speaker"`
+  / `action="correct"`), mirroring `edit_summary`.
+- **Discover and act on trashed recordings.** `browse_recordings` gains `trash:
+  true` to list the trash (the client could restore by ID but not discover trashed
+  IDs); `mutate_recording` accepts a `recording_ids` array for batch trash/restore.
+- **`dry_run: true`** on the correcting operations (`edit_transcript(action="correct")`
+  and `edit_summary(action="correct")`) — returns the match count without mutating.
+- **Bounded `wait`.** `process_recording` with `wait="summary"` no longer blocks
+  indefinitely; at a soft deadline it returns `{ "status": "still_processing" }`
+  so MCP clients that time out at 60–120 s don't abort a job that is still running
+  server-side (#151).
+- **Cheaper browse/get payloads.** `browse_recordings` items include `has_summary`
+  (no per-item `get_recording` needed to answer "which have a summary"); 
+  `get_recording` accepts `transcript_offset` / `transcript_max_chars` and reports
+  `transcript_truncated`, so a multi-hour transcript can be paged instead of
+  returned whole.
+- **CLI `transcribe`** gains `--wait {none,transcript,summary}` and the
+  `--language` / `--diarization` / `--llm` flags the client and MCP already
+  supported.
+
+### Changed
+
+- **BREAKING — MCP action discriminator standardized to `action`.** Tools that
+  used `mutation` / `operation` (e.g. `mutate_recording`, `mutate_folder`,
+  `edit_summary`) now use `action`.
+- **BREAKING — slimmer responses.** `merge_recordings` returns
+  `{ ok, recording_id, title }` (the old detail dict was all-nulls on a fresh
+  merge); `edit_transcript` / `edit_summary` no longer echo the `find`/`replace`
+  strings back (they return counts only). All MCP responses are now emitted as
+  compact JSON (no indentation whitespace), cutting tokens on every call.
+- **BREAKING — CLI `trash` split.** Listing now requires `trash --list`; a bare
+  `trash <id>` still mutates. Previously a dropped argument silently turned a
+  mutation into a listing.
+- **`browse_recordings` default `limit` lowered 50 → 20** (`next_after` paginates).
+- **Expiry runway widened so warnings precede breakage.** The MCP refuse buffer
+  (`TOKEN_REFRESH_BUFFER_SECONDS`) shrank from 3 days to 24 h, and the tray's
+  "expiring soon" warning widened from 3 days to 5 (`TRAY_EXPIRY_WARNING_DAYS`) —
+  previously the warning and the refusal began on the same day, and the Home
+  window could claim a token was "valid" while MCP was already refusing it.
+- **CLI `detail`** now fetches and shows the summary (and transcript when present)
+  instead of always emitting `null`. `move` / `move-to-folder` are a single
+  command via an alias.
+- **Error messages name the remedy.** CLI session-expired output points at
+  `plaud-tools refresh` / the tray; MCP session errors instruct the AI client to
+  relay "open the PlaudTools tray and sign in"; the login window shows a
+  Google-SSO / app-password hint on `401` instead of a bare `HTTP 401`.
+
+### Removed
+
+- **BREAKING — `rename_speaker` and `correct_transcript` MCP tools**, merged into
+  `edit_transcript` (see _Added_).
+- The `winrt` toast code path (never available in the shipped bundle) and a batch
+  of dead/duplicated internal code — ~1,400 net lines removed with no user-visible
+  change (dead `mcp_lifecycle` module, a test-only tray module shim, duplicated
+  upload/transcode and result-shaping blocks).
+
+### Fixed
+
+- **Session/token (the "bricked MCP" class):** a cached session served an expired
+  token because the expiry re-check was unreachable in the cache path, and the
+  failure misclassified as a generic API error so the tray was never told to
+  re-auth (#138); HTTP 401 now classifies as `session_expired`. `clear()` (sign-out)
+  now also deletes the legacy session file (#144); the session store tolerates
+  BOM/corrupt/partial JSON and writes atomically (#145).
+- **Transport:** network timeouts / connection failures are now retryable, so a
+  brief blip no longer aborts a long merge/transcription poll that succeeds
+  server-side (#143); a 2xx response with a non-JSON body is reported as an
+  upstream error instead of leaking as a caller "validation" error (#146);
+  non-idempotent POSTs are no longer blindly retried on 429/5xx (#147).
+- **MCP correctness:** tool errors now propagate `isError` to clients — previously
+  **every** error (including refused deletes and session-expired) was delivered as
+  a successful call (#139); `mutate_recording(move)` without a `folder_id` now errors
+  instead of silently unfiling (#140); `browse_recordings` rejects `limit <= 0`
+  (previously an infinite cursor loop) (#148); a failed post-upload folder move no
+  longer loses the new recording ID, preventing duplicate re-uploads (#149);
+  `OSError` and ffmpeg failures now map to the structured error contract (#150).
+- **CLI:** `transcript` / `summary` output no longer crashes with
+  `UnicodeEncodeError` on non-Latin-1 characters (e.g. a full-width character)
+  under a redirected/piped Windows stdout (#155); the frozen-bundle `update`
+  command no longer tries to `pip`-install itself (#158).
+- **Windows tray / installer:** toasts and the uninstaller now actually run in the
+  no-console frozen bundle (a `DETACHED_PROCESS` launch was killing PowerShell
+  instantly, so no toast — including session-expired — ever appeared, and uninstall
+  silently no-op'd) (#142); a single-entry user `PATH` is no longer corrupted on a
+  fresh profile (#141); runtime dispatcher scripts and profile I/O are BOM-safe for
+  non-ASCII usernames under PowerShell 5.1 (#153, #154); destroyed-widget async
+  callbacks are guarded at every site (#157); the repair-failure path no longer
+  raises `NameError` and hangs on "Repairing setup…" (#152); login runs off the Tk
+  main thread (#161); the event file is claimed atomically so `session_expired`
+  events aren't dropped (#162); the uninstaller retries the kill loop against a
+  respawning process (#156); the installer no longer silently routes an installed >
+  latest version into the `-Force` wipe branch (#159); autostart Run values are
+  quoted (#160); the first-run welcome banner shows for actual first-run users (#163).
+
+### CI / release integrity
+
+- The release pipeline now **runs the full check suite and exercises the assembled
+  bundle** (tray exe + shipped ffmpeg) before it can build or publish — previously a
+  tag build+publish ran zero tests. A tag whose version differs from `pyproject`
+  fails the workflow; the CI smoke bundle is built from the pinned constraints; and
+  `update.ps1` / `install.ps1` are parse-gated under Windows PowerShell 5.1. Added
+  `dependabot`, a weekly (secrets-gated, read-only) live-read canary, and non-gating
+  coverage.
+
 ## [0.6.0] - 2026-07-04
 
 ### Added
@@ -1356,7 +1471,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/massive-value/plaud-tools/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/massive-value/plaud-tools/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/massive-value/plaud-tools/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/massive-value/plaud-tools/compare/v0.4.0...v0.4.1
