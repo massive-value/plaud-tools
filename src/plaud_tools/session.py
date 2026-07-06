@@ -37,22 +37,32 @@ TRAY_EXPIRY_WARNING_DAYS = 5
 _SECONDS_PER_DAY = 86_400
 
 
-def _decode_header_safe(jwt: str) -> dict[str, Any]:
-    """Decode the header segment of a JWT without verifying the signature.
+def _decode_jwt_segment(jwt: str, index: int) -> dict[str, Any] | None:
+    """Decode JWT segment *index* (0=header, 1=payload) without verifying the signature.
 
-    Returns an empty dict on any parse error.  Mirrors ``_decode_expiry`` but
-    operates on the header (index 0) rather than the payload (index 1).
+    Returns None on any parse error or malformed structure. Shared by
+    ``_decode_header_safe`` and ``SessionManager._decode_expiry``, which
+    previously duplicated this exact base64url-pad-and-decode dance for
+    different segment indices (Wave 5, 2026-07-06 audit, S7.7).
     """
     parts = jwt.split(".")
     if len(parts) != 3:
-        return {}
-    header = parts[0] + "=" * (-len(parts[0]) % 4)
+        return None
+    segment = parts[index] + "=" * (-len(parts[index]) % 4)
     try:
-        decoded = base64.urlsafe_b64decode(header.encode("ascii"))
+        decoded = base64.urlsafe_b64decode(segment.encode("ascii"))
         obj = json.loads(decoded.decode("utf-8"))
-        return obj if isinstance(obj, dict) else {}
+        return obj if isinstance(obj, dict) else None
     except (ValueError, json.JSONDecodeError):
-        return {}
+        return None
+
+
+def _decode_header_safe(jwt: str) -> dict[str, Any]:
+    """Decode the header segment of a JWT without verifying the signature.
+
+    Returns an empty dict on any parse error.
+    """
+    return _decode_jwt_segment(jwt, 0) or {}
 
 
 # Legacy credentials written by the predecessor TypeScript tool
@@ -775,19 +785,22 @@ class SessionManager:
         exp = self._decode_expiry(session.access_token)
         if exp is None:
             return None
+        return self._days_remaining(exp)
+
+    @staticmethod
+    def _days_remaining(exp: int) -> int:
+        """Return whole days remaining until *exp* (epoch seconds), floored at 0.
+
+        Shared by ``days_until_expiry`` and ``diagnose`` so the latter no
+        longer re-derives the same day-count arithmetic inline (Wave 5,
+        2026-07-06 audit, S7.7).
+        """
         remaining = exp - int(time())
         return max(0, remaining // _SECONDS_PER_DAY)
 
     def _decode_expiry(self, jwt: str) -> int | None:
-        parts = jwt.split(".")
-        if len(parts) != 3:
-            return None
-        payload = parts[1]
-        payload += "=" * (-len(payload) % 4)
-        try:
-            decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
-            obj = json.loads(decoded.decode("utf-8"))
-        except (ValueError, json.JSONDecodeError):
+        obj = _decode_jwt_segment(jwt, 1)
+        if obj is None:
             return None
         exp = obj.get("exp")
         return int(exp) if isinstance(exp, int | float) else None
@@ -828,8 +841,7 @@ class SessionManager:
                     diag["token_typ"] = header.get("typ")
                 exp = self._decode_expiry(session.access_token)
                 if exp is not None:
-                    remaining = exp - int(time())
-                    diag["days_until_expiry"] = max(0, remaining // _SECONDS_PER_DAY)
+                    diag["days_until_expiry"] = self._days_remaining(exp)
         except Exception as exc:
             diag["diagnose_error"] = f"{type(exc).__name__}: {exc}"
         return diag
