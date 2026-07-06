@@ -6,6 +6,7 @@
         "after": {
           "default": 0,
           "description": "Cursor from next_after of a previous response",
+          "minimum": 0,
           "type": "integer"
         },
         "folder": {
@@ -15,6 +16,7 @@
         "limit": {
           "default": 50,
           "description": "Max results per page",
+          "minimum": 1,
           "type": "integer"
         },
         "query": {

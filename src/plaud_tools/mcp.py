@@ -152,6 +152,14 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
         return _error_result(str(exc), error_code="validation", retryable=False)
     except RuntimeError as exc:
         return _error_result(str(exc), error_code="api_error", retryable=False)
+    except OSError as exc:
+        # Local filesystem failures (permission denied, disk full, temp file
+        # races, …) must not escape the structured-error contract — issue #150.
+        # Without this, an OSError propagates past call_tool's TypeError-only
+        # guard in server.py and the MCP SDK's generic catch-all reports it as
+        # an unstructured plain-text error instead of {error, error_code,
+        # retryable}.
+        return _error_result(str(exc), error_code="io_error", retryable=False)
 
 
 def _summarize_detail(detail: Any) -> dict[str, Any]:
@@ -184,6 +192,24 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         folder: str | None = None,
         after: int = 0,
     ) -> dict[str, Any]:
+        # #148: limit<=0 makes next_after == after forever, so an agent that
+        # blindly re-invokes with the returned cursor loops without end.
+        # Guard here in addition to the schema minimums (server.py _TOOLS) so
+        # direct handler callers (tests, non-validating MCP clients) are also
+        # protected.
+        if limit <= 0:
+            return _error_result(
+                "limit must be a positive integer (> 0)",
+                error_code="validation",
+                retryable=False,
+            )
+        if after < 0:
+            return _error_result(
+                "after must be a non-negative integer (>= 0)",
+                error_code="validation",
+                retryable=False,
+            )
+
         def inner(client: PlaudClient) -> dict[str, Any]:
             since_ms = parse_isoish(since, "since") if since else None
             until_ms = parse_isoish(until, "until", end_of_day=True) if until else None
@@ -282,9 +308,17 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 return _json_result({"ok": True, "recording_id": recording_id, "mutation": "restore"})
 
             if mutation == "move":
-                actual_folder_id = (
-                    None if (clear_folder or folder_id is None or folder_id in ("", "-")) else folder_id
-                )
+                # #140: folder_id omitted (and clear_folder not set) used to
+                # fall through to "clear" and silently unfile the recording.
+                # The schema already documents folder_id as required for move
+                # unless clear_folder=true — enforce that at runtime too.
+                if folder_id is None and not clear_folder:
+                    return _error_result(
+                        "folder_id is required for mutation=move unless clear_folder=true",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                actual_folder_id = None if (clear_folder or folder_id in ("", "-")) else folder_id
                 client.set_recording_folder(recording_id, actual_folder_id)
                 return _json_result({"ok": True, "recording_id": recording_id, "folder_id": actual_folder_id})
 
@@ -367,22 +401,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         timezone_offset: float | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
-            import tempfile
-
-            from .transcode import get_file_type, transcode_to_mp3_path
+            from .transcode import upload_with_transcode
 
             path = Path(file_path)
-            if not path.exists():
-                return _error_result(
-                    f"file not found: {file_path}",
-                    error_code="validation",
-                    retryable=False,
-                )
-            try:
-                file_type, needs_transcode = get_file_type(path)
-            except ValueError as exc:
-                return _error_result(str(exc), error_code="validation", retryable=False)
-
             rec_title = title or path.stem
             start_ms: int | None = None
             if isinstance(start_time, str):
@@ -390,45 +411,30 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             elif isinstance(start_time, int):
                 start_ms = start_time
 
-            if needs_transcode:
-                # Transcode to a temp MP3 on disk, then upload from that path
-                # so the transcoded bytes never round-trip through Python memory.
-                tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
-                os.close(tmp_fd)
-                tmp_mp3_path = Path(tmp_mp3)
-                try:
-                    try:
-                        transcode_to_mp3_path(path, tmp_mp3_path)
-                    except RuntimeError as exc:
-                        # transcode_to_mp3_path raises RuntimeError when ffmpeg fails.
-                        return _json_result({"error": str(exc)}, is_error=True)
-                    recording = client.upload_recording(
-                        tmp_mp3_path,
-                        rec_title,
-                        file_type,
-                        start_time=start_ms,
-                        timezone_offset=timezone_offset,
-                    )
-                finally:
-                    try:
-                        tmp_mp3_path.unlink()
-                    except OSError:
-                        pass
-            else:
-                recording = client.upload_recording(
-                    path, rec_title, file_type, start_time=start_ms, timezone_offset=timezone_offset
-                )
-
-            if folder_id:
-                client.set_recording_folder(recording.id, folder_id)
-            return _json_result(
-                {
-                    "ok": True,
-                    "recording_id": recording.id,
-                    "filename": recording.filename,
-                    "transcoded": needs_transcode,
-                }
+            # ValueError (missing file / unsupported format) and RuntimeError
+            # (ffmpeg failure) are intentionally not caught here — they
+            # propagate to _call's except clauses, which already map them to
+            # the correct structured {error_code, retryable} shape (#150).
+            outcome = upload_with_transcode(
+                client,
+                path,
+                rec_title,
+                start_time=start_ms,
+                timezone_offset=timezone_offset,
+                folder_id=folder_id,
             )
+            payload: dict[str, Any] = {
+                "ok": True,
+                "recording_id": outcome.recording.id,
+                "filename": outcome.recording.filename,
+                "transcoded": outcome.transcoded,
+            }
+            if outcome.folder_error is not None:
+                # #149: the recording was created successfully but the
+                # post-upload folder move failed — surface both so the caller
+                # can retry the move instead of re-uploading the file.
+                payload["folder_error"] = outcome.folder_error
+            return _json_result(payload)
 
         return _call(get_client, inner)
 

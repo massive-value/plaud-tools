@@ -119,29 +119,87 @@ class FileSessionStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else appdata.session_path()
 
+    @staticmethod
+    def _legacy_session_path() -> Path:
+        """Pre-ADR-004 location: ``~/.config/plaud-tools/session.json``."""
+        return Path.home() / ".config" / "plaud-tools" / "session.json"
+
+    @staticmethod
+    def _read_session_file(path: Path) -> PlaudSession | None:
+        """Best-effort read of a single session file; never raises (#145).
+
+        A BOM, truncated write (crash mid-save), or otherwise corrupt/partial
+        JSON must fall through as "no session here" rather than crashing the
+        caller — this is a last-resort store and a bad file on disk should
+        degrade to "please sign in again", not an unhandled exception.
+        ``utf-8-sig`` transparently strips a leading BOM when present and
+        behaves exactly like ``utf-8`` when it is not.
+        """
+        if not path.exists():
+            return None
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            log.warning("Failed to read session file %s; treating as missing", path, exc_info=True)
+            return None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            log.warning("Session file %s contains invalid/corrupt JSON; treating as missing", path)
+            return None
+        if not isinstance(data, dict):
+            log.warning("Session file %s has unexpected shape; treating as missing", path)
+            return None
+        try:
+            return PlaudSession(**data)
+        except TypeError:
+            log.warning("Session file %s has unexpected fields; treating as missing", path)
+            return None
+
     def load(self) -> PlaudSession | None:
-        if self.path.exists():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            return PlaudSession(**data)
-        # One-shot legacy-path read: if the new appdata path does not exist but
-        # the old ~/.config/plaud-tools/session.json does, read from there.
-        # Subsequent saves go to self.path (the new appdata path).  This handles
-        # the rare users who relied on FileSessionStore as last-resort fallback
-        # (both keyring AND DPAPI unavailable) and whose session.json lives at
-        # the pre-ADR-004 location.
-        legacy = Path.home() / ".config" / "plaud-tools" / "session.json"
-        if legacy.exists():
-            data = json.loads(legacy.read_text(encoding="utf-8"))
-            return PlaudSession(**data)
-        return None
+        session = self._read_session_file(self.path)
+        if session is not None:
+            return session
+        # One-shot legacy-path read: if the new appdata path does not exist (or
+        # is unreadable/corrupt) but the old ~/.config/plaud-tools/session.json
+        # does, read from there. Subsequent saves go to self.path (the new
+        # appdata path).  This handles the rare users who relied on
+        # FileSessionStore as last-resort fallback (both keyring AND DPAPI
+        # unavailable) and whose session.json lives at the pre-ADR-004 location.
+        return self._read_session_file(self._legacy_session_path())
 
     def save(self, session: PlaudSession) -> None:
+        """Write *session* atomically: temp file + ``os.replace`` (#145).
+
+        Writing directly to ``self.path`` can leave a truncated/partial file
+        behind if the process is killed mid-write (power loss, forced
+        shutdown) — exactly the corruption ``_read_session_file`` above has to
+        tolerate.  Writing to a sibling temp file first and swapping it in
+        with ``os.replace`` (atomic on both POSIX and Windows) means readers
+        only ever see either the old complete file or the new complete file.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(asdict(session), indent=2), encoding="utf-8")
+        tmp_path = self.path.with_name(self.path.name + ".tmp")
+        tmp_path.write_text(json.dumps(asdict(session), indent=2), encoding="utf-8")
         try:
-            os.chmod(self.path, 0o600)
+            os.chmod(tmp_path, 0o600)
         except OSError:
             pass
+        os.replace(tmp_path, self.path)
+
+    def clear(self) -> None:
+        """Delete both the primary session file and the legacy pre-ADR-004 file.
+
+        Sign-out must leave no plaintext token recoverable anywhere: deleting
+        only ``self.path`` let ``load()``'s legacy-path fallback resurrect a
+        cleared session on the very next read for users who still have a file
+        at the old location (#144).
+        """
+        for path in (self.path, self._legacy_session_path()):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class SessionStore:
@@ -556,10 +614,9 @@ class SessionStore:
                 keyring.delete_password(self.service_name, self.account_name)
             except Exception:
                 pass
-        try:
-            self.file_store.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        # Delegates to FileSessionStore.clear(), which also removes the
+        # legacy pre-ADR-004 session file (#144) — not just self.path.
+        self.file_store.clear()
         if self.dpapi_path is not None:
             try:
                 self.dpapi_path.unlink(missing_ok=True)
@@ -576,10 +633,11 @@ class SessionManager:
 
     def __init__(self, store: SessionStoreProtocol) -> None:
         self.store = store
-        # Cache entry: (session, wall-clock time of load, file mtime at load or None).
-        # None means no entry is cached.  Using a tuple avoids a separate
-        # "loaded_at" field and keeps the hot-path check allocation-free.
-        self._cache: tuple[PlaudSession, float, float | None] | None = None
+        # Cache entry: (session, wall-clock time of load, file mtime at load or
+        # None, cached token's decoded exp claim or None).  None means no entry
+        # is cached.  Using a tuple avoids separate fields and keeps the
+        # hot-path check allocation-free.
+        self._cache: tuple[PlaudSession, float, float | None, int | None] | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -618,12 +676,23 @@ class SessionManager:
         except OSError:
             return None
 
-    def _is_stale(self, loaded_at: float, mtime_at_load: float | None) -> bool:
+    def _is_stale(self, loaded_at: float, mtime_at_load: float | None, expires_at: int | None) -> bool:
         """Return True when the cached session should be discarded.
 
-        Uses the mtime probe when a path is available (zero-allocation, no
-        keyring contact).  Falls back to TTL when no path can be probed.
+        The expiry check runs unconditionally, before the mtime/TTL probe
+        (#138): the mtime probe only detects that the *backing file* changed,
+        it says nothing about the passage of time toward the *cached token's*
+        own expiry.  A long-lived MCP process that loads a session once and
+        then never sees the file change would previously serve that same
+        (now-expired) token forever — the mtime check made the expiry
+        re-check unreachable.  Checking expiry first, on every call, is a
+        single cheap int comparison and costs nothing on the hot path.
+
+        Falls back to the mtime probe when available (zero-allocation, no
+        keyring contact), then to a wall-clock TTL when no path can be probed.
         """
+        if expires_at is not None and int(time()) + TOKEN_REFRESH_BUFFER_SECONDS > expires_at:
+            return True
         path = self._probe_path()
         if path is not None:
             current_mtime = self._mtime(path)
@@ -632,11 +701,14 @@ class SessionManager:
         # No path available — fall back to wall-clock TTL.
         return time() - loaded_at > self._CACHE_TTL_SECONDS
 
-    def _make_cache_entry(self, session: PlaudSession) -> tuple[PlaudSession, float, float | None]:
+    def _make_cache_entry(
+        self, session: PlaudSession
+    ) -> tuple[PlaudSession, float, float | None, int | None]:
         """Build a fresh cache tuple for *session* using the current probe state."""
         path = self._probe_path()
         mtime = self._mtime(path) if path is not None else None
-        return (session, time(), mtime)
+        expires_at = self._decode_expiry(session.access_token)
+        return (session, time(), mtime, expires_at)
 
     # ------------------------------------------------------------------
     # Public API
@@ -644,10 +716,11 @@ class SessionManager:
 
     def require(self) -> PlaudSession:
         if self._cache is not None:
-            cached_session, loaded_at, mtime_at_load = self._cache
-            if not self._is_stale(loaded_at, mtime_at_load):
-                # Hot path: backing store is unchanged and TTL has not elapsed.
-                # No keyring contact, no file I/O beyond the mtime stat above.
+            cached_session, loaded_at, mtime_at_load, expires_at = self._cache
+            if not self._is_stale(loaded_at, mtime_at_load, expires_at):
+                # Hot path: cached token is not within the expiry buffer, the
+                # backing store is unchanged, and TTL has not elapsed. No
+                # keyring contact, no file I/O beyond the mtime stat above.
                 return cached_session
         session = self.store.load()
         if not session:

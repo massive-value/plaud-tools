@@ -1535,6 +1535,62 @@ class TestRetryBackoff:
         assert sleep_calls == []
 
 
+class TestMutationRetryPolicy:
+    """#147: non-idempotent methods must not be auto-retried on 429/5xx.
+
+    Design decision (issue #147, needs-triage): retry the idempotent GET path
+    on transient errors as before, but give POST/PATCH/DELETE exactly one
+    attempt regardless of ``classify()``'s retryable flag. Blindly retrying a
+    transient failure on a mutation risks duplicating a side effect that may
+    have already landed server-side before the "failure" was observed (a
+    second /file/combine merge, a folder create that raises a false
+    "already exists" after the first attempt actually succeeded). GET has no
+    such risk, so it keeps the full retry budget.
+    """
+
+    def test_post_with_transient_error_is_not_retried(self, tmp_path, monkeypatch):
+        """A 429 on a POST (e.g. folder create) must raise after exactly one
+        transport call — not silently retried into a duplicate mutation."""
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([_transient_error(429)])
+
+        sleep_calls: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.create_folder("Clients")
+
+        assert len(transport.calls) == 1
+        assert sleep_calls == []
+
+    def test_post_with_5xx_is_not_retried(self, tmp_path, monkeypatch):
+        """A 503 on a POST must also not be retried."""
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([_transient_error(503)])
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError):
+            client.create_folder("Clients")
+
+        assert len(transport.calls) == 1
+
+    def test_get_with_transient_error_still_retries(self, tmp_path, monkeypatch):
+        """Control: GET keeps the existing retry-on-transient behaviour."""
+        manager, _ = make_manager(tmp_path)
+        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+        transport = StubTransport([_transient_error(429), ok])
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
+
+        client = PlaudClient(manager, transport=transport)
+        result = client.list_recordings()
+
+        assert result == []
+        assert len(transport.calls) == 2
+
+
 class TestRetryAfterHeader:
     """Retry-After header value must be honoured: sleep >= Retry-After."""
 
@@ -1595,6 +1651,63 @@ class TestRetryAfterHeader:
         assert sleep_calls[0] > 0.0
 
 
+class TestNonJsonBodyOnSuccess:
+    """#146: a 2xx response with a non-JSON body must surface as a
+    PlaudApiError (server/upstream error shape), not an unguarded
+    json.JSONDecodeError — the latter is a ValueError subclass that the MCP
+    facade's `except ValueError` branch reports as error_code="validation",
+    misleadingly blaming the caller for what is actually a server outage.
+    """
+
+    def test_main_api_non_json_2xx_body_raises_plaud_api_error(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        # A 200 whose body is not JSON at all (e.g. an HTML error page served
+        # through a CDN/proxy in front of the real API).
+        transport = StubTransport([HttpResponse(200, b"<html>upstream hiccup</html>", {})])
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError) as exc_info:
+            client.list_recordings()
+
+        # Must NOT be a bare json.JSONDecodeError (a ValueError subclass) —
+        # it must be wrapped as a PlaudApiError carrying the HTTP status.
+        assert not isinstance(exc_info.value, json.JSONDecodeError)
+        assert exc_info.value.http_status == 200
+
+    def test_transcript_data_link_non_json_2xx_body_raises_plaud_api_error(self, tmp_path):
+        """Same guarantee for the transcript S3 data_link fetch path
+        (client.py _fetch_transcript_segments), a separate code path from the
+        main /file/... API request loop."""
+        manager, _ = make_manager(tmp_path)
+        detail_response = HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "status": 0,
+                    "data": {
+                        "file_id": "rec1",
+                        "content_list": [
+                            {
+                                "data_type": "transaction",
+                                "task_status": 1,
+                                "data_link": "https://s3.fake/transcript.json",
+                            }
+                        ],
+                    },
+                }
+            ).encode(),
+            {},
+        )
+        transport = StubTransport([detail_response, HttpResponse(200, b"not json at all", {})])
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError) as exc_info:
+            client.get_recording("rec1", include_transcript=True)
+
+        assert not isinstance(exc_info.value, json.JSONDecodeError)
+        assert exc_info.value.http_status == 200
+
+
 class TestPollLoopSurvival:
     """Poll loops must survive transient errors and abort on non-transient ones."""
 
@@ -1629,6 +1742,22 @@ class TestPollLoopSurvival:
         # Must complete without raising.
         client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
         # Transport was called twice: once for the transient, once for success.
+        assert len(transport.calls) == 2
+
+    def test_wait_for_transcription_survives_one_network_blip(self, tmp_path, monkeypatch):
+        """#143: a raw transport-level failure (e.g. a socket timeout, no HTTP
+        status at all) during the poll must also be skipped, not abort a
+        multi-minute transcription wait that is still succeeding server-side.
+        Before the fix, network_error-flagged errors classified as
+        ("api_error", False) and aborted the wait on the very first blip."""
+        manager, _ = make_manager(tmp_path)
+        network_blip = PlaudApiError("Plaud API request timed out after 30.0s", network_error=True)
+        transport = StubTransport([network_blip, self._recording_response(is_trans=True)])
+
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+
+        client = PlaudClient(manager, transport=transport)
+        client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
         assert len(transport.calls) == 2
 
     def test_wait_for_transcription_propagates_non_transient_error(self, tmp_path, monkeypatch):

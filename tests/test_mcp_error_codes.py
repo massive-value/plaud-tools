@@ -52,9 +52,12 @@ class TestClassifyApiError:
         assert code == "api_error"
         assert retryable is False
 
-    def test_401_maps_to_api_error(self):
+    def test_401_maps_to_session_expired(self):
+        """#138 (Wave 1): a 401 means Plaud rejected the token — classify()
+        now reports the same code as a locally-detected expiry so the tray
+        knows to prompt re-sign-in instead of surfacing an opaque API error."""
         code, retryable = self._make_err(401).classify()
-        assert code == "api_error"
+        assert code == "session_expired"
         assert retryable is False
 
     def test_403_maps_to_api_error(self):
@@ -114,6 +117,16 @@ class TestCallErrorPropagation:
         assert payload["retryable"] is False
         assert result["isError"] is True
 
+    def test_401_api_error_returns_session_expired_code(self):
+        """#138 (Wave 1): end-to-end through the handler — a PlaudApiError
+        carrying http_status=401 must come out the other side of _call as
+        error_code="session_expired", not "api_error"."""
+        handlers = _make_handlers(PlaudApiError("unauthorized", http_status=401))
+        result = handlers["browse_recordings"]()
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "session_expired"
+        assert payload["retryable"] is False
+
     def test_404_api_error_returns_not_found_code(self):
         handlers = _make_handlers(PlaudApiError("not found", http_status=404))
         result = handlers["browse_recordings"]()
@@ -164,6 +177,18 @@ class TestCallErrorPropagation:
         assert payload["error_code"] == "session_expired"
         assert payload["retryable"] is False
 
+    def test_os_error_returns_io_error_code(self):
+        """#150: OSError (permission denied, disk full, temp-file races, …)
+        must not escape the structured-error contract — it needs its own
+        error_code so it doesn't get silently mislabelled as a generic
+        api_error or, worse, propagate past _call entirely."""
+        handlers = _make_handlers(OSError("disk full"))
+        result = handlers["browse_recordings"]()
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "io_error"
+        assert payload["retryable"] is False
+        assert result["isError"] is True
+
 
 # ---------------------------------------------------------------------------
 # Inline validation errors in handlers use structured codes
@@ -173,21 +198,44 @@ class TestCallErrorPropagation:
 class TestMutateRecordingValidation:
     def _handlers(self):
         mock_client = MagicMock()
-        return build_handlers(lambda: mock_client)
+        return build_handlers(lambda: mock_client), mock_client
 
     def test_rename_without_new_name_returns_validation_code(self):
-        handlers = self._handlers()
+        handlers, _ = self._handlers()
         result = handlers["mutate_recording"](recording_id="x", mutation="rename")
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
         assert payload["retryable"] is False
 
     def test_unknown_mutation_returns_validation_code(self):
-        handlers = self._handlers()
+        handlers, _ = self._handlers()
         result = handlers["mutate_recording"](recording_id="x", mutation="explode")
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
         assert payload["retryable"] is False
+
+    def test_move_without_folder_id_returns_validation_code(self):
+        """#140: folder_id omitted (and clear_folder not set) on mutation=move
+        used to fall through to "clear the folder" — silently unfiling the
+        recording instead of erroring. It must now be a validation error, and
+        the client must never be called."""
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_id="x", mutation="move")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        assert payload["retryable"] is False
+        assert "folder_id" in payload["error"]
+        mock_client.set_recording_folder.assert_not_called()
+
+    def test_move_with_clear_folder_and_no_folder_id_still_clears(self):
+        """clear_folder=true remains the explicit, intentional way to unfile —
+        that path must still work with folder_id omitted."""
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_id="x", mutation="move", clear_folder=True)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload.get("ok") is True
+        assert payload["folder_id"] is None
+        mock_client.set_recording_folder.assert_called_once_with("x", None)
 
 
 class TestProcessRecordingValidation:

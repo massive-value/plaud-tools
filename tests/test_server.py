@@ -123,6 +123,95 @@ def test_server_constructs_without_error():
     assert server is not None
 
 
+def test_server_browse_recordings_limit_has_minimum_one():
+    tool = next(t for t in _TOOLS if t.name == "browse_recordings")
+    assert tool.inputSchema["properties"]["limit"]["minimum"] == 1
+
+
+def test_server_browse_recordings_after_has_minimum_zero():
+    tool = next(t for t in _TOOLS if t.name == "browse_recordings")
+    assert tool.inputSchema["properties"]["after"]["minimum"] == 0
+
+
+# ---------------------------------------------------------------------------
+# #139: call_tool must propagate isError from the handler result, and set it
+# on every return path — not just fall through to the SDK's hard-coded False.
+# ---------------------------------------------------------------------------
+
+
+class _NoSessionStore:
+    """Stand-in for SessionStore whose load() always reports "no session".
+
+    Used instead of the real SessionStore so tests that exercise the
+    session_expired path via _make_server() cannot accidentally pick up a
+    real stored/keyring session on the machine running the tests and make a
+    live Plaud API call.
+    """
+
+    def load(self):
+        return None
+
+
+class TestCallToolIsErrorPropagation:
+    def _invoke_result(
+        self, tool_name: str, arguments: dict, *, server: object | None = None
+    ) -> mcp_types.CallToolResult:
+        """Build a CallToolRequest, run it through the SDK handler, and return the
+        full CallToolResult (not just the text) so isError can be asserted."""
+        srv = server or _make_server()
+        sdk_handler = srv.request_handlers[mcp_types.CallToolRequest]
+        req = mcp_types.CallToolRequest(
+            method="tools/call",
+            params=mcp_types.CallToolRequestParams(name=tool_name, arguments=arguments),
+        )
+        result = asyncio.run(sdk_handler(req))
+        return result.root
+
+    def test_unknown_tool_returns_is_error_true(self):
+        result = self._invoke_result("not_a_real_tool", {})
+        assert result.isError is True
+        payload = json.loads(result.content[0].text)
+        assert "Unknown tool" in payload["error"]
+
+    def test_bogus_kwarg_type_error_returns_is_error_true(self):
+        result = self._invoke_result("list_folders", {"bogus_kwarg": "unexpected"})
+        assert result.isError is True
+
+    def test_handler_error_result_propagates_is_error_true(self, monkeypatch):
+        """A structured handler error (e.g. session_expired, refused delete) must
+        surface as isError=True on the CallToolResult — not just in the JSON body.
+
+        Regression for #139: previously call_tool always returned a plain content
+        list, which the MCP SDK wraps with isError=False regardless of what the
+        handler's payload said.  The store is swapped for a fake that always
+        reports "no session" so this cannot accidentally hit a real Plaud
+        session/network on the machine running the tests.
+        """
+        from plaud_tools import server as srv_mod
+
+        monkeypatch.setattr(srv_mod, "SessionStore", lambda: _NoSessionStore())
+        server = srv_mod._make_server()
+        result = self._invoke_result("browse_recordings", {}, server=server)
+        assert result.isError is True
+        payload = json.loads(result.content[0].text)
+        assert payload["error_code"] == "session_expired"
+
+    def test_delete_recording_refused_confirm_returns_is_error_true(self, monkeypatch):
+        """A validation-refused delete (confirm=false) must set isError=True on
+        the CallToolResult, independent of whether a session even exists — the
+        confirm gate is checked before any client call."""
+        from plaud_tools import server as srv_mod
+
+        monkeypatch.setattr(srv_mod, "SessionStore", lambda: _NoSessionStore())
+        server = srv_mod._make_server()
+        result = self._invoke_result(
+            "delete_recording", {"recording_id": "rec1", "confirm": False}, server=server
+        )
+        assert result.isError is True
+        payload = json.loads(result.content[0].text)
+        assert payload["error_code"] == "validation"
+
+
 def test_mcp_log_path_uses_localappdata(monkeypatch, tmp_path):
     # appdata.data_dir() branches on sys.platform; pin to win32 so the
     # LOCALAPPDATA env-var override is honoured on Linux CI as well. This

@@ -864,12 +864,35 @@ class PlaudClient:
                 )
             except PlaudApiError as exc:
                 _code, retryable = exc.classify()
-                if retryable and attempt < _MAX_ATTEMPTS - 1:
+                # #147: only auto-retry idempotent GETs. Retrying a
+                # non-idempotent POST/PATCH/DELETE on a transient 429/5xx (or
+                # a network blip) risks duplicating a side effect the caller
+                # never asked for — e.g. a second /file/combine merge running
+                # to completion, or a folder-create that "fails" with a false
+                # "already exists" after the first attempt actually succeeded
+                # server-side. A GET can be safely replayed, so it keeps the
+                # full retry budget; every other method gets exactly one try
+                # here (callers that need resilience for a specific mutation,
+                # e.g. merge/transcription polling, already retry at the
+                # application layer using idempotent GET polls).
+                if retryable and method == "GET" and attempt < _MAX_ATTEMPTS - 1:
                     last_error = exc
                     continue
                 raise
 
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                # #146: a 2xx response with a non-JSON (or undecodable) body
+                # is a Plaud-side/upstream problem, not a caller input error.
+                # Left unguarded, json.JSONDecodeError (a ValueError subclass)
+                # escaped all the way to the MCP facade's `except ValueError`
+                # branch, which reports error_code="validation" — misleadingly
+                # blaming the caller for what is actually a server outage.
+                raise PlaudApiError(
+                    f"Plaud API returned a non-JSON body (HTTP {response.status_code})",
+                    http_status=response.status_code,
+                ) from exc
             if not isinstance(payload, dict):
                 raise PlaudApiError("Plaud API returned a non-object payload.")
 
@@ -1025,7 +1048,19 @@ class PlaudClient:
         )
         if response.status_code < 200 or response.status_code >= 300:
             return []
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            # #146: same rationale as _request_json — a 2xx with a non-JSON
+            # body is an upstream problem, not a caller input error. Without
+            # this, json.JSONDecodeError escaped as-is and calling code (e.g.
+            # rename_speaker/correct_transcript's "no transcript yet" check)
+            # misreported the resulting empty segment list as a validation
+            # error instead of the server-side failure it actually was.
+            raise PlaudApiError(
+                f"Plaud transcript link returned a non-JSON body (HTTP {response.status_code})",
+                http_status=response.status_code,
+            ) from exc
         if isinstance(body, list):
             return body
         if isinstance(body, dict):
