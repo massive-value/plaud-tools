@@ -83,7 +83,14 @@ class UrllibTransport:
         except TimeoutError as exc:
             # socket.timeout is a subclass of OSError on Python 3.11+ but may
             # NOT be a URLError — catch it explicitly so callers always get a
-            # PlaudApiError rather than a raw socket exception.
-            raise PlaudApiError(f"Plaud API request timed out after {effective_timeout}s") from exc
+            # PlaudApiError rather than a raw socket exception.  Flagged
+            # network_error=True (#143) so classify() treats a transient
+            # blip as retryable instead of aborting a long poll/merge wait.
+            raise PlaudApiError(
+                f"Plaud API request timed out after {effective_timeout}s", network_error=True
+            ) from exc
         except URLError as exc:
-            raise PlaudApiError(f"Plaud API request failed: {exc.reason}") from exc
+            # No HTTP response was received at all (DNS failure, connection
+            # refused, etc.) — also a transient transport failure, not a
+            # structural API problem.  See network_error=True note above.
+            raise PlaudApiError(f"Plaud API request failed: {exc.reason}", network_error=True) from exc

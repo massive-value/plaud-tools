@@ -150,9 +150,12 @@ class TestClassify:
         assert code == "api_error"
         assert retryable is False
 
-    def test_401_maps_to_api_error(self):
+    def test_401_maps_to_session_expired(self):
+        """#138: a 401 means Plaud rejected the token — same code as a locally
+        detected expiry, so the tray/AI client knows to prompt re-sign-in
+        instead of treating it as an opaque API error."""
         code, retryable = self._make_err(401).classify()
-        assert code == "api_error"
+        assert code == "session_expired"
         assert retryable is False
 
     def test_403_maps_to_api_error(self):
@@ -161,9 +164,22 @@ class TestClassify:
         assert retryable is False
 
     def test_none_status_maps_to_api_error(self):
+        """A None-status error with no network_error flag is an
+        application-level failure (e.g. region redirect loop, malformed
+        combine response) — must NOT be treated as retryable."""
         code, retryable = self._make_err(None).classify()
         assert code == "api_error"
         assert retryable is False
+
+    def test_none_status_with_network_error_flag_maps_to_transient(self):
+        """#143: a transport-level failure (timeout/connection refused) is
+        flagged network_error=True by UrllibTransport and must classify as a
+        retryable transient — a 30s blip should not abort a multi-minute
+        merge/transcription wait that is still succeeding server-side."""
+        err = PlaudApiError("Plaud API request timed out after 30.0s", network_error=True)
+        code, retryable = err.classify()
+        assert code == "transient"
+        assert retryable is True
 
     def test_returns_tuple(self):
         result = self._make_err(500).classify()

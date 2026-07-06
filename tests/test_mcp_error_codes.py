@@ -52,9 +52,12 @@ class TestClassifyApiError:
         assert code == "api_error"
         assert retryable is False
 
-    def test_401_maps_to_api_error(self):
+    def test_401_maps_to_session_expired(self):
+        """#138 (Wave 1): a 401 means Plaud rejected the token — classify()
+        now reports the same code as a locally-detected expiry so the tray
+        knows to prompt re-sign-in instead of surfacing an opaque API error."""
         code, retryable = self._make_err(401).classify()
-        assert code == "api_error"
+        assert code == "session_expired"
         assert retryable is False
 
     def test_403_maps_to_api_error(self):
@@ -113,6 +116,16 @@ class TestCallErrorPropagation:
         assert payload["error_code"] == "session_expired"
         assert payload["retryable"] is False
         assert result["isError"] is True
+
+    def test_401_api_error_returns_session_expired_code(self):
+        """#138 (Wave 1): end-to-end through the handler — a PlaudApiError
+        carrying http_status=401 must come out the other side of _call as
+        error_code="session_expired", not "api_error"."""
+        handlers = _make_handlers(PlaudApiError("unauthorized", http_status=401))
+        result = handlers["browse_recordings"]()
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "session_expired"
+        assert payload["retryable"] is False
 
     def test_404_api_error_returns_not_found_code(self):
         handlers = _make_handlers(PlaudApiError("not found", http_status=404))

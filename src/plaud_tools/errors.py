@@ -37,6 +37,18 @@ class PlaudApiError(PlaudError):
         unparseable.  Plaud is assumed to send the delta-seconds integer form
         (RFC 9110 §10.2.3); HTTP-date form is not parsed and is ignored to
         keep the implementation simple.
+    network_error:
+        ``True`` when this error represents a transport-level failure (a
+        request that never produced an HTTP response at all — connection
+        refused, DNS failure, socket timeout) rather than a structured HTTP
+        error response.  Set only by :class:`~plaud_tools.transport.UrllibTransport`.
+        ``classify()`` treats these as retryable transients (#143): a 30-second
+        network blip should not abort a multi-minute merge/transcription wait
+        that is still succeeding server-side.  Deliberately distinct from "any
+        error with ``http_status is None``" — application-level errors raised
+        directly by ``PlaudClient`` (region-redirect loops, malformed combine
+        responses, business-logic failures echoed by Plaud) also have no HTTP
+        status but must NOT become retryable just because of that.
     """
 
     def __init__(
@@ -48,6 +60,7 @@ class PlaudApiError(PlaudError):
         plaud_msg: str | None = None,
         raw_body: str | None = None,
         retry_after: float | None = None,
+        network_error: bool = False,
     ) -> None:
         super().__init__(message)
         self.http_status = http_status
@@ -55,6 +68,7 @@ class PlaudApiError(PlaudError):
         self.plaud_msg = plaud_msg
         self.raw_body = raw_body
         self.retry_after = retry_after
+        self.network_error = network_error
 
     @classmethod
     def from_http_error(cls, exc: HTTPError) -> PlaudApiError:
@@ -150,11 +164,26 @@ class PlaudApiError(PlaudError):
         -------
         tuple[str, bool]
             A ``(code, retryable)`` pair where *code* is one of
-            ``"not_found"``, ``"transient"``, or ``"api_error"``.
+            ``"session_expired"``, ``"not_found"``, ``"transient"``, or
+            ``"api_error"``.
         """
         status = self.http_status
+        # #138: a 401 means the token Plaud is holding is no longer valid —
+        # report the same code SessionManager.require() uses for a locally
+        # detected expiry, so callers (and the tray) treat it as "go sign in
+        # again" rather than an opaque API error.
+        if status == 401:
+            return "session_expired", False
         if status == 404:
             return "not_found", False
         if status is not None and (status == 429 or status >= 500):
+            return "transient", True
+        # #143: a transport-level failure (timeout, connection refused, DNS
+        # failure — no HTTP response was ever received) is presumed transient.
+        # Only errors explicitly flagged by the transport qualify; an
+        # application-level PlaudApiError with no http_status (e.g. a region
+        # redirect loop or a business-logic failure echoed by Plaud) must NOT
+        # become retryable just because it also lacks a status code.
+        if status is None and self.network_error:
             return "transient", True
         return "api_error", False
