@@ -248,3 +248,48 @@ class TestUrllibTransportTimeoutErrors:
                 transport.request("GET", "https://example.com/api", {})
 
         assert "120" in str(exc_info.value)
+
+    def test_timeout_error_flags_network_error_and_classifies_transient(self):
+        """#143: a socket timeout must set network_error=True so classify()
+        treats it as a retryable transient rather than a non-retryable
+        api_error — a 30s blip must not abort a multi-minute wait."""
+        transport = UrllibTransport(timeout=30.0)
+
+        with patch("plaud_tools.transport.urlopen", side_effect=TimeoutError("timed out")):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        err = exc_info.value
+        assert err.network_error is True
+        code, retryable = err.classify()
+        assert code == "transient"
+        assert retryable is True
+
+    def test_url_error_flags_network_error_and_classifies_transient(self):
+        """#143: a connection-level failure (DNS, connection refused, etc.)
+        must also be flagged as a retryable transient."""
+        transport = UrllibTransport()
+
+        with patch("plaud_tools.transport.urlopen", side_effect=URLError("Connection refused")):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        err = exc_info.value
+        assert err.network_error is True
+        code, retryable = err.classify()
+        assert code == "transient"
+        assert retryable is True
+
+    def test_http_error_does_not_set_network_error_flag(self):
+        """A structured HTTP error response (we did get a reply) must not be
+        flagged as a network_error — its classification comes from the
+        status code alone."""
+        body = json.dumps({"status": -1, "msg": "server error"}).encode()
+        http_exc = _make_http_error(500, body)
+        transport = UrllibTransport()
+
+        with patch("plaud_tools.transport.urlopen", side_effect=http_exc):
+            with pytest.raises(PlaudApiError) as exc_info:
+                transport.request("GET", "https://example.com/api", {})
+
+        assert exc_info.value.network_error is False
