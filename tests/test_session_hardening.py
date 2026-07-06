@@ -162,9 +162,7 @@ class TestFileSessionStoreSaveIsAtomic:
 
 
 class TestClearRemovesLegacyFile:
-    def test_clear_deletes_legacy_session_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_clear_deletes_legacy_session_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Regression for #144: before the fix, clear() only unlinked the new
         appdata-path session file. A user whose FileSessionStore fallback
         session lived at the legacy ~/.config/plaud-tools/session.json path

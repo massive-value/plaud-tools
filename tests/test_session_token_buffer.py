@@ -67,9 +67,7 @@ class TestTokenRefreshBufferBoundary:
         session = manager.require()
         assert session.access_token == jwt
 
-    def test_twenty_nine_days_out_is_accepted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_twenty_nine_days_out_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The exact v0.5.0 incident: Plaud issues 30-day tokens — a freshly
         issued token (29 days remaining, allowing for clock skew) must not be
         refused."""
