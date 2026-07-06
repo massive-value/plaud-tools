@@ -208,6 +208,49 @@ def test_cli_search_returns_all_when_no_match():
     assert payload == []
 
 
+def test_cli_search_supports_unfiled():
+    # search shares _list_recordings_filtered with list — it must accept the
+    # same --unfiled flag list does, not just --since/--until/--folder-id.
+    output = run_cli(["search", "lunch", "--unfiled"], StubClient())
+    payload = json.loads(output)
+    assert [item["id"] for item in payload] == ["r2"]
+
+
+def test_cli_detail_omits_transcript_by_default_and_fetches_summary():
+    # #detail fix: no more always-null "transcript" key, and "summary" must
+    # reflect an actual include_summary=True fetch (StubClient always returns
+    # ai_content regardless, but this pins that include_summary=True is passed
+    # through, matching `summary <id>`).
+    output = run_cli(["detail", "rec1"], StubClient())
+    payload = json.loads(output)
+    assert payload["id"] == "rec1"
+    assert payload["is_trans"] is True
+    assert payload["is_summary"] is True
+    assert payload["summary"] == "# Summary"
+    assert "transcript" not in payload
+
+
+def test_cli_detail_include_transcript_populates_transcript():
+    output = run_cli(["detail", "rec1", "--include-transcript"], StubClient())
+    payload = json.loads(output)
+    assert payload["transcript"] == "hello world"
+    assert payload["summary"] == "# Summary"
+
+
+def test_cli_detail_passes_include_summary_to_client():
+    calls = {}
+
+    class DetailStub(StubClient):
+        def get_recording(self, recording_id, include_transcript=False, include_summary=False):
+            calls["include_summary"] = include_summary
+            return super().get_recording(
+                recording_id, include_transcript=include_transcript, include_summary=include_summary
+            )
+
+    run_cli(["detail", "rec1"], DetailStub())
+    assert calls["include_summary"] is True
+
+
 def test_cli_show_returns_metadata_speakers_headline():
     output = run_cli(["show", "rec1"], StubClient())
     payload = json.loads(output)
@@ -231,11 +274,11 @@ def test_cli_list_filters_query_and_unfiled():
     assert [item["id"] for item in payload] == ["r2"]
 
 
-def test_cli_trash_no_arg_lists_trash():
+def test_cli_trash_list_flag_lists_trash():
     from datetime import datetime
 
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
-    output = run_cli(["trash"], StubClient())
+    output = run_cli(["trash", "--list"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
@@ -247,6 +290,23 @@ def test_cli_trash_no_arg_lists_trash():
             "folder_id": None,
         }
     ]
+
+
+def test_cli_trash_bare_no_id_no_list_raises():
+    # Split-trash fix: a bare `trash` with no ID and no --list used to
+    # silently list trash — a dropped/mistyped ID argument turned an intended
+    # mutation into a no-op listing with no error. It must now raise instead.
+    import pytest
+
+    with pytest.raises(ValueError, match="requires a recording ID"):
+        run_cli(["trash"], StubClient())
+
+
+def test_cli_trash_list_and_id_together_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        run_cli(["trash", "rec1", "--list"], StubClient())
 
 
 def test_cli_trash_with_id_moves_to_trash():
@@ -322,7 +382,7 @@ def test_cli_trash_list_returns_curated_items():
     from datetime import datetime
 
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
-    output = run_cli(["trash"], StubClient())
+    output = run_cli(["trash", "--list"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
@@ -405,6 +465,72 @@ def test_cli_transcribe_shapes_accept_response():
         "recording_id": "rec1",
         "template_type": "MEETING-CONSULT",
     }
+
+
+def test_cli_transcribe_passes_language_diarization_llm():
+    client = StubClient()
+    run_cli(
+        [
+            "transcribe",
+            "rec1",
+            "--language",
+            "en-US",
+            "--diarization",
+            "--llm",
+            "gpt-4",
+        ],
+        client,
+    )
+    assert client.transcribe_call == ("rec1", None, "en-US", True, "gpt-4")
+
+
+def test_cli_transcribe_no_diarization_flag():
+    client = StubClient()
+    run_cli(["transcribe", "rec1", "--no-diarization"], client)
+    assert client.transcribe_call == ("rec1", None, None, False, None)
+
+
+def test_cli_transcribe_wait_none_is_default_and_never_polls():
+    client = StubClient()
+    calls = []
+    client.wait_for_transcription = lambda recording_id, **kwargs: calls.append("transcript")
+    client.wait_for_summary = lambda recording_id, **kwargs: calls.append("summary")
+    output = run_cli(["transcribe", "rec1"], client)
+    payload = json.loads(output)
+    assert calls == []
+    assert "is_trans" not in payload
+    assert "is_summary" not in payload
+
+
+def test_cli_transcribe_wait_transcript_polls_transcript_only():
+    client = StubClient()
+    calls = []
+    client.wait_for_transcription = lambda recording_id, **kwargs: calls.append("transcript")
+    client.wait_for_summary = lambda recording_id, **kwargs: calls.append("summary")
+    output = run_cli(["transcribe", "rec1", "--wait", "transcript"], client)
+    payload = json.loads(output)
+    assert calls == ["transcript"]
+    assert payload["is_trans"] is True
+    assert payload["is_summary"] is True
+
+
+def test_cli_transcribe_wait_summary_polls_both():
+    client = StubClient()
+    calls = []
+    client.wait_for_transcription = lambda recording_id, **kwargs: calls.append("transcript")
+    client.wait_for_summary = lambda recording_id, **kwargs: calls.append("summary")
+    output = run_cli(["transcribe", "rec1", "--wait", "summary"], client)
+    payload = json.loads(output)
+    assert calls == ["transcript", "summary"]
+    assert payload["is_trans"] is True
+    assert payload["is_summary"] is True
+
+
+def test_cli_transcribe_rejects_unknown_wait_mode():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        run_cli(["transcribe", "rec1", "--wait", "forever"], StubClient())
 
 
 def test_cli_status_returns_task_list():
@@ -538,6 +664,66 @@ def test_cli_main_returns_nonzero_on_missing_session(capsys, monkeypatch, tmp_pa
     assert code == 1
     captured = capsys.readouterr()
     assert "No Plaud session available." in captured.err
+
+
+# ---------------------------------------------------------------------------
+# §6.2 — session-expired CLI output must name the remedy.
+# ---------------------------------------------------------------------------
+
+
+def _run_main_with_client(monkeypatch, client, argv):
+    """Exercise main()'s error handling with an injected client.
+
+    main() always builds its own PlaudClient from a SessionStore, so to drive
+    a specific client-raised error through main()'s except clauses, patch
+    run_cli to forward the given client instead.
+    """
+    from plaud_tools import cli as cli_module
+
+    real_run_cli = cli_module.run_cli
+    monkeypatch.setattr(cli_module, "run_cli", lambda argv_inner: real_run_cli(argv_inner, client=client))
+    return cli_module.main(argv)
+
+
+def test_cli_main_session_expired_error_names_remedy(capsys, monkeypatch):
+    from plaud_tools.errors import PlaudSessionExpiredError
+
+    class ExpiredClient:
+        def list_recordings(self, query=None):
+            raise PlaudSessionExpiredError("Plaud session expired or expiring soon.")
+
+    code = _run_main_with_client(monkeypatch, ExpiredClient(), ["list"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "Plaud session expired or expiring soon." in captured.err
+    assert "plaud-tools refresh" in captured.err
+    assert "PlaudTools tray" in captured.err
+
+
+def test_cli_main_401_api_error_names_remedy(capsys, monkeypatch):
+    from plaud_tools.errors import PlaudApiError
+
+    class UnauthorizedClient:
+        def list_recordings(self, query=None):
+            raise PlaudApiError("Plaud API error: HTTP 401: unauthorized", http_status=401)
+
+    code = _run_main_with_client(monkeypatch, UnauthorizedClient(), ["list"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "plaud-tools refresh" in captured.err
+
+
+def test_cli_main_non_session_api_error_has_no_remedy_text(capsys, monkeypatch):
+    from plaud_tools.errors import PlaudApiError
+
+    class NotFoundClient:
+        def list_recordings(self, query=None):
+            raise PlaudApiError("Plaud API error: HTTP 404: not found", http_status=404)
+
+    code = _run_main_with_client(monkeypatch, NotFoundClient(), ["list"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "plaud-tools refresh" not in captured.err
 
 
 # --- MCP tests ---
