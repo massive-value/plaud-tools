@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# We import from tray_app directly; conftest.py already stubs pystray / PIL.
+# We import from plaud_tools.tray.setup directly; conftest.py already stubs
+# pystray / PIL.
 # ---------------------------------------------------------------------------
-from plaud_tools.tray_app import (
+from plaud_tools.tray.setup import (
     APP_NAME,
     EnvStatus,
     _check_cli_path,
@@ -143,13 +144,13 @@ class TestVerifyEnvDevMode:
 
     def test_verify_env_dev_mode_all_ok(self):
         # sys.frozen is not set in test mode → _cli_dir() returns None
-        with patch("plaud_tools.tray_app._autostart_enabled", return_value=True):
+        with patch("plaud_tools.tray.setup._autostart_enabled", return_value=True):
             status = _verify_env()
         assert status.path_ok is True
         assert status.completions_ok is True
 
     def test_verify_env_dev_mode_autostart_missing(self):
-        with patch("plaud_tools.tray_app._autostart_enabled", return_value=False):
+        with patch("plaud_tools.tray.setup._autostart_enabled", return_value=False):
             status = _verify_env()
         assert status.autostart_ok is False
         assert not status.all_ok
@@ -169,8 +170,8 @@ class TestAutostartOptOut:
 
     def test_verify_env_treats_opt_out_marker_as_autostart_ok(self):
         with (
-            patch("plaud_tools.tray_app._autostart_enabled", return_value=False),
-            patch("plaud_tools.tray_app._autostart_opted_out", return_value=True),
+            patch("plaud_tools.tray.setup._autostart_enabled", return_value=False),
+            patch("plaud_tools.tray.setup._autostart_opted_out", return_value=True),
         ):
             status = _verify_env()
         assert status.autostart_ok is True, (
@@ -181,8 +182,8 @@ class TestAutostartOptOut:
 
     def test_verify_env_missing_when_neither_enabled_nor_opted_out(self):
         with (
-            patch("plaud_tools.tray_app._autostart_enabled", return_value=False),
-            patch("plaud_tools.tray_app._autostart_opted_out", return_value=False),
+            patch("plaud_tools.tray.setup._autostart_enabled", return_value=False),
+            patch("plaud_tools.tray.setup._autostart_opted_out", return_value=False),
         ):
             status = _verify_env()
         assert status.autostart_ok is False
@@ -363,7 +364,7 @@ class TestCheckCliPath:
 
         cli = tmp_path / "cli"
         # Fake frozen mode so _cli_dir returns a path
-        with patch("plaud_tools.tray_app._cli_dir", return_value=cli):
+        with patch("plaud_tools.tray.setup._cli_dir", return_value=cli):
             with patch("winreg.OpenKey") as mock_key:
                 mock_key.return_value.__enter__ = lambda s: s
                 mock_key.return_value.__exit__ = MagicMock(return_value=False)
@@ -375,7 +376,7 @@ class TestCheckCliPath:
         import winreg
 
         cli = tmp_path / "cli"
-        with patch("plaud_tools.tray_app._cli_dir", return_value=cli):
+        with patch("plaud_tools.tray.setup._cli_dir", return_value=cli):
             with patch("winreg.OpenKey") as mock_key:
                 mock_key.return_value.__enter__ = lambda s: s
                 mock_key.return_value.__exit__ = MagicMock(return_value=False)
@@ -401,14 +402,14 @@ class TestCheckPsCompletions:
         profile = tmp_path / "profile.ps1"
         profile.write_text(source_line + "\n", encoding="utf-8")
 
-        with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            with patch("plaud_tools.tray_app.Path") as mock_path_cls:  # noqa: F841
+        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
+            with patch("plaud_tools.tray.setup.Path") as mock_path_cls:  # noqa: F841
                 # We only need to patch the home() call inside _check_ps_completions
                 # to point at our tmp tree; easier to patch at a higher level.
                 pass
         # Direct test: patch the profile list
-        with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            import plaud_tools.tray_app as ta
+        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
+            import plaud_tools.tray.setup as ta
 
             orig = ta._check_ps_completions  # noqa: F841  # captured for reference only
             # Monkey-patch profiles list via Path.home()
@@ -426,8 +427,8 @@ class TestCheckPsCompletions:
         ps1 = tmp_path / "completions" / "plaud-tools.ps1"
         ps1.parent.mkdir()
         ps1.write_text("# completions\n")
-        with patch("plaud_tools.tray_app._completions_dir", return_value=ps1.parent):
-            import plaud_tools.tray_app as ta
+        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
+            import plaud_tools.tray.setup as ta
 
             with patch.object(Path, "home", return_value=tmp_path / "home"):
                 docs = tmp_path / "home" / "Documents"

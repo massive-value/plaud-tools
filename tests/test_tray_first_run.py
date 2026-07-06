@@ -35,9 +35,7 @@ class TestShowInstallToast:
         monkeypatch.setattr(toasts, "_WINRT_TN", mock_toast_cls)
         monkeypatch.setattr(toasts, "_WINRT_XML", mock_xml_doc_cls)
 
-        from plaud_tools import tray_app
-
-        tray_app._show_install_toast()
+        toasts._show_install_toast()
 
         mock_manager.create_toast_notifier.assert_called_once_with("PlaudTools.TrayApp")
         mock_notifier.show.assert_called_once()
@@ -59,9 +57,7 @@ class TestShowInstallToast:
 
         monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", fake_popen)
 
-        from plaud_tools import tray_app
-
-        tray_app._show_install_toast()
+        toasts._show_install_toast()
 
         assert any("powershell" in args[0].lower() for args in spawned)
 
@@ -79,10 +75,8 @@ class TestShowInstallToast:
 
         monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", boom)
 
-        from plaud_tools import tray_app
-
         # Should not raise
-        tray_app._show_install_toast()
+        toasts._show_install_toast()
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +94,10 @@ class TestHomeWindowWelcomeBanner:
 
     def _make_home_window(self):
         """Construct a HomeWindow with all callable deps stubbed out."""
-        import plaud_tools.tray_app as tray_app
+        from plaud_tools.tray.windows.home import HomeWindow
 
         root = MagicMock()
-        hw = tray_app.HomeWindow(
+        hw = HomeWindow(
             root=root,
             on_test_connection=MagicMock(),
             on_check_for_update=MagicMock(),
@@ -187,10 +181,10 @@ class TestInstallSentinelConsumed:
         sentinel.write_text("1", encoding="utf-8")
 
         # Patch tempfile.gettempdir to point at tmp_path
-        monkeypatch.setattr("plaud_tools.tray_app.tempfile.gettempdir", lambda: str(tmp_path))
-        monkeypatch.setattr("plaud_tools.tray_app._show_install_toast", lambda: None)
+        monkeypatch.setattr("plaud_tools.tray.app.tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("plaud_tools.tray.app._show_install_toast", lambda: None)
 
-        import plaud_tools.tray_app as tray_app
+        import plaud_tools.tray.app as tray_app
 
         # Simulate only the sentinel block from _run (without starting mainloop)
         install_sentinel = Path(tempfile.gettempdir()) / "plaud_just_installed.txt"
@@ -208,8 +202,8 @@ class TestInstallSentinelConsumed:
 
     def test_sentinel_not_present_no_banner_armed(self, tmp_path, monkeypatch):
         """When no sentinel exists, arm_welcome_banner is never called."""
-        monkeypatch.setattr("plaud_tools.tray_app.tempfile.gettempdir", lambda: str(tmp_path))
-        import plaud_tools.tray_app as tray_app
+        monkeypatch.setattr("plaud_tools.tray.app.tempfile.gettempdir", lambda: str(tmp_path))
+        import plaud_tools.tray.app as tray_app
 
         install_sentinel = Path(tray_app.tempfile.gettempdir()) / "plaud_just_installed.txt"
         assert not install_sentinel.exists()
@@ -257,8 +251,8 @@ class TestWelcomeBannerArmsRegardlessOfSession:
 
     def test_replicated_sentinel_block_arms_banner_without_session(self, tmp_path, monkeypatch):
         """Simulates the exact fixed block from TrayApp._run for session=None."""
-        monkeypatch.setattr("plaud_tools.tray_app.tempfile.gettempdir", lambda: str(tmp_path))
-        import plaud_tools.tray_app as tray_app
+        monkeypatch.setattr("plaud_tools.tray.app.tempfile.gettempdir", lambda: str(tmp_path))
+        import plaud_tools.tray.app as tray_app
 
         install_sentinel = Path(tray_app.tempfile.gettempdir()) / "plaud_just_installed.txt"
         install_sentinel.write_text("", encoding="utf-8")

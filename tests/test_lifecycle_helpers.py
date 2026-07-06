@@ -1,4 +1,4 @@
-"""Unit tests for tray_app lifecycle helpers.
+"""Unit tests for tray setup/uninstall lifecycle helpers.
 
 Covers setup/teardown helpers for PATH, PowerShell completions, session files,
 and log files.  A stub ``winreg`` module is injected so the suite runs on both
@@ -122,13 +122,20 @@ def _make_winreg_stub(initial_path: str = "") -> types.ModuleType:
 
 
 # ---------------------------------------------------------------------------
-# Fixture: import tray_app helpers without running the tray (no display needed)
+# Fixtures: import tray helpers without running the tray (no display needed)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def tray_helpers():
-    """Return the tray_app module with heavy GUI deps stubbed out."""
+    """Return ``plaud_tools.tray.setup`` with heavy GUI deps stubbed out.
+
+    Covers the PATH/completions *setup* helpers (``_cli_dir``,
+    ``_setup_cli_path``, ``_setup_ps_completions``, ...), which all live in
+    ``tray.setup`` and reference each other via that module's own globals —
+    so ``monkeypatch.setattr(tray_helpers, "_cli_dir", ...)`` reaches the real
+    call sites without any shim.
+    """
     stubs = {
         "pystray": MagicMock(),
         "PIL": MagicMock(),
@@ -138,9 +145,32 @@ def tray_helpers():
         "tkinter.ttk": MagicMock(),
     }
     with patch.dict(sys.modules, stubs):
-        import plaud_tools.tray_app as tray_app
+        import plaud_tools.tray.setup as tray_setup
 
-        yield tray_app
+        yield tray_setup
+
+
+@pytest.fixture()
+def tray_uninstall_helpers():
+    """Return ``plaud_tools.tray.uninstaller`` with heavy GUI deps stubbed out.
+
+    Covers the *removal* helpers (``_remove_cli_path``, ``_remove_ps_completions``,
+    ``_delete_session_files``, ``_delete_log_files``), which live in
+    ``tray.uninstaller`` — a separate module from ``tray.setup`` even though
+    some of them call setup-module functions it imports into its own globals.
+    """
+    stubs = {
+        "pystray": MagicMock(),
+        "PIL": MagicMock(),
+        "PIL.Image": MagicMock(),
+        "PIL.ImageDraw": MagicMock(),
+        "tkinter": MagicMock(),
+        "tkinter.ttk": MagicMock(),
+    }
+    with patch.dict(sys.modules, stubs):
+        import plaud_tools.tray.uninstaller as tray_uninstaller
+
+        yield tray_uninstaller
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +292,9 @@ class TestSetupCliPath:
 class TestRemoveCliPath:
     """Tests for _remove_cli_path — removes cli entry from PATH via fake winreg."""
 
-    def _run_remove(self, tray_helpers, cli_dir, initial_path, monkeypatch):
+    def _run_remove(self, tray_uninstall_helpers, cli_dir, initial_path, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setattr(tray_helpers, "_cli_dir", lambda: cli_dir)
+        monkeypatch.setattr(tray_uninstall_helpers, "_cli_dir", lambda: cli_dir)
 
         winreg_stub = _make_winreg_stub(initial_path)
         fake_ctypes = MagicMock()
@@ -272,47 +302,47 @@ class TestRemoveCliPath:
         fake_ctypes.windll.user32 = MagicMock()
 
         with patch.dict(sys.modules, {"winreg": winreg_stub, "ctypes": fake_ctypes}):
-            tray_helpers._remove_cli_path()
+            tray_uninstall_helpers._remove_cli_path()
 
         stored_path, _ = winreg_stub._key._data.get("Path", ("", 2))
         return stored_path
 
-    def test_removes_cli_from_path(self, tray_helpers, tmp_path, monkeypatch):
+    def test_removes_cli_from_path(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         cli_dir = tmp_path / "cli"
         cli_dir.mkdir()
         initial = f"C:\\Windows\\system32;{cli_dir};C:\\more"
-        result = self._run_remove(tray_helpers, cli_dir, initial, monkeypatch)
+        result = self._run_remove(tray_uninstall_helpers, cli_dir, initial, monkeypatch)
         assert str(cli_dir) not in result
         assert "C:\\Windows\\system32" in result
         assert "C:\\more" in result
 
-    def test_noop_when_not_in_path(self, tray_helpers, tmp_path, monkeypatch):
+    def test_noop_when_not_in_path(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         cli_dir = tmp_path / "cli"
         cli_dir.mkdir()
         initial = "C:\\Windows\\system32;C:\\more"
-        result = self._run_remove(tray_helpers, cli_dir, initial, monkeypatch)
+        result = self._run_remove(tray_uninstall_helpers, cli_dir, initial, monkeypatch)
         assert result == initial
 
-    def test_noop_when_path_key_missing(self, tray_helpers, tmp_path, monkeypatch):
+    def test_noop_when_path_key_missing(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         cli_dir = tmp_path / "cli"
         cli_dir.mkdir()
         # Key has no Path value — should not raise
-        result = self._run_remove(tray_helpers, cli_dir, "", monkeypatch)
+        result = self._run_remove(tray_uninstall_helpers, cli_dir, "", monkeypatch)
         assert result == ""  # empty initial, nothing written back
 
-    def test_skips_on_non_windows(self, tray_helpers, monkeypatch):
+    def test_skips_on_non_windows(self, tray_uninstall_helpers, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
         called = []
         with patch.dict(sys.modules, {"winreg": MagicMock(side_effect=lambda *a, **kw: called.append(1))}):
-            tray_helpers._remove_cli_path()
+            tray_uninstall_helpers._remove_cli_path()
         assert called == []
 
-    def test_skips_when_cli_dir_is_none(self, tray_helpers, monkeypatch):
+    def test_skips_when_cli_dir_is_none(self, tray_uninstall_helpers, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setattr(tray_helpers, "_cli_dir", lambda: None)
+        monkeypatch.setattr(tray_uninstall_helpers, "_cli_dir", lambda: None)
         winreg_stub = _make_winreg_stub("C:\\Windows")
         with patch.dict(sys.modules, {"winreg": winreg_stub}):
-            tray_helpers._remove_cli_path()
+            tray_uninstall_helpers._remove_cli_path()
         # Original value must be untouched
         stored, _ = winreg_stub._key._data["Path"]
         assert stored == "C:\\Windows"
@@ -416,7 +446,7 @@ class TestSetupPsCompletions:
 class TestRemovePsCompletions:
     """Tests for _remove_ps_completions — removes all plaud sourcing lines."""
 
-    def test_removes_source_line(self, tray_helpers, tmp_path, monkeypatch):
+    def test_removes_source_line(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         """The plaud sourcing line is stripped by _remove_ps_completions.
 
         The production regex only strips lines pointing at the canonical
@@ -426,23 +456,23 @@ class TestRemovePsCompletions:
         profile_dir.mkdir(parents=True)
         profile = profile_dir / "Microsoft.PowerShell_profile.ps1"
 
-        canonical_completions = _patch_home(monkeypatch, tray_helpers, tmp_path)
+        canonical_completions = _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
         plaud_line = f'. "{canonical_completions / "plaud-tools.ps1"}"'
         other_line = "# unrelated line\n"
         profile.write_text(plaud_line + "\n" + other_line, encoding="utf-8")
 
-        tray_helpers._remove_ps_completions()
+        tray_uninstall_helpers._remove_ps_completions()
 
         content = profile.read_text(encoding="utf-8")
         assert plaud_line not in content
         assert other_line.strip() in content
 
-    def test_noop_when_profile_missing(self, tray_helpers, tmp_path, monkeypatch):
-        _patch_home(monkeypatch, tray_helpers, tmp_path)
+    def test_noop_when_profile_missing(self, tray_uninstall_helpers, tmp_path, monkeypatch):
+        _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
         # No profiles exist — should not raise
-        tray_helpers._remove_ps_completions()
+        tray_uninstall_helpers._remove_ps_completions()
 
-    def test_removes_all_plaud_variants(self, tray_helpers, tmp_path, monkeypatch):
+    def test_removes_all_plaud_variants(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         """Both old plaud.ps1 and new plaud-tools.ps1 sourcing lines are removed.
 
         Both variants must live under the canonical install dir for the
@@ -452,7 +482,7 @@ class TestRemovePsCompletions:
         profile_dir.mkdir(parents=True)
         profile = profile_dir / "Microsoft.PowerShell_profile.ps1"
 
-        canonical_completions = _patch_home(monkeypatch, tray_helpers, tmp_path)
+        canonical_completions = _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
         old_line = f'. "{canonical_completions / "plaud.ps1"}"'
         new_line = f'. "{canonical_completions / "plaud-tools.ps1"}"'
         lines = [
@@ -462,16 +492,16 @@ class TestRemovePsCompletions:
         ]
         profile.write_text("".join(lines), encoding="utf-8")
 
-        tray_helpers._remove_ps_completions()
+        tray_uninstall_helpers._remove_ps_completions()
 
         content = profile.read_text(encoding="utf-8")
         assert old_line not in content
         assert new_line not in content
         assert "# keep this" in content
 
-    def test_handles_both_profile_locations(self, tray_helpers, tmp_path, monkeypatch):
+    def test_handles_both_profile_locations(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         """Sourcing lines are removed from both PowerShell and WindowsPowerShell profiles."""
-        canonical_completions = _patch_home(monkeypatch, tray_helpers, tmp_path)
+        canonical_completions = _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
         plaud_line = f'. "{canonical_completions / "plaud-tools.ps1"}"'
         for subfolder in ("PowerShell", "WindowsPowerShell"):
             profile_dir = tmp_path / "Documents" / subfolder
@@ -479,7 +509,7 @@ class TestRemovePsCompletions:
             profile = profile_dir / "Microsoft.PowerShell_profile.ps1"
             profile.write_text(plaud_line + "\n", encoding="utf-8")
 
-        tray_helpers._remove_ps_completions()
+        tray_uninstall_helpers._remove_ps_completions()
 
         for subfolder in ("PowerShell", "WindowsPowerShell"):
             profile = tmp_path / "Documents" / subfolder / "Microsoft.PowerShell_profile.ps1"
@@ -495,35 +525,35 @@ class TestRemovePsCompletions:
 class TestDeleteSessionFiles:
     """Tests for _delete_session_files — deletes stored credentials."""
 
-    def test_deletes_fallback_session_file(self, tray_helpers, tmp_path, monkeypatch):
+    def test_deletes_fallback_session_file(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         config_dir = tmp_path / ".config" / "plaud-tools"
         config_dir.mkdir(parents=True)
         session_file = config_dir / "session.json"
         session_file.write_text('{"access_token":"tok"}', encoding="utf-8")
 
-        _patch_home(monkeypatch, tray_helpers, tmp_path)
+        _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
 
         # Stub out SessionStore so we only test file deletion
         mock_store = MagicMock()
-        with patch("plaud_tools.tray_app.SessionStore", return_value=mock_store):
-            tray_helpers._delete_session_files()
+        with patch("plaud_tools.tray.uninstaller.SessionStore", return_value=mock_store):
+            tray_uninstall_helpers._delete_session_files()
 
         assert not session_file.exists()
         mock_store.clear.assert_called_once()
 
-    def test_noop_when_no_session_file(self, tray_helpers, tmp_path, monkeypatch):
-        _patch_home(monkeypatch, tray_helpers, tmp_path)
+    def test_noop_when_no_session_file(self, tray_uninstall_helpers, tmp_path, monkeypatch):
+        _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
         mock_store = MagicMock()
-        with patch("plaud_tools.tray_app.SessionStore", return_value=mock_store):
+        with patch("plaud_tools.tray.uninstaller.SessionStore", return_value=mock_store):
             # Should not raise
-            tray_helpers._delete_session_files()
+            tray_uninstall_helpers._delete_session_files()
         mock_store.clear.assert_called_once()
 
-    def test_calls_session_store_clear(self, tray_helpers, tmp_path, monkeypatch):
-        _patch_home(monkeypatch, tray_helpers, tmp_path)
+    def test_calls_session_store_clear(self, tray_uninstall_helpers, tmp_path, monkeypatch):
+        _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
         mock_store = MagicMock()
-        with patch("plaud_tools.tray_app.SessionStore", return_value=mock_store):
-            tray_helpers._delete_session_files()
+        with patch("plaud_tools.tray.uninstaller.SessionStore", return_value=mock_store):
+            tray_uninstall_helpers._delete_session_files()
         mock_store.clear.assert_called_once()
 
 
@@ -535,7 +565,7 @@ class TestDeleteSessionFiles:
 class TestDeleteLogFiles:
     """Tests for _delete_log_files — removes tray.log* from both log dirs."""
 
-    def test_deletes_log_files_from_plaud_dir(self, tray_helpers, tmp_path, monkeypatch):
+    def test_deletes_log_files_from_plaud_dir(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         log_dir = tmp_path / "Plaud"
         log_dir.mkdir()
         log1 = log_dir / "tray.log"
@@ -548,12 +578,12 @@ class TestDeleteLogFiles:
         # macOS otherwise use platformdirs which ignores LOCALAPPDATA).
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_helpers._delete_log_files()
+        tray_uninstall_helpers._delete_log_files()
 
         assert not log1.exists()
         assert not log2.exists()
 
-    def test_deletes_log_files_from_plaud_tools_dir(self, tray_helpers, tmp_path, monkeypatch):
+    def test_deletes_log_files_from_plaud_tools_dir(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         log_dir = tmp_path / "PlaudTools"
         log_dir.mkdir()
         log_file = log_dir / "tray.log"
@@ -564,11 +594,11 @@ class TestDeleteLogFiles:
         # log file under tmp_path would never be found and deleted.
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_helpers._delete_log_files()
+        tray_uninstall_helpers._delete_log_files()
 
         assert not log_file.exists()
 
-    def test_deletes_from_both_dirs(self, tray_helpers, tmp_path, monkeypatch):
+    def test_deletes_from_both_dirs(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         for name in ("Plaud", "PlaudTools"):
             d = tmp_path / name
             d.mkdir()
@@ -579,12 +609,12 @@ class TestDeleteLogFiles:
         # log files under tmp_path would never be found and deleted.
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_helpers._delete_log_files()
+        tray_uninstall_helpers._delete_log_files()
 
         for name in ("Plaud", "PlaudTools"):
             assert not (tmp_path / name / "tray.log").exists()
 
-    def test_preserves_non_log_files(self, tray_helpers, tmp_path, monkeypatch):
+    def test_preserves_non_log_files(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         log_dir = tmp_path / "Plaud"
         log_dir.mkdir()
         keeper = log_dir / "config.json"
@@ -595,18 +625,18 @@ class TestDeleteLogFiles:
         # platforms (macOS would otherwise use platformdirs and skip tmp_path).
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_helpers._delete_log_files()
+        tray_uninstall_helpers._delete_log_files()
 
         assert keeper.exists()
 
-    def test_noop_when_log_dirs_absent(self, tray_helpers, tmp_path, monkeypatch):
+    def test_noop_when_log_dirs_absent(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
         # platforms; the test verifies no exception is raised regardless of
         # whether the directories exist.
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         # Neither Plaud nor PlaudTools directories exist — should not raise
-        tray_helpers._delete_log_files()
+        tray_uninstall_helpers._delete_log_files()
 
 
 # ---------------------------------------------------------------------------

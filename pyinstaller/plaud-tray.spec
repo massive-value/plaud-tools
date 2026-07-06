@@ -87,7 +87,7 @@ a = Analysis(
         'keyring.backends.Windows',
         'keyring.backends.fail',
         'keyring.core',
-        # ai_clients imported inside tray_app at module level
+        # ai_clients imported inside tray.background at module level
         'plaud_tools.ai_clients',
         # sv_ttk applies a Tcl theme at runtime
         'sv_ttk',

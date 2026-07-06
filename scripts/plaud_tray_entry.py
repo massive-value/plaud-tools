@@ -45,7 +45,7 @@ if "--diagnose-enum" in sys.argv:
 # Normal tray startup path.
 # ---------------------------------------------------------------------------
 
-# Eager DPAPI shadow self-heal, before importing plaud_tools.tray_app — that
+# Eager DPAPI shadow self-heal, before importing plaud_tools.tray.app — that
 # import pulls in pystray + PIL (~3-5 s in the frozen build), and an AI client
 # can respawn its MCP child during the bundle swap inside that window.  Doing
 # the shadow write here tightens the race so the next MCP cold-start has a
@@ -61,6 +61,6 @@ if "--com-activate" not in sys.argv:
     except Exception:
         pass
 
-from plaud_tools.tray_app import main
+from plaud_tools.tray.app import main
 
 main()

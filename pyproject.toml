@@ -46,7 +46,7 @@ Changelog = "https://github.com/massive-value/plaud-tools/blob/master/CHANGELOG.
 plaud-tools = "plaud_tools.cli:main"
 pt = "plaud_tools.cli:main"
 plaud-mcp = "plaud_tools.server:main"
-plaud-tray = "plaud_tools.tray_app:main"
+plaud-tray = "plaud_tools.tray.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

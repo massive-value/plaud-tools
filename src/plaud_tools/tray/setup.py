@@ -1,9 +1,4 @@
-"""Tray setup helpers: logging, paths, install lock, autostart, PATH/completions.
-
-These helpers were previously module-level functions in ``plaud_tools.tray_app``.
-They live here now but are re-exported from the shim so existing tests and the
-PyInstaller entry script keep working.
-"""
+"""Tray setup helpers: logging, paths, install lock, autostart, PATH/completions."""
 
 from __future__ import annotations
 

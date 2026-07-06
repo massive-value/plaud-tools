@@ -25,7 +25,7 @@ def test_setup_logging_uses_rotating_file_handler(tmp_path, monkeypatch):
     original_handlers = root.handlers[:]
     root.handlers.clear()
     try:
-        from plaud_tools.tray_app import _setup_logging
+        from plaud_tools.tray.setup import _setup_logging
 
         _setup_logging()
 
@@ -46,7 +46,7 @@ def test_setup_logging_rotating_handler_limits(tmp_path, monkeypatch):
     original_handlers = root.handlers[:]
     root.handlers.clear()
     try:
-        from plaud_tools.tray_app import _setup_logging
+        from plaud_tools.tray.setup import _setup_logging
 
         _setup_logging()
 
@@ -72,7 +72,7 @@ def test_setup_logging_creates_log_file_in_localappdata(tmp_path, monkeypatch):
     original_handlers = root.handlers[:]
     root.handlers.clear()
     try:
-        from plaud_tools.tray_app import _setup_logging
+        from plaud_tools.tray.setup import _setup_logging
 
         _setup_logging()
 
@@ -152,7 +152,7 @@ class _FakePlaudClient:
 
 def _run_test_connection(fake_client, timeout_seconds=15):
     """Helper: create a minimal TrayApp, inject a fake client, run _test_connection."""
-    from plaud_tools.tray_app import TrayApp
+    from plaud_tools.tray.app import TrayApp
 
     app = TrayApp.__new__(TrayApp)
     app._root = None  # no tkinter needed — callback fires on root.after(0, ...)
@@ -174,7 +174,7 @@ def _run_test_connection(fake_client, timeout_seconds=15):
     root_mock.after.side_effect = fake_after
     app._root = root_mock
 
-    with patch("plaud_tools.tray_app.PlaudClient", return_value=fake_client):
+    with patch("plaud_tools.tray.app.PlaudClient", return_value=fake_client):
         app._test_connection(on_done)
 
     # Wait up to (timeout + 2) seconds for the callback.
@@ -202,7 +202,7 @@ def test_test_connection_reports_api_error():
 
 def test_test_connection_reports_timeout_after_deadline(monkeypatch):
     """When the API hangs past the deadline the callback must fire with a timeout message."""
-    import plaud_tools.tray_app as tray_module
+    import plaud_tools.tray.app as tray_module
 
     # Shrink the timeout to 0.2 s so the test completes quickly.
     monkeypatch.setattr(tray_module, "_TEST_CONNECTION_TIMEOUT", 0.2)
@@ -217,7 +217,7 @@ def test_test_connection_reports_timeout_after_deadline(monkeypatch):
 
 
 def test_test_connection_timeout_constant_is_fifteen():
-    from plaud_tools.tray_app import _TEST_CONNECTION_TIMEOUT
+    from plaud_tools.tray.app import _TEST_CONNECTION_TIMEOUT
 
     assert _TEST_CONNECTION_TIMEOUT == 15
 
