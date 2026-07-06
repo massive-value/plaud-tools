@@ -44,6 +44,25 @@ If the tray fails to start, files were quarantined by antivirus, or the install 
 
 ---
 
+## Stuck on v0.3.3 or earlier — in-app update button does nothing
+
+The in-app updater runs the *currently installed* `update.ps1`. On v0.3.3 and
+earlier, that script fails to parse under Windows PowerShell 5.1 (a BOM/em-dash
+encoding bug, fixed in v0.3.4) and the update silently does nothing. If your
+tray footer shows v0.3.3 or older and clicking **Install update and restart**
+never progresses:
+
+1. Re-run the install one-liner from the [README Quickstart](../README.md#quickstart):
+   ```powershell
+   irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1 | iex
+   ```
+   This bypasses the broken in-app updater entirely and installs the latest
+   release fresh. Your saved sign-in is preserved.
+2. Once on v0.3.4 or later, the in-app updater works normally for all future
+   updates.
+
+---
+
 ## Install / update SHA256 verification failure
 
 Starting with wave 0, every release publishes a `SHA256SUMS` asset. The installer and the in-app updater verify the downloaded `PlaudTools.zip` against this hash before extracting. A mismatch causes a hard failure:
@@ -100,15 +119,15 @@ PyInstaller-built executables occasionally trip antivirus heuristics. If `PlaudT
 
 ## Session expired
 
-The Plaud access token lasts ~300 days. When it's within 30 days of expiry, `plaud-tools` raises a session-expired error and the tray menu shows **Session expires in N days — sign in again**.
+The Plaud access token lasts about 30 days. Starting 5 days before it expires, the tray menu and home window show **Session expires in N days — sign in again**. `plaud-tools`/the MCP server actually refuse the token roughly 24 hours before it expires (`SessionManager`'s refresh buffer), so the warning gives real lead time to react before calls start failing.
 
 ```
-plaud-tools login --email you@example.com --region us
+plaud-tools refresh
 ```
 
-The new token overwrites the stored one. Your AI client wiring continues to work — no need to re-wire.
+is the quickest fix — it reuses the email/region already on file and only prompts for your password. `plaud-tools login --email you@example.com --region us` works the same way if you need to change the stored email or region. Either way, the new token overwrites the stored one and your AI client wiring continues to work — no need to re-wire.
 
-If you waited until *after* expiry, the AI client will report it can't reach Plaud. Sign in again via the tray menu or the CLI command above, then restart the AI client (see "AI client doesn't see Plaud after wiring" above).
+If you waited until *after* expiry, the AI client will report it can't reach Plaud. Sign in again via `plaud-tools refresh`, the tray menu, or `plaud-tools login`, then restart the AI client (see "AI client doesn't see Plaud after wiring" above).
 
 ---
 

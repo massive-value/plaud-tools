@@ -28,8 +28,9 @@ That code is useful as a behavioral reference, but it is not the desired final a
 Plaud's web client uses a three-token JWT system, verified by decoding the
 responses in `har-captures/plaud-login-capture.har`:
 
-- **access_token** (`typ=UT`) — issued by `POST /auth/access-token`,
-  **300-day** lifetime.  This is the long-lived user token.
+- **access_token** (`typ=UT`) — issued by `POST /auth/access-token`.
+  Plaud has changed this lifetime over time: originally ~291 days, now
+  **~30 days**. This is the long-lived user token.
 - **workspace_token** (`typ=WT`) — issued by
   `POST /user-app/auth/workspace/token/{workspace_id}` using the UT,
   **1-day** lifetime.  Scoped to a workspace; carries `wid`, `role`, etc.
@@ -37,14 +38,17 @@ responses in `har-captures/plaud-login-capture.har`:
   workspace endpoint, **30-day** lifetime.  Renews the WT without
   going through full re-authentication.
 
-`plaud-tools` takes a deliberate shortcut: we only store the 300-day UT
-and use it directly as `Authorization: Bearer ...` on every API call.
-The endpoints we hit (browse, get, mutate, upload, process, list_folders,
-merge) all accept the UT, so we never need the WT+WRT exchange.  Trade-off:
-users must re-authenticate once a year, but we avoid the complexity of
-a refresh loop.  `SessionManager.require()` defends against this by
-raising `PlaudSessionExpiredError` when the UT is within 30 days of
-expiry, prompting re-login while the user still has a working token.
+`plaud-tools` takes a deliberate shortcut: we only store the UT and use it
+directly as `Authorization: Bearer ...` on every API call. The endpoints we
+hit (browse, get, mutate, upload, process, list_folders, merge) all accept
+the UT, so we never need the WT+WRT exchange. Trade-off: users must
+re-authenticate roughly monthly now that Plaud issues 30-day tokens, but we
+avoid the complexity of a refresh loop. `SessionManager.require()` defends
+against this by raising `PlaudSessionExpiredError` when the UT is within
+`TOKEN_REFRESH_BUFFER_SECONDS` (24 hours) of expiry — shrunk from an earlier
+3-day buffer that burned 10% of every token's life. The tray/HomeWindow
+separately warn starting `TRAY_EXPIRY_WARNING_DAYS` (5 days) before expiry,
+so the warning always precedes the refusal (see `session.py`).
 
 If a future Plaud API endpoint requires a workspace-scoped token, this
 model needs to grow: store all three tokens, exchange via the workspace
