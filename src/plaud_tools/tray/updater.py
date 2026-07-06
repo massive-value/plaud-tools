@@ -20,22 +20,15 @@ from typing import TYPE_CHECKING
 from .. import __version__ as APP_VERSION
 from ..layout import InstallLayout
 from ..ps1_templates import render_update_ps1
-from .setup import APP_NAME, _set_app_icon
+from .process_launch import _CREATE_BREAKAWAY_FROM_JOB, launch_hidden_powershell
+from .process_launch import POWERSHELL_EXE as _POWERSHELL_EXE
+from .setup import APP_NAME, _configure_if_alive, _set_app_icon
 
 if TYPE_CHECKING:  # pragma: no cover
     from .app import TrayApp
 
 
 GITHUB_REPO = "massive-value/plaud-tools"
-
-# Absolute path to PowerShell to prevent PATH-hijacking attacks.
-# %SystemRoot% is typically C:\Windows; fall back to the hard-coded canonical
-# path if the env var is absent (should never happen on a standard Windows
-# install, but defensive is better).
-_POWERSHELL_EXE: str = os.path.join(
-    os.environ.get("SystemRoot", r"C:\Windows"),
-    r"System32\WindowsPowerShell\v1.0\powershell.exe",
-)
 
 # Hosts from which update downloads are permitted.  Any other host is refused
 # before a network connection is made.
@@ -52,28 +45,14 @@ _ALLOWED_UPDATE_HOSTS: frozenset[str] = frozenset(
 # cover PowerShell cold-start (slow under Defender/enterprise scanning).
 _UPDATER_HEARTBEAT_TIMEOUT_S: float = 20.0
 
-# subprocess.CREATE_BREAKAWAY_FROM_JOB detaches the child from the tray's Job
-# Object so it survives the tray exiting. Referenced defensively in case a
-# future Python drops the attribute.
-_CREATE_BREAKAWAY_FROM_JOB: int = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-
 
 def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
     """Launch the bundled update dispatcher as a detached PowerShell process.
 
     The child MUST outlive the tray: the tray quits moments after this returns,
     and update.ps1 then waits for the tray to exit before replacing its files.
-    The tray runs inside a Windows Job Object; without breaking away, a
-    kill-on-close job kills the child the instant the tray exits — before
-    update.ps1 runs a single line. We therefore request
-    ``CREATE_BREAKAWAY_FROM_JOB``. If the job forbids breakaway, ``CreateProcess``
-    fails with ``ERROR_ACCESS_DENIED`` (raised as :exc:`OSError`); we retry
-    without the flag so the update is no worse off than before.
-
-    ``CREATE_NO_WINDOW`` (not ``DETACHED_PROCESS``) plus explicit ``DEVNULL``
-    handles is retained: ``DETACHED_PROCESS`` from a no-console frozen app passes
-    NULL stdio handles to the child, which crashes PowerShell before any script
-    code runs.
+    Delegates to :func:`process_launch.launch_hidden_powershell` (#142) for the
+    safe-stdio + job-breakaway launch semantics shared with the uninstaller.
     """
     args = [
         _POWERSHELL_EXE,
@@ -86,32 +65,7 @@ def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
         "-File",
         str(ps_path),
     ]
-    base_flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-    cwd = tempfile.gettempdir()
-    try:
-        return subprocess.Popen(
-            args,
-            creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=cwd,
-        )
-    except OSError:
-        # Job forbids breakaway (no JOB_OBJECT_LIMIT_BREAKAWAY_OK). Fall back to
-        # an in-job launch; the heartbeat gate still ensures honest reporting.
-        logging.warning(
-            "in-app update: CREATE_BREAKAWAY_FROM_JOB denied; launching updater in-job",
-            exc_info=True,
-        )
-        return subprocess.Popen(
-            args,
-            creationflags=base_flags,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=cwd,
-        )
+    return launch_hidden_powershell(args, cwd=tempfile.gettempdir(), breakaway=True)
 
 
 def _check_download_host(url: str) -> None:
@@ -390,14 +344,16 @@ class UpdateDialog:
 
         def _on_error(err: Exception) -> None:
             logging.exception("in-app update download failed")
+
+            def _apply() -> None:
+                status_var.set(f"Download failed: {err}")
+                # Delivered via root.after() from this worker thread -- the
+                # UpdateDialog window (and install_btn with it) may have been
+                # closed in the meantime (#157).
+                _configure_if_alive(install_btn, state="normal")
+
             if self._root:
-                self._root.after(
-                    0,
-                    lambda: (
-                        status_var.set(f"Download failed: {err}"),  # type: ignore[func-returns-value]  # StringVar.set() returns None; tuple used as side-effect expression in lambda body
-                        install_btn.config(state="normal"),
-                    ),
-                )
+                self._root.after(0, _apply)
 
         try:
             # Allowlist check — must happen before any network connection.
@@ -474,7 +430,12 @@ class UpdateDialog:
                 dispatcher_path=str(ps_path),
                 new_version=new_version,
             )
-            ps_path.write_text(ps_content, encoding="utf-8")
+            # utf-8-sig (BOM) so Windows PowerShell 5.1 -- which treats a
+            # BOM-less file as the system ANSI codepage, not UTF-8 -- reliably
+            # reinterprets the dispatcher even when a path embedded in it
+            # (e.g. %TEMP% under a non-ASCII Windows username) is non-ASCII.
+            # See #153, same family as the v0.3.4 update.ps1/tray.log fix.
+            ps_path.write_text(ps_content, encoding="utf-8-sig")
 
             logging.info(
                 "in-app update: launching updater for v%s (tray_pid=%s zip=%s dispatcher=%s)",
@@ -556,6 +517,7 @@ __all__ = [
     "GITHUB_REPO",
     "_ALLOWED_UPDATE_HOSTS",
     "_POWERSHELL_EXE",
+    "_CREATE_BREAKAWAY_FROM_JOB",  # re-exported for test_updater_launch.py
     "_check_download_host",
     "_version_gt",
     "_check_for_update",

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from tkinter import ttk
 
 from ... import __version__ as APP_VERSION
-from ..setup import APP_NAME, EnvStatus, _set_app_icon
+from ..setup import APP_NAME, EnvStatus, _configure_if_alive, _set_app_icon, _widget_alive
 
 
 class HomeWindow:
@@ -192,14 +192,14 @@ class HomeWindow:
             self._session_var.set(self._get_session_label())
 
     def _refresh_update_btn(self) -> None:
-        # This is the only refresh invoked asynchronously from the background
-        # update-poll thread (via ``root.after(0, ...)``), so it can fire long
-        # after the user closed the HomeWindow.  Closing the window destroys the
-        # underlying Tk button but leaves ``self._update_btn`` pointing at the
-        # dead widget, so ``is None`` is not enough — configuring it would raise
-        # ``TclError: invalid command name``.  ``winfo_exists()`` returns 0 for a
-        # destroyed widget without raising.
-        if self._update_btn is None or not self._update_btn.winfo_exists():
+        # Invoked asynchronously from the background update-poll thread (via
+        # ``root.after(0, ...)``), so it can fire long after the user closed
+        # the HomeWindow.  Closing the window destroys the underlying Tk
+        # button but leaves ``self._update_btn`` pointing at the dead widget,
+        # so ``is None`` is not enough — configuring it would raise
+        # ``TclError: invalid command name``.  ``_widget_alive`` covers this
+        # (and every other async callback site below — #157).
+        if not _widget_alive(self._update_btn):
             return
         info = self._get_update_info()
         if info is not None:
@@ -216,7 +216,10 @@ class HomeWindow:
             )
 
     def _refresh_repair_btn(self) -> None:
-        if self._repair_btn is None:
+        # Reached asynchronously via _handle_repair_setup's worker-thread
+        # callback (root.after(0, ...)) -- same destroyed-widget risk as
+        # _refresh_update_btn above (#157).
+        if not _widget_alive(self._repair_btn):
             return
         status = self._get_env_status()
         if status is not None and not status.all_ok and self._on_repair_setup is not None:
@@ -235,8 +238,12 @@ class HomeWindow:
 
         Because the row widget is created first inside the frame in ``show()``,
         calling ``pack()`` on it will place it above all other widgets.
+
+        Reached asynchronously via background._run_verify_env's worker-thread
+        callback (root.after(0, ...)) -- same destroyed-widget risk as
+        _refresh_update_btn above (#157).
         """
-        if self._setup_failure_row is None or self._setup_failure_label is None:
+        if not _widget_alive(self._setup_failure_row) or not _widget_alive(self._setup_failure_label):
             return
         status = self._get_env_status()
         if status is not None and not status.all_ok and self._on_repair_setup is not None:
@@ -252,9 +259,13 @@ class HomeWindow:
             self._setup_failure_row.pack_forget()
 
     def _set_status(self, msg: str, ok: bool = True) -> None:
-        if self._status_var is None or self._status_label is None:
+        # Called from several async _done callbacks below (test connection,
+        # check-for-update, repair setup) that can fire after the window was
+        # closed -- guard once here instead of at every call site (#157).
+        if self._status_var is None:
             return
-        self._status_label.configure(foreground="#15803d" if ok else "#c0392b")
+        if not _configure_if_alive(self._status_label, foreground="#15803d" if ok else "#c0392b"):
+            return
         self._status_var.set(msg)
 
     def _handle_test(self) -> None:
@@ -265,9 +276,11 @@ class HomeWindow:
             self._status_var.set("")
 
         def _done(ok: bool, msg: str) -> None:
-            if self._test_btn is None:
+            # Delivered via root.after() from TrayApp._test_connection's
+            # worker thread -- the window may have been closed in the
+            # meantime (#157).
+            if not _configure_if_alive(self._test_btn, state="normal", text="Test connection"):
                 return
-            self._test_btn.configure(state="normal", text="Test connection")
             self._set_status(msg, ok)
             if self._win and self._win.winfo_exists():
                 self._win.after(4000, lambda: self._status_var.set("") if self._status_var else None)
@@ -282,7 +295,10 @@ class HomeWindow:
             self._status_var.set("")
 
         def _done(found: bool, msg: str) -> None:
-            if self._update_btn is None:
+            # Delivered via root.after() from TrayApp._check_for_update_action's
+            # worker thread -- the window may have been closed in the
+            # meantime (#157).
+            if not _widget_alive(self._update_btn):
                 return
             if found:
                 self._refresh_update_btn()
@@ -312,48 +328,51 @@ class HomeWindow:
             self._setup_failure_row.pack(fill="x", pady=(0, 10))
 
         def _done(ok: bool, msg: str) -> None:
+            # Delivered via root.after() from _repair_env's worker thread --
+            # the window may have been closed in the meantime (#157).
+            row_alive = _widget_alive(self._setup_failure_row) and _widget_alive(self._setup_failure_label)
             if ok:
                 # Show a brief green "Setup complete" in the failure row, then
                 # dismiss it after a few seconds.
-                if self._setup_failure_row is not None and self._setup_failure_label is not None:
-                    self._setup_failure_label.configure(
+                if row_alive:
+                    self._setup_failure_label.configure(  # type: ignore[union-attr]
                         text="Setup complete.",
                         background="#15803d",
                         foreground="white",
                         cursor="",
                     )
-                    self._setup_failure_row.configure(background="#15803d")
-                    self._setup_failure_row.pack(fill="x", pady=(0, 10))
+                    self._setup_failure_row.configure(background="#15803d")  # type: ignore[union-attr]
+                    self._setup_failure_row.pack(fill="x", pady=(0, 10))  # type: ignore[union-attr]
                     if self._win and self._win.winfo_exists():
 
                         def _dismiss_row() -> None:
                             self._refresh_setup_failure_row()
                             # Reset colour for next time the row might be shown.
-                            if self._setup_failure_row is not None:
-                                self._setup_failure_row.configure(background="#b45309")
-                            if self._setup_failure_label is not None:
-                                self._setup_failure_label.configure(background="#b45309")
+                            if _widget_alive(self._setup_failure_row):
+                                self._setup_failure_row.configure(background="#b45309")  # type: ignore[union-attr]
+                            if _widget_alive(self._setup_failure_label):
+                                self._setup_failure_label.configure(background="#b45309")  # type: ignore[union-attr]
 
                         self._win.after(4000, _dismiss_row)
             else:
                 # On failure: show the error in the row; add log-folder hint.
-                if self._setup_failure_row is not None and self._setup_failure_label is not None:
+                if row_alive:
                     hint = ""
                     if self._on_open_log_folder is not None:
                         hint = " — see logs for details."
-                    self._setup_failure_label.configure(
+                    self._setup_failure_label.configure(  # type: ignore[union-attr]
                         text=f"Repair failed: {msg}{hint}",
                         cursor="hand2" if self._on_open_log_folder is not None else "",
                     )
                     if self._on_open_log_folder is not None:
                         # Rebind click to open log folder when repair failed.
-                        self._setup_failure_label.bind(
+                        self._setup_failure_label.bind(  # type: ignore[union-attr]
                             "<Button-1>",
                             lambda _e: (
                                 self._on_open_log_folder() if self._on_open_log_folder is not None else None
                             ),
                         )
-                    self._setup_failure_row.pack(fill="x", pady=(0, 10))
+                    self._setup_failure_row.pack(fill="x", pady=(0, 10))  # type: ignore[union-attr]
             self._set_status(msg, ok)
             self._refresh_repair_btn()
             if self._win and self._win.winfo_exists():

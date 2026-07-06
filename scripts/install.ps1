@@ -169,10 +169,23 @@ try {
             Write-Host 'Press Enter to close...' -ForegroundColor Gray
             try { Read-Host } catch { }
             exit 0
+        } elseif ($installedVerNum -gt $latestVerNum -and -not $Force) {
+            # Installed build is ahead of the latest published release (e.g. a
+            # dev/pre-release build). Without this branch, control fell into
+            # the -Force/-Repair wipe branch below and silently DOWNGRADED the
+            # user to the older published release (#159).
+            Write-Host ''
+            Write-Host "PlaudTools v$installedVersion (installed) is newer than the latest published release v$latestVersion." -ForegroundColor Yellow
+            Write-Host 'Nothing to do. Re-run with -Force if you want to reinstall the published release anyway.' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host 'Press Enter to close...' -ForegroundColor Gray
+            try { Read-Host } catch { }
+            exit 0
         } elseif ($latestVerNum -gt $installedVerNum -and -not $Force) {
             Write-Host ''
             Write-Host "PlaudTools v$installedVersion is installed; v$latestVersion is available." -ForegroundColor Yellow
             Write-Host 'Open PlaudTools from the system tray and click Check for Updates to upgrade.' -ForegroundColor Yellow
+            Write-Host 'If the in-app updater does not work (older installs), re-run this installer with -Repair.' -ForegroundColor Yellow
             Write-Host ''
             Write-Host 'Press Enter to close...' -ForegroundColor Gray
             try { Read-Host } catch { }
@@ -283,7 +296,17 @@ try {
             $regPath = 'HKCU:\Environment'
             $currentPath = (Get-ItemProperty -Path $regPath -Name Path -ErrorAction SilentlyContinue).Path
             if (-not $currentPath) { $currentPath = '' }
-            $parts = ($currentPath -split ';') | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim() }
+            # @(...) forces array context (#141): when $currentPath has exactly
+            # one entry (e.g. a fresh profile whose PATH is just the
+            # WindowsApps alias), piping through Where-Object/ForEach-Object
+            # collapses a single-item pipeline result to a bare string. `+` on
+            # two bare strings below is then STRING CONCATENATION (no
+            # separator), and the subsequent `-join` operates on that one
+            # already-merged string -- corrupting the sole existing PATH entry
+            # instead of appending to it. @() pins $parts as a real array
+            # (including the 0-element case) so `+` appends and `-join`
+            # inserts the semicolon as intended.
+            $parts = @(($currentPath -split ';') | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim() })
             if ($parts -notcontains $cliDir) {
                 $newPath = ($parts + $cliDir) -join ';'
                 Set-ItemProperty -Path $regPath -Name Path -Value $newPath -Type ExpandString
@@ -360,9 +383,15 @@ try {
             Write-Host '    Removed legacy "PlaudTools" autostart entry (now using "Plaud Tools").'
         }
 
+        # Quoted so a spaced install path (e.g. a Windows username with a
+        # space under %LOCALAPPDATA%) is not split into multiple arguments by
+        # the Run-key launcher -- also closes a PATH-hijacking window an
+        # unquoted spaced path opens (#160). Must match the quoting
+        # plaud_tools.tray.setup._set_autostart writes on the Python side.
+        $exePathQuoted = '"' + $exePath + '"'
         $existing = (Get-ItemProperty -Path $runKey -Name $autostartName -ErrorAction SilentlyContinue).$autostartName
-        if ($existing -ne $exePath) {
-            Set-ItemProperty -Path $runKey -Name $autostartName -Value $exePath -Type String
+        if ($existing -ne $exePathQuoted) {
+            Set-ItemProperty -Path $runKey -Name $autostartName -Value $exePathQuoted -Type String
             Write-Host "    Registered '$autostartName' for autostart."
         } else {
             Write-Host '    Autostart already registered.'

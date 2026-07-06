@@ -57,7 +57,7 @@ class TestShowInstallToast:
             spawned.append(tuple(args))
             return MagicMock()
 
-        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", fake_popen)
 
         from plaud_tools import tray_app
 
@@ -77,7 +77,7 @@ class TestShowInstallToast:
         def boom(*a, **kw):
             raise OSError("no powershell")
 
-        monkeypatch.setattr("plaud_tools.tray.toasts.subprocess.Popen", boom)
+        monkeypatch.setattr("plaud_tools.tray.process_launch.subprocess.Popen", boom)
 
         from plaud_tools import tray_app
 
@@ -220,6 +220,62 @@ class TestInstallSentinelConsumed:
             hw.arm_welcome_banner()
 
         hw.arm_welcome_banner.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Welcome banner must arm regardless of session state (#163)
+# ---------------------------------------------------------------------------
+
+
+class TestWelcomeBannerArmsRegardlessOfSession:
+    """A genuine first-run user has NO session yet -- they haven't signed in.
+
+    Before the fix, ``self._home_win.arm_welcome_banner()`` was gated behind
+    ``if self._session and self._home_win:``, so the one audience the banner
+    exists for (brand-new installs, which show the login window first) never
+    saw it. Only a reinstall over an existing session -- not really a "first
+    run" from the user's perspective -- happened to have a session and got
+    the banner instead.
+    """
+
+    def test_source_arm_is_not_gated_on_session(self):
+        """Source guard: the arm() call must be reachable without a session."""
+        import inspect
+
+        import plaud_tools.tray.app as app_mod
+
+        src = inspect.getsource(app_mod)
+        idx = src.index("plaud_just_installed.txt")
+        block = src[idx : idx + 1500]
+        assert "if self._home_win:\n" in block
+        arm_pos = block.index("self._home_win.arm_welcome_banner()")
+        guard_pos = block.rindex("if ", 0, arm_pos)
+        guard_line = block[guard_pos:].splitlines()[0]
+        assert "self._session" not in guard_line, (
+            f"arm_welcome_banner() must not require self._session -- guard was {guard_line!r}"
+        )
+
+    def test_replicated_sentinel_block_arms_banner_without_session(self, tmp_path, monkeypatch):
+        """Simulates the exact fixed block from TrayApp._run for session=None."""
+        monkeypatch.setattr("plaud_tools.tray_app.tempfile.gettempdir", lambda: str(tmp_path))
+        import plaud_tools.tray_app as tray_app
+
+        install_sentinel = Path(tray_app.tempfile.gettempdir()) / "plaud_just_installed.txt"
+        install_sentinel.write_text("", encoding="utf-8")
+
+        home_win = MagicMock()
+        session = None  # first-run user: no session yet
+
+        # Replicates the fixed block in app.py's _run().
+        if install_sentinel.exists():
+            install_sentinel.unlink(missing_ok=True)
+            if home_win:
+                home_win.arm_welcome_banner()
+            if session and home_win:
+                pass  # root.after(500, home_win.show) -- not reached without a session
+
+        home_win.arm_welcome_banner.assert_called_once()
+        home_win.show.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

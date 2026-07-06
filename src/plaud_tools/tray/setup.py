@@ -13,6 +13,7 @@ import re
 import sys
 import tkinter as tk
 from pathlib import Path
+from typing import TypeGuard, TypeVar
 
 from ..appdata import events_path as _events_path
 from ..appdata import tray_log as _tray_log_path
@@ -97,6 +98,43 @@ def _set_app_icon(win: tk.Wm) -> None:
             win.iconbitmap(str(ico))
         except Exception:
             pass
+
+
+_WidgetT = TypeVar("_WidgetT", bound=tk.Misc)
+
+
+def _widget_alive(widget: _WidgetT | None) -> TypeGuard[_WidgetT]:
+    """Return True if *widget* is non-None and its underlying Tk window still exists.
+
+    Async callbacks arrive via ``root.after(0, ...)`` (or a chain of them)
+    from background threads after an unpredictable delay; the window that
+    owned the widget may have been closed by the user before the callback
+    fires.  ``widget is None`` does not catch this -- the Python reference
+    outlives Tk window destruction -- so calling ``.configure()`` on it raises
+    ``TclError: invalid command name``.  See #157 (the v0.3.3 crash class).
+
+    Typed as a ``TypeGuard`` (bound to the caller's concrete widget type, not
+    widened to ``tk.Misc``) so ``if not _widget_alive(x): return`` narrows
+    ``x`` for the rest of the caller the same way an ``is not None`` check
+    would, without every call site needing its own ``# type: ignore``.
+    """
+    if widget is None:
+        return False
+    try:
+        return bool(widget.winfo_exists())
+    except tk.TclError:
+        return False
+
+
+def _configure_if_alive(widget: _WidgetT | None, **kwargs: object) -> bool:
+    """Configure *widget* if it is still alive; return whether it happened.
+
+    See :func:`_widget_alive` for the crash this guards against.
+    """
+    if not _widget_alive(widget):
+        return False
+    widget.configure(**kwargs)  # type: ignore[attr-defined]
+    return True
 
 
 def _apply_theme(root: tk.Tk) -> None:
@@ -287,7 +325,10 @@ def _autostart_enabled() -> bool:
 
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as key:
             val, _ = winreg.QueryValueEx(key, _AUTOSTART_NAME)
-            return Path(val).resolve() == Path(sys.executable).resolve()
+            # _set_autostart writes the value double-quoted (#160); strip a
+            # matching pair of surrounding quotes before comparing so an
+            # already-quoted registry entry still compares equal.
+            return Path(val.strip('"')).resolve() == Path(sys.executable).resolve()
     except OSError:
         return False
 
@@ -312,7 +353,11 @@ def _set_autostart(enable: bool) -> None:
 
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if enable:
-            winreg.SetValueEx(key, _AUTOSTART_NAME, 0, winreg.REG_SZ, str(sys.executable))
+            # Quoted so a spaced install path (e.g. a Windows username with a
+            # space, under %LOCALAPPDATA%) is not split into multiple
+            # arguments by the Run-key launcher -- also closes a PATH-
+            # hijacking window an unquoted spaced path opens (#160).
+            winreg.SetValueEx(key, _AUTOSTART_NAME, 0, winreg.REG_SZ, f'"{sys.executable}"')
         else:
             try:
                 winreg.DeleteValue(key, _AUTOSTART_NAME)
@@ -450,6 +495,56 @@ def _setup_cli_path() -> None:
         logging.warning("Could not update user PATH", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# Shared PowerShell-profile IO (#154)
+#
+# Every profile read/write in the tray (completions setup, completions
+# removal, the completions presence check) previously hand-rolled
+# ``.read_text(encoding="utf-8-sig")`` / ``.write_text(encoding="utf-8")``.
+# Two bugs came from that duplication: ``UnicodeDecodeError`` (raised by a
+# profile that isn't valid UTF-8, e.g. a legacy ANSI file with non-ASCII
+# bytes) is a ``ValueError`` subclass, NOT an ``OSError`` -- it escaped the
+# ``except OSError`` guards at every call site.  And rewriting a BOM'd profile
+# with plain ``encoding="utf-8"`` silently drops the user's own BOM, which
+# PowerShell 5.1 needs to reliably reinterpret a UTF-8 file with any
+# non-ASCII content the user later adds.  Route every profile touch through
+# these two helpers so both fixes land once.
+# ---------------------------------------------------------------------------
+
+
+def _read_profile_text(path: Path) -> tuple[str | None, bool]:
+    """Read a PowerShell profile file tolerantly.
+
+    Returns ``(content, had_bom)``:
+
+    - path missing             -> ``("", False)`` -- nothing to preserve, safe to create.
+    - path exists, decodes OK  -> ``(text, had_bom)``.
+    - path exists, undecodable -> ``(None, False)`` -- caller must leave the file untouched.
+    """
+    if not path.exists():
+        return "", False
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "", False
+    had_bom = raw.startswith(b"\xef\xbb\xbf")
+    try:
+        return raw.decode("utf-8-sig"), had_bom
+    except UnicodeDecodeError:
+        return None, False
+
+
+def _write_profile_text(path: Path, content: str, had_bom: bool) -> None:
+    """Write *content* back to *path*, preserving the original BOM presence.
+
+    A brand-new file (``had_bom=False``, since there was nothing to sniff)
+    is written without a BOM, matching prior behaviour; an existing BOM'd
+    profile keeps its BOM on rewrite instead of silently losing it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8-sig" if had_bom else "utf-8")
+
+
 def _setup_ps_completions() -> None:
     """Source plaud-tools.ps1 from the user's PowerShell profiles (idempotent).
 
@@ -473,8 +568,13 @@ def _setup_ps_completions() -> None:
     ]
     for profile in profiles:
         try:
+            content, had_bom = _read_profile_text(profile)
+            if content is None:
+                logging.warning(
+                    "Could not decode PowerShell profile %s as UTF-8; leaving it untouched", profile
+                )
+                continue
             if profile.exists():
-                content = profile.read_text(encoding="utf-8-sig")
                 lines = [
                     line
                     for line in content.splitlines(keepends=True)
@@ -482,14 +582,12 @@ def _setup_ps_completions() -> None:
                 ]
                 content = "".join(lines)
                 if source_line in content:
-                    profile.write_text(content, encoding="utf-8")
+                    _write_profile_text(profile, content, had_bom)
                     continue
-            else:
-                profile.parent.mkdir(parents=True, exist_ok=True)
-                content = ""
-            profile.write_text(
+            _write_profile_text(
+                profile,
                 (content.rstrip("\n") + "\n" + source_line + "\n") if content else (source_line + "\n"),
-                encoding="utf-8",
+                had_bom,
             )
             logging.info("Added plaud-tools completions to %s", profile)
         except OSError:
@@ -560,11 +658,9 @@ def _check_ps_completions() -> bool:
         user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
     ]
     for profile in profiles:
-        try:
-            if profile.exists() and source_line in profile.read_text(encoding="utf-8-sig"):
-                return True
-        except OSError:
-            pass
+        content, _had_bom = _read_profile_text(profile)
+        if content and source_line in content:
+            return True
     return False
 
 
@@ -609,11 +705,15 @@ __all__ = [
     "_stale_sourcing_re",
     "_setup_cli_path",
     "_setup_ps_completions",
+    "_read_profile_text",
+    "_write_profile_text",
     "EnvStatus",
     "_check_cli_path",
     "_check_ps_completions",
     "_verify_env",
     "_events_path",
+    "_widget_alive",
+    "_configure_if_alive",
     "APP_NAME",
     "Path",
 ]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -514,4 +516,351 @@ class TestInstallPs1:
 
     def test_idempotent_autostart(self, script_text: str):
         """Autostart should only be set if value differs."""
-        assert "$existing -ne $exePath" in script_text
+        assert "$existing -ne $exePathQuoted" in script_text
+
+    def test_autostart_value_is_quoted(self, script_text: str):
+        """The Run-key value must be double-quoted (#160): an unquoted spaced
+        install path (a Windows username with a space under %LOCALAPPDATA%)
+        is split into multiple arguments by the Run-key launcher, and an
+        unquoted spaced path also opens a PATH-hijacking window.
+        """
+        assert "$exePathQuoted = '\"' + $exePath + '\"'" in script_text
+        assert "-Value $exePathQuoted" in script_text
+
+    def test_installed_newer_than_latest_branch_exists(self, script_text: str):
+        """#159: an installed>latest branch must exist and must NOT fall
+        through to the -Force wipe branch (which would silently downgrade a
+        dev/pre-release build to the older published release).
+        """
+        assert "$installedVerNum -gt $latestVerNum -and -not $Force" in script_text
+
+    def test_update_available_message_mentions_repair(self, script_text: str):
+        """#159: stuck <=0.3.3 users (whose in-app updater predates the fix)
+        need the -Repair escape hatch surfaced, not just "use the tray"."""
+        assert "-Repair" in script_text
+        # The mention must live near the "update available" guidance, not just
+        # in the top-of-file usage comment.
+        assert "re-run this installer with -Repair" in script_text
+
+
+# ---------------------------------------------------------------------------
+# install.ps1 — behavioural tests via pwsh (PATH array bug, #141)
+# ---------------------------------------------------------------------------
+
+_PATH_APPEND_PS1 = r"""
+param([string]$CurrentPath, [string]$CliDir)
+$ErrorActionPreference = 'Stop'
+$parts = @(($CurrentPath -split ';') | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim() })
+if ($parts -notcontains $CliDir) {
+    $newPath = ($parts + $CliDir) -join ';'
+} else {
+    $newPath = $CurrentPath
+}
+Write-Host $newPath
+"""
+
+
+def _run_path_append(tmp_path: Path, current_path: str, cli_dir: str) -> str:
+    harness = tmp_path / "path_append.ps1"
+    harness.write_text(_PATH_APPEND_PS1, encoding="utf-8")
+    result = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(harness),
+            "-CurrentPath",
+            current_path,
+            "-CliDir",
+            cli_dir,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+class TestInstallPs1PathArrayFix:
+    """Reproduces #141: a single-entry PATH must not be corrupted.
+
+    Before the ``@(...)`` fix, piping a single-item result through
+    Where-Object/ForEach-Object collapsed it from an array to a bare string;
+    ``$parts + $cliDir`` on two bare strings is then plain string
+    concatenation (no separator), and the following ``-join`` operated on
+    that single merged string -- silently destroying the sole existing PATH
+    entry (observed against the real WindowsApps alias on a fresh profile).
+    """
+
+    def test_single_entry_path_appends_with_semicolon(self, tmp_path: Path):
+        result = _run_path_append(
+            tmp_path,
+            current_path=r"C:\Users\test\AppData\Local\Microsoft\WindowsApps",
+            cli_dir=r"C:\Users\test\AppData\Local\Programs\PlaudTools\cli",
+        )
+        assert result == (
+            r"C:\Users\test\AppData\Local\Microsoft\WindowsApps;"
+            r"C:\Users\test\AppData\Local\Programs\PlaudTools\cli"
+        )
+        # Regression witness: the corrupted output has no semicolon separator
+        # and instead runs the two paths together.
+        assert "WindowsAppsC:" not in result
+
+    def test_empty_path_appends_without_leading_semicolon(self, tmp_path: Path):
+        result = _run_path_append(tmp_path, current_path="", cli_dir=r"C:\Programs\PlaudTools\cli")
+        assert result == r"C:\Programs\PlaudTools\cli"
+
+    def test_multi_entry_path_still_appends_correctly(self, tmp_path: Path):
+        """Multi-entry PATH was never broken (Where-Object preserves array-ness
+        for >1 item) -- pinned here as a no-regression witness."""
+        result = _run_path_append(
+            tmp_path,
+            current_path=r"C:\A;C:\B",
+            cli_dir=r"C:\Programs\PlaudTools\cli",
+        )
+        assert result == r"C:\A;C:\B;C:\Programs\PlaudTools\cli"
+
+    def test_already_present_is_not_duplicated(self, tmp_path: Path):
+        result = _run_path_append(
+            tmp_path,
+            current_path=r"C:\Programs\PlaudTools\cli",
+            cli_dir=r"C:\Programs\PlaudTools\cli",
+        )
+        assert result == r"C:\Programs\PlaudTools\cli"
+
+
+# ---------------------------------------------------------------------------
+# install.ps1 — behavioural test for the installed>latest branch (#159)
+# ---------------------------------------------------------------------------
+
+_VERSION_BRANCH_PS1 = r"""
+param([string]$Installed, [string]$Latest, [switch]$Force)
+
+function Get-NumericVersion {
+    param([string]$v)
+    $numeric = $v.TrimStart('v') -replace '-.*$', ''
+    return [version]$numeric
+}
+
+$installedVerNum = Get-NumericVersion $Installed
+$latestVerNum    = Get-NumericVersion $Latest
+
+if ($installedVerNum -eq $latestVerNum -and -not $Force) {
+    Write-Host "UP_TO_DATE"
+} elseif ($installedVerNum -gt $latestVerNum -and -not $Force) {
+    Write-Host "INSTALLED_NEWER_NOOP"
+} elseif ($latestVerNum -gt $installedVerNum -and -not $Force) {
+    Write-Host "UPDATE_AVAILABLE"
+} else {
+    Write-Host "WIPE_AND_REINSTALL"
+}
+"""
+
+
+def _run_version_branch(tmp_path: Path, installed: str, latest: str, force: bool = False) -> str:
+    harness = tmp_path / "version_branch.ps1"
+    harness.write_text(_VERSION_BRANCH_PS1, encoding="utf-8")
+    args = [
+        "pwsh",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        str(harness),
+        "-Installed",
+        installed,
+        "-Latest",
+        latest,
+    ]
+    if force:
+        args.append("-Force")
+    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+class TestInstallPs1VersionBranch:
+    """Reproduces #159: installed>latest must NOT fall into the -Force wipe
+    branch (which would silently downgrade to the older published release).
+    """
+
+    def test_installed_newer_takes_noop_branch_not_wipe(self, tmp_path: Path):
+        assert _run_version_branch(tmp_path, installed="0.7.0", latest="0.6.2") == "INSTALLED_NEWER_NOOP"
+
+    def test_installed_newer_with_force_still_wipes(self, tmp_path: Path):
+        """-Force must still win even when installed is ahead -- an explicit
+        user request to reinstall is honored regardless of version."""
+        assert (
+            _run_version_branch(tmp_path, installed="0.7.0", latest="0.6.2", force=True)
+            == "WIPE_AND_REINSTALL"
+        )
+
+    def test_equal_versions_still_up_to_date(self, tmp_path: Path):
+        assert _run_version_branch(tmp_path, installed="0.6.2", latest="0.6.2") == "UP_TO_DATE"
+
+    def test_latest_newer_still_update_available(self, tmp_path: Path):
+        assert _run_version_branch(tmp_path, installed="0.6.0", latest="0.6.2") == "UPDATE_AVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# Autostart value quoting round-trip, Python side (#160)
+# ---------------------------------------------------------------------------
+
+
+class TestAutostartQuoting:
+    """_set_autostart writes a quoted exe path; _autostart_enabled must strip
+    the quotes back off before comparing, or every frozen install would
+    permanently report autostart as "missing" and re-write the registry key
+    on every launch.
+    """
+
+    def test_set_autostart_writes_quoted_value(self, tmp_path, monkeypatch):
+        from plaud_tools.tray import setup as setup_mod
+
+        fake_exe = tmp_path / "PlaudTools.exe"
+        fake_exe.write_bytes(b"")
+        monkeypatch.setattr(sys, "platform", "win32", raising=False)
+        monkeypatch.setattr(sys, "executable", str(fake_exe))
+
+        written: dict[str, object] = {}
+
+        def fake_set_value_ex(key, name, reserved, reg_type, value):
+            written["value"] = value
+
+        import types
+
+        mock_winreg = types.ModuleType("winreg")
+        mock_winreg.HKEY_CURRENT_USER = 0x80000001  # type: ignore[attr-defined]
+        mock_winreg.KEY_SET_VALUE = 0x0002  # type: ignore[attr-defined]
+        mock_winreg.REG_SZ = 1  # type: ignore[attr-defined]
+        mock_winreg.OpenKey = MagicMock(  # type: ignore[attr-defined]
+            return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)
+        )
+        mock_winreg.SetValueEx = fake_set_value_ex  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "winreg", mock_winreg)
+
+        setup_mod._set_autostart(True)
+
+        assert written["value"] == f'"{fake_exe}"'
+
+    def test_autostart_enabled_strips_quotes_for_comparison(self, monkeypatch):
+        from plaud_tools.tray import setup as setup_mod
+
+        fake_exe = r"C:\Users\Jane Doe\AppData\Local\Programs\PlaudTools\PlaudTools.exe"
+        monkeypatch.setattr(sys, "platform", "win32", raising=False)
+        monkeypatch.setattr(sys, "executable", fake_exe)
+
+        import types
+
+        mock_winreg = types.ModuleType("winreg")
+        mock_winreg.HKEY_CURRENT_USER = 0x80000001  # type: ignore[attr-defined]
+        mock_winreg.OpenKey = MagicMock(  # type: ignore[attr-defined]
+            return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False)
+        )
+        mock_winreg.QueryValueEx = MagicMock(return_value=(f'"{fake_exe}"', 1))  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "winreg", mock_winreg)
+
+        assert setup_mod._autostart_enabled() is True
+
+
+# ---------------------------------------------------------------------------
+# Shared PowerShell-profile IO (#154)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileIoHelpers:
+    """_read_profile_text / _write_profile_text: encoding-tolerant read,
+    BOM-preserving write. Every profile touch (setup, removal, the presence
+    check) routes through these two so a fix lands once (#154).
+    """
+
+    def test_missing_file_reads_as_empty_no_bom(self, tmp_path):
+        from plaud_tools.tray.setup import _read_profile_text
+
+        content, had_bom = _read_profile_text(tmp_path / "does_not_exist.ps1")
+        assert content == ""
+        assert had_bom is False
+
+    def test_bom_prefixed_file_is_detected_and_stripped(self, tmp_path):
+        from plaud_tools.tray.setup import _read_profile_text
+
+        profile = tmp_path / "profile.ps1"
+        profile.write_bytes(b"\xef\xbb\xbf" + b"# hello\n")
+
+        content, had_bom = _read_profile_text(profile)
+        assert content == "# hello\n"
+        assert had_bom is True
+
+    def test_bom_less_file_reads_normally(self, tmp_path):
+        from plaud_tools.tray.setup import _read_profile_text
+
+        profile = tmp_path / "profile.ps1"
+        # write_bytes avoids Path.write_text's platform newline translation
+        # so the byte-for-byte content is exactly what _read_profile_text sees.
+        profile.write_bytes(b"# hello\n")
+
+        content, had_bom = _read_profile_text(profile)
+        assert content == "# hello\n"
+        assert had_bom is False
+
+    def test_undecodable_file_returns_none_not_raise(self, tmp_path):
+        """A legacy ANSI profile with non-UTF-8 bytes must not crash the
+        caller: UnicodeDecodeError is a ValueError subclass, NOT an OSError,
+        so it previously escaped every `except OSError:` guard (#154).
+        """
+        from plaud_tools.tray.setup import _read_profile_text
+
+        profile = tmp_path / "profile.ps1"
+        # 0xFF 0xFE is not valid UTF-8 (and not a UTF-8 BOM either).
+        profile.write_bytes(b"\xff\xfe\x00\x01garbage")
+
+        content, had_bom = _read_profile_text(profile)
+        assert content is None
+        assert had_bom is False
+
+    def test_write_preserves_bom_when_original_had_one(self, tmp_path):
+        from plaud_tools.tray.setup import _write_profile_text
+
+        profile = tmp_path / "profile.ps1"
+        _write_profile_text(profile, "# new content\n", had_bom=True)
+
+        raw = profile.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+
+    def test_write_omits_bom_when_original_had_none(self, tmp_path):
+        from plaud_tools.tray.setup import _write_profile_text
+
+        profile = tmp_path / "profile.ps1"
+        _write_profile_text(profile, "# new content\n", had_bom=False)
+
+        raw = profile.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+
+    def test_round_trip_preserves_bom_through_setup_ps_completions(self, tmp_path, monkeypatch):
+        """End-to-end: a BOM'd profile keeps its BOM after _setup_ps_completions
+        adds the sourcing line (previously silently stripped -- #154).
+        """
+        from plaud_tools.tray import setup as setup_mod
+
+        completions_dir = tmp_path / "completions"
+        completions_dir.mkdir()
+        ps1 = completions_dir / "plaud-tools.ps1"
+        ps1.write_text("# completions\n", encoding="utf-8")
+
+        profile_dir = tmp_path / "home" / "Documents" / "PowerShell"
+        profile_dir.mkdir(parents=True)
+        profile = profile_dir / "Microsoft.PowerShell_profile.ps1"
+        profile.write_bytes(b"\xef\xbb\xbf" + b"# my existing profile\n")
+
+        monkeypatch.setattr(setup_mod, "_completions_dir", lambda: completions_dir)
+        monkeypatch.setattr(setup_mod, "_stale_sourcing_re", lambda: None)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+        setup_mod._setup_ps_completions()
+
+        raw = profile.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf"), "BOM must survive the rewrite"
+        assert str(ps1) in raw.decode("utf-8-sig")

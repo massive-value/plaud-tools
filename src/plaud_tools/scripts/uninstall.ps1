@@ -31,6 +31,59 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 
+# ---------------------------------------------------------------------------
+# Stop ALL processes whose Path is under $InstallDir (plaud-mcp, ffmpeg, any
+# other child process), retrying against a supervisor that respawns them.
+#
+# A single kill pass is not enough: if Claude Desktop (or any other MCP
+# client) has plaud-mcp registered, killing it once just causes the client to
+# relaunch it almost immediately, and the respawned exe re-locks the very
+# DLLs Remove-Item is about to delete -- a first kill followed by an
+# unretried delete can therefore leave a partially-deleted install directory
+# with Claude Desktop still running (#156). Mirrors update.ps1's
+# Stop-PlaudMcpScoped, generalized to the install-dir scope this script uses.
+# ---------------------------------------------------------------------------
+
+function Stop-ScopedProcesses {
+    param(
+        [string]$InstallDir,
+        [int]$MaxAttempts = 8,
+        [int]$StableMs = 500
+    )
+
+    $scope = $InstallDir.TrimEnd('\').TrimEnd('/').ToLower() + '\'
+
+    $findProcs = {
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.ToLower().StartsWith($scope)
+        }
+    }
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $procs = & $findProcs
+        if (-not $procs) {
+            # Nothing alive - wait $StableMs to make sure nobody respawns it.
+            Start-Sleep -Milliseconds $StableMs
+            if (-not (& $findProcs)) {
+                return $true
+            }
+            continue
+        }
+
+        foreach ($p in $procs) {
+            try { $p.CloseMainWindow() | Out-Null } catch {}
+        }
+        Start-Sleep -Milliseconds 150
+        $procs = & $findProcs
+        if ($procs) {
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    return $false
+}
+
 # Wait for the tray process to exit.
 while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
     Start-Sleep -Seconds 1
@@ -39,25 +92,8 @@ while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
 Start-Sleep -Seconds 2
 
 # Shut down ALL processes running from the install directory (plaud-mcp, ffmpeg,
-# any future executables).  Filtering by path rather than by name means we
-# don't miss child processes spawned by plaud-mcp (e.g. ffmpeg for audio work).
-$installDir = $InstallDir.TrimEnd('\').TrimEnd('/')
-$scopedProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.Path -and $_.Path.ToLower().StartsWith($installDir.ToLower() + '\')
-}
-if ($scopedProcs) {
-    foreach ($p in $scopedProcs) { $p.CloseMainWindow() | Out-Null }
-    $deadline = (Get-Date).AddSeconds(5)
-    while (($scopedProcs | Where-Object { !$_.HasExited }) -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 200
-    }
-    $scopedProcs | Where-Object { !$_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
-    # Poll until all handles are fully released.
-    $exitDeadline = (Get-Date).AddSeconds(3)
-    while (($scopedProcs | Where-Object { !$_.HasExited }) -and (Get-Date) -lt $exitDeadline) {
-        Start-Sleep -Milliseconds 200
-    }
-}
+# any future executables), retrying if a supervisor respawns them.
+Stop-ScopedProcesses -InstallDir $InstallDir | Out-Null
 
 # Delete the install directory with retries in case file handles are still held.
 $maxAttempts = 5

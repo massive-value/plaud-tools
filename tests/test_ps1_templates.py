@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
+import shutil
+import subprocess
+import sys
+
+import pytest
+
 from plaud_tools.ps1_templates import (
     _ps_escape,
     render_uninstall_ps1,
@@ -291,6 +298,78 @@ def test_uninstall_ps1_self_destructs():
 
 
 # ---------------------------------------------------------------------------
+# uninstall.ps1 — respawn-retry kill loop (#156)
+#
+# A single kill pass followed by a fixed-attempt Remove-Item retry is not
+# enough: if an MCP client (Claude Desktop) has plaud-mcp registered, killing
+# it once just causes the client to relaunch it almost immediately, and the
+# respawned exe re-locks the DLLs Remove-Item is about to delete -- leaving a
+# partially-deleted install directory with Claude Desktop still running.
+# ---------------------------------------------------------------------------
+
+
+def test_uninstall_ps1_has_respawn_retry_kill_loop():
+    content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
+    assert "Stop-ScopedProcesses" in content
+    assert "MaxAttempts" in content
+
+
+def test_uninstall_ps1_retry_loop_reconfirms_stability_before_declaring_dead():
+    """The loop must wait and re-check (not declare victory on the first
+    "nothing found") so a process that respawns a beat later is still caught.
+    """
+    content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
+    assert "StableMs" in content
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
+def test_uninstall_ps1_stop_scoped_processes_retries_against_respawn(tmp_path):
+    """Behavioral: extract Stop-ScopedProcesses and prove it retries against a
+    supervisor that relaunches the killed process, instead of giving up after
+    one kill (the exact #156 scenario -- Claude Desktop respawning plaud-mcp).
+    """
+    content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
+    start = content.index("function Stop-ScopedProcesses")
+    end = content.index("\n}\n", start) + len("\n}\n")
+    func_src = content[start:end]
+
+    harness = tmp_path / "stop_scoped_harness.ps1"
+    harness.write_text(
+        func_src
+        + r"""
+$script:findCalls = 0
+$script:killCount = 0
+function Get-Process {
+    param([string]$Name, [string]$ErrorAction)
+    $script:findCalls++
+    if ($script:findCalls -le 2) {
+        # "Respawns" for the first two lookups, then stays dead.
+        $script:killCount++
+        $p = New-Object PSObject
+        $p | Add-Member -MemberType NoteProperty -Name Path -Value 'C:\Fake\PlaudTools\plaud-mcp.exe'
+        $p | Add-Member -MemberType ScriptMethod -Name CloseMainWindow -Value { $true }
+        return @($p)
+    }
+    return @()
+}
+function Stop-Process { param([switch]$Force, [string]$ErrorAction) }
+$result = Stop-ScopedProcesses -InstallDir 'C:\Fake\PlaudTools' -MaxAttempts 8 -StableMs 10
+Write-Host "RESULT=$result KILLS=$script:killCount"
+""",
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
+    assert "RESULT=True" in result.stdout
+    assert "KILLS=2" in result.stdout, "must have retried the kill against the respawned process"
+
+
+# ---------------------------------------------------------------------------
 # _ps_escape — single-quote safety
 # ---------------------------------------------------------------------------
 
@@ -523,3 +602,121 @@ def test_render_uninstall_ps1_uses_call_operator():
         install_dir=r"C:\Programs\PlaudTools",
     )
     assert result.lstrip().startswith("&")
+
+
+# ---------------------------------------------------------------------------
+# Runtime dispatcher BOM (#153) — non-ASCII path, real PowerShell 5.1 parse
+#
+# updater.py and uninstaller.py write the rendered dispatcher string to a
+# %TEMP% .ps1 file that Windows PowerShell 5.1 then executes. A BOM-less
+# write is interpreted by PS 5.1 as the system ANSI codepage, not UTF-8 (the
+# same v0.3.4 update.ps1 class); a non-ASCII byte in a path embedded in the
+# dispatcher (e.g. a non-ASCII Windows username under %TEMP%) can misdecode
+# and fail to parse. Both write call sites must use "utf-8-sig" so the BOM
+# is present. These tests pin the source-level fix and, where a PS 5.1
+# engine is available, prove the BOM'd file actually parses.
+# ---------------------------------------------------------------------------
+
+
+def test_updater_writes_dispatcher_with_bom():
+    """Source guard: updater.py's dispatcher write must request utf-8-sig."""
+    import plaud_tools.tray.updater as updater_mod
+
+    src = inspect.getsource(updater_mod)
+    assert 'ps_path.write_text(ps_content, encoding="utf-8-sig")' in src
+    # No stray BOM-less write of the dispatcher content left behind.
+    assert 'ps_path.write_text(ps_content, encoding="utf-8")' not in src
+
+
+def test_uninstaller_writes_dispatcher_with_bom():
+    """Source guard: uninstaller.py's dispatcher write must request utf-8-sig."""
+    import plaud_tools.tray.uninstaller as uninstaller_mod
+
+    src = inspect.getsource(uninstaller_mod)
+    assert 'ps_path.write_text(ps_content, encoding="utf-8-sig")' in src
+    assert 'ps_path.write_text(ps_content, encoding="utf-8")' not in src
+
+
+@pytest.mark.parametrize(
+    "render_fn,kwargs",
+    [
+        (
+            render_update_ps1,
+            dict(
+                tray_pid=1,
+                install_dir="C:\\Users\\Jérôme\\AppData\\Local\\Programs\\PlaudTools",
+                zip_path="C:\\Users\\Jérôme\\AppData\\Local\\Temp\\plaud_update_1.zip",
+                extract_dir="C:\\Users\\Jérôme\\AppData\\Local\\Programs",
+            ),
+        ),
+        (
+            render_uninstall_ps1,
+            dict(
+                tray_pid=1,
+                install_dir="C:\\Users\\Jérôme\\AppData\\Local\\Programs\\PlaudTools",
+            ),
+        ),
+    ],
+)
+def test_dispatcher_with_non_ascii_path_written_with_bom_decodes_correctly(tmp_path, render_fn, kwargs):
+    """Reproduces #153 end-to-end for a non-ASCII Windows username in the path."""
+    ps_content = render_fn(**kwargs)
+    assert "Jérôme" in ps_content  # sanity: the non-ASCII path made it into the content
+
+    ps_path = tmp_path / "dispatcher.ps1"
+    ps_path.write_text(ps_content, encoding="utf-8-sig")
+
+    raw = ps_path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf"), "dispatcher must be written with a UTF-8 BOM"
+    # Round-trips correctly for any UTF-8-aware reader (utf-8-sig strips the BOM).
+    assert ps_path.read_text(encoding="utf-8-sig") == ps_content
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or shutil.which("powershell") is None,
+    reason="Windows PowerShell 5.1 not available",
+)
+@pytest.mark.parametrize(
+    "render_fn,kwargs",
+    [
+        (
+            render_update_ps1,
+            dict(
+                tray_pid=1,
+                install_dir="C:\\Users\\Jérôme\\AppData\\Local\\Programs\\PlaudTools",
+                zip_path="C:\\Users\\Jérôme\\AppData\\Local\\Temp\\plaud_update_1.zip",
+                extract_dir="C:\\Users\\Jérôme\\AppData\\Local\\Programs",
+            ),
+        ),
+        (
+            render_uninstall_ps1,
+            dict(
+                tray_pid=1,
+                install_dir="C:\\Users\\Jérôme\\AppData\\Local\\Programs\\PlaudTools",
+            ),
+        ),
+    ],
+)
+def test_bom_dispatcher_parses_under_windows_powershell_51(tmp_path, render_fn, kwargs):
+    """The exact regression this fix targets: a non-ASCII path in the BOM'd
+    dispatcher must parse cleanly under real Windows PowerShell 5.1 (not just
+    pwsh 7, which defaults to UTF-8 regardless of BOM).
+    """
+    ps_content = render_fn(**kwargs)
+    ps_path = tmp_path / "dispatcher.ps1"
+    ps_path.write_text(ps_content, encoding="utf-8-sig")
+
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"$errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
+            f"'{ps_path}', [ref]$null, [ref]$errs); if ($errs.Count -gt 0) {{ $errs | Out-String }}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, f"powershell invocation failed:\n{result.stdout}\n{result.stderr}"
+    assert result.stdout.strip() == "", f"PS 5.1 parse errors:\n{result.stdout}"

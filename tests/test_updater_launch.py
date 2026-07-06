@@ -12,11 +12,12 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from plaud_tools.tray import updater
-from plaud_tools.tray.updater import _CREATE_BREAKAWAY_FROM_JOB, _launch_updater
+from plaud_tools.tray.updater import _CREATE_BREAKAWAY_FROM_JOB, UpdateDialog, _launch_updater
 
 # _launch_updater uses Windows-only creation flags (CREATE_NO_WINDOW etc.); the
 # in-app updater only ever runs on the frozen Windows bundle. Skip elsewhere.
@@ -86,3 +87,50 @@ def test_launch_updater_propagates_non_breakaway_errors(monkeypatch):
 
     with pytest.raises(OSError):
         _launch_updater(Path("C:/Temp/plaud_update_1.ps1"))
+
+
+# ---------------------------------------------------------------------------
+# #157 — _install_worker's _on_error must not touch a destroyed install_btn
+#
+# _on_error is delivered via root.after() from the download worker thread,
+# so the UpdateDialog window (and its install_btn) may have been closed in
+# the meantime. Before the fix, `install_btn.config(state="normal")` had no
+# widget-alive guard -- the same v0.3.3 crash class as HomeWindow's
+# _refresh_update_btn, just in a different file.
+# ---------------------------------------------------------------------------
+
+
+def _make_dialog() -> UpdateDialog:
+    root = MagicMock()
+    root.after.side_effect = lambda _delay, fn: fn()
+    app = MagicMock()
+    app._update_info = ("9.9.9", "https://example.com/release", "https://evil.example/x.zip", None)
+    return UpdateDialog(root, app)
+
+
+class TestInstallWorkerOnErrorWidgetGuard:
+    def test_skips_configure_when_install_btn_destroyed(self):
+        """An untrusted zip host makes _check_download_host raise immediately
+        (no network I/O needed to reach _on_error) -- fast path to the guard.
+        """
+        dialog = _make_dialog()
+        status_var = MagicMock()
+        install_btn = MagicMock()
+        install_btn.winfo_exists.return_value = 0  # destroyed
+
+        dialog._install_worker("https://evil.example/x.zip", None, status_var, install_btn)
+
+        status_var.set.assert_called_once()
+        assert "Download failed" in status_var.set.call_args[0][0]
+        install_btn.configure.assert_not_called()
+
+    def test_configures_when_install_btn_alive(self):
+        """No regression: a live button is still re-enabled on failure."""
+        dialog = _make_dialog()
+        status_var = MagicMock()
+        install_btn = MagicMock()
+        install_btn.winfo_exists.return_value = 1  # alive
+
+        dialog._install_worker("https://evil.example/x.zip", None, status_var, install_btn)
+
+        install_btn.configure.assert_called_once_with(state="normal")

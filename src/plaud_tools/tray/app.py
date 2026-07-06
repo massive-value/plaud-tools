@@ -472,8 +472,16 @@ class TrayApp(_BackgroundMixin):
             except Exception:
                 logging.warning("Could not delete install sentinel", exc_info=True)
             _show_install_toast()
-            if self._session and self._home_win:
+            # Arm the banner regardless of session state (#163): an actual
+            # first-run user has NO session yet -- they see the login window
+            # first (below) and only reach HomeWindow after signing in, via
+            # _on_login_success's home_win.show(). Gating the arm on
+            # `self._session` meant the one audience the banner is FOR
+            # (brand-new users) never saw it; only a reinstall over an
+            # existing session did.
+            if self._home_win:
                 self._home_win.arm_welcome_banner()
+            if self._session and self._home_win:
                 root.after(500, self._home_win.show)
 
         root.mainloop()
