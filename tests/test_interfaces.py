@@ -191,6 +191,7 @@ def test_cli_list_shapes_output():
             "date": expected_date,
             "duration_minutes": 10,
             "has_transcript": True,
+            "has_summary": False,
             "folder_id": "tag1",
         }
     ]
@@ -244,6 +245,7 @@ def test_cli_trash_no_arg_lists_trash():
             "date": expected_date,
             "duration_minutes": 10,
             "has_transcript": False,
+            "has_summary": False,
             "folder_id": None,
         }
     ]
@@ -331,6 +333,7 @@ def test_cli_trash_list_returns_curated_items():
             "date": expected_date,
             "duration_minutes": 10,
             "has_transcript": False,
+            "has_summary": False,
             "folder_id": None,
         }
     ]
@@ -381,15 +384,14 @@ def test_cli_correct_transcript_shapes_success_response():
     }
 
 
-def test_mcp_correct_transcript_shapes_success_response():
+def test_mcp_edit_transcript_correct_shapes_success_response():
     handlers = build_handlers(lambda: StubClient())
-    result = handlers["correct_transcript"]("rec1", find="Cache", replace="Cash")
+    result = handlers["edit_transcript"](recording_id="rec1", action="correct", find="Cache", replace="Cash")
     payload = json.loads(result["content"][0]["text"])
     assert payload == {
         "ok": True,
         "recording_id": "rec1",
-        "find": "Cache",
-        "replace": "Cash",
+        "action": "correct",
         "replacements": 3,
         "segments_changed": 2,
     }
@@ -741,7 +743,7 @@ def test_mcp_mutate_recording_trash():
     handlers = build_handlers(lambda: client)
     result = handlers["mutate_recording"]("rec1", "trash")
     payload = json.loads(result["content"][0]["text"])
-    assert payload == {"ok": True, "recording_id": "rec1", "mutation": "trash"}
+    assert payload == {"ok": True, "recording_id": "rec1", "action": "trash"}
     assert client.trash_move_call == ["rec1"]
 
 
@@ -750,7 +752,7 @@ def test_mcp_mutate_recording_restore():
     handlers = build_handlers(lambda: client)
     result = handlers["mutate_recording"]("rec1", "restore")
     payload = json.loads(result["content"][0]["text"])
-    assert payload == {"ok": True, "recording_id": "rec1", "mutation": "restore"}
+    assert payload == {"ok": True, "recording_id": "rec1", "action": "restore"}
     assert client.trash_restore_call == ["rec1"]
 
 
@@ -781,13 +783,13 @@ def test_mcp_mutate_recording_move_clears_folder_with_clear_folder_flag():
     assert client.move_call == ("rec1", None)
 
 
-def test_mcp_mutate_recording_delete_is_unknown_mutation():
+def test_mcp_mutate_recording_delete_is_unknown_action():
     """delete is no longer a valid mutate_recording action — it moved to delete_recording."""
     handlers = build_handlers(lambda: StubClient())
     result = handlers["mutate_recording"]("rec1", "delete")
     assert result["isError"] is True
     payload = json.loads(result["content"][0]["text"])
-    assert "unknown mutation" in payload["error"]
+    assert "unknown action" in payload["error"]
 
 
 def test_mcp_delete_recording_calls_client_and_returns_ok():
@@ -806,31 +808,34 @@ def test_mcp_delete_recording_returns_session_error_when_client_missing():
     assert result["isError"] is True
 
 
-def test_mcp_rename_speaker_calls_client_and_returns_segments_updated():
+def test_mcp_edit_transcript_rename_speaker_calls_client_and_returns_segments_updated():
     client = StubClient()
     handlers = build_handlers(lambda: client)
-    result = handlers["rename_speaker"]("rec1", "Speaker 1", "Alex")
+    result = handlers["edit_transcript"](
+        recording_id="rec1", action="rename_speaker", original_label="Speaker 1", new_name="Alex"
+    )
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
     assert payload["recording_id"] == "rec1"
-    assert payload["original_label"] == "Speaker 1"
-    assert payload["new_name"] == "Alex"
+    assert payload["action"] == "rename_speaker"
     assert payload["segments_updated"] == 7
     assert client.rename_speaker_call == ("rec1", "Speaker 1", "Alex")
 
 
-def test_mcp_rename_speaker_returns_session_error_when_client_missing():
+def test_mcp_edit_transcript_rename_speaker_returns_session_error_when_client_missing():
     handlers = build_handlers(lambda: None)
-    result = handlers["rename_speaker"]("rec1", "Speaker 1", "Alex")
+    result = handlers["edit_transcript"](
+        recording_id="rec1", action="rename_speaker", original_label="Speaker 1", new_name="Alex"
+    )
     assert result["isError"] is True
 
 
-def test_mcp_mutate_recording_unknown_mutation():
+def test_mcp_mutate_recording_unknown_action():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["mutate_recording"]("rec1", "fly_away")
     assert result["isError"] is True
     payload = json.loads(result["content"][0]["text"])
-    assert "unknown mutation" in payload["error"]
+    assert "unknown action" in payload["error"]
 
 
 def test_mcp_mutate_recording_rename_missing_new_name():
@@ -1030,13 +1035,11 @@ def test_mcp_process_recording_rejects_unknown_wait_mode():
     assert "wait must be one of" in payload["error"]
 
 
-def test_mcp_merge_recordings_returns_summary():
+def test_mcp_merge_recordings_returns_slim_summary():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["merge_recordings"](recording_ids=["r1", "r2"], title="Combined")
     payload = json.loads(result["content"][0]["text"])
-    assert payload["id"] == "merged1"
-    assert payload["title"] == "Combined"
-    assert payload["is_trans"] is False
+    assert payload == {"ok": True, "recording_id": "merged1", "title": "Combined"}
 
 
 def test_mcp_upload_recording_passes_timestamp(tmp_path):
@@ -1201,7 +1204,7 @@ class SummaryStub(StubClient):
 def test_mcp_edit_summary_correct_calls_correct_summary():
     client = SummaryStub()
     handlers = build_handlers(lambda: client)
-    result = handlers["edit_summary"](recording_id="rec1", operation="correct", find="Suzan", replace="Susan")
+    result = handlers["edit_summary"](recording_id="rec1", action="correct", find="Suzan", replace="Susan")
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
     assert payload["replacements"] == 3
@@ -1210,7 +1213,7 @@ def test_mcp_edit_summary_correct_calls_correct_summary():
 
 def test_mcp_edit_summary_correct_requires_find_and_replace():
     handlers = build_handlers(lambda: SummaryStub())
-    result = handlers["edit_summary"](recording_id="rec1", operation="correct", find="x")
+    result = handlers["edit_summary"](recording_id="rec1", action="correct", find="x")
     assert result["isError"] is True
     payload = json.loads(result["content"][0]["text"])
     assert "find and replace" in payload["error"]
@@ -1219,7 +1222,7 @@ def test_mcp_edit_summary_correct_requires_find_and_replace():
 def test_mcp_edit_summary_replace_calls_set_summary():
     client = SummaryStub()
     handlers = build_handlers(lambda: client)
-    result = handlers["edit_summary"](recording_id="rec1", operation="replace", content="# New")
+    result = handlers["edit_summary"](recording_id="rec1", action="replace", content="# New")
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
     assert client.set_call == ("rec1", "# New")
@@ -1227,16 +1230,16 @@ def test_mcp_edit_summary_replace_calls_set_summary():
 
 def test_mcp_edit_summary_replace_requires_content():
     handlers = build_handlers(lambda: SummaryStub())
-    result = handlers["edit_summary"](recording_id="rec1", operation="replace")
+    result = handlers["edit_summary"](recording_id="rec1", action="replace")
     assert result["isError"] is True
     assert "content is required" in json.loads(result["content"][0]["text"])["error"]
 
 
-def test_mcp_edit_summary_rejects_unknown_operation():
+def test_mcp_edit_summary_rejects_unknown_action():
     handlers = build_handlers(lambda: SummaryStub())
-    result = handlers["edit_summary"](recording_id="rec1", operation="frobnicate")
+    result = handlers["edit_summary"](recording_id="rec1", action="frobnicate")
     assert result["isError"] is True
-    assert "unknown operation" in json.loads(result["content"][0]["text"])["error"]
+    assert "unknown action" in json.loads(result["content"][0]["text"])["error"]
 
 
 def test_cli_correct_summary_calls_client():

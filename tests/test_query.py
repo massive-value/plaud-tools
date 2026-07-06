@@ -27,6 +27,7 @@ def make_recording(
     start_time: int = 0,
     duration: int = 0,
     is_trans: bool = False,
+    is_summary: bool = False,
     filetag_id_list: list[str] | None = None,
 ) -> Recording:
     return Recording(
@@ -35,6 +36,7 @@ def make_recording(
         start_time=start_time,
         duration=duration,
         is_trans=is_trans,
+        is_summary=is_summary,
         filetag_id_list=filetag_id_list if filetag_id_list is not None else [],
     )
 
@@ -313,8 +315,22 @@ class TestSummarizeRecording:
     def test_returns_dict_with_expected_keys(self):
         rec = make_recording("rec42", "My Note", start_time=1_705_276_800_000, duration=120_000)
         summary = summarize_recording(rec)
-        expected_keys = {"id", "title", "date", "duration_minutes", "has_transcript", "folder_id"}
+        expected_keys = {
+            "id",
+            "title",
+            "date",
+            "duration_minutes",
+            "has_transcript",
+            "has_summary",
+            "folder_id",
+        }
         assert set(summary.keys()) == expected_keys
+
+    def test_has_summary_reflects_is_summary(self):
+        rec_with = make_recording(is_summary=True)
+        rec_without = make_recording(is_summary=False)
+        assert summarize_recording(rec_with)["has_summary"] is True
+        assert summarize_recording(rec_without)["has_summary"] is False
 
     def test_id_and_title_are_correct(self):
         rec = make_recording("abc123", "Team Standup")

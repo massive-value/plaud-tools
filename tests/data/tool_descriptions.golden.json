@@ -14,7 +14,7 @@
           "type": "string"
         },
         "limit": {
-          "default": 50,
+          "default": 20,
           "description": "Max results per page",
           "minimum": 1,
           "type": "integer"
@@ -26,6 +26,11 @@
         "since": {
           "description": "ISO 8601 start-date filter",
           "type": "string"
+        },
+        "trash": {
+          "default": false,
+          "description": "List trashed recordings instead of active ones",
+          "type": "boolean"
         },
         "until": {
           "description": "ISO 8601 end-date filter",
@@ -54,6 +59,17 @@
         },
         "recording_id": {
           "type": "string"
+        },
+        "transcript_max_chars": {
+          "description": "Max transcript characters to return; sets transcript_truncated when cut off",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "transcript_offset": {
+          "default": 0,
+          "description": "Character offset to start the transcript from (with include=[transcript])",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -64,18 +80,10 @@
     "name": "get_recording"
   },
   {
-    "description": "Apply a reversible state change to a recording: rename, trash, restore, or move.",
+    "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",
     "inputSchema": {
       "properties": {
-        "clear_folder": {
-          "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",
-          "type": "boolean"
-        },
-        "folder_id": {
-          "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",
-          "type": "string"
-        },
-        "mutation": {
+        "action": {
           "enum": [
             "rename",
             "trash",
@@ -84,17 +92,32 @@
           ],
           "type": "string"
         },
+        "clear_folder": {
+          "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",
+          "type": "boolean"
+        },
+        "folder_id": {
+          "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",
+          "type": "string"
+        },
         "new_name": {
           "description": "Required for rename",
           "type": "string"
         },
         "recording_id": {
+          "description": "Single recording ID",
           "type": "string"
+        },
+        "recording_ids": {
+          "description": "Batch of recording IDs (trash/restore/move only, not rename); use instead of recording_id",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
-        "recording_id",
-        "mutation"
+        "action"
       ],
       "type": "object"
     },
@@ -105,7 +128,7 @@
     "inputSchema": {
       "properties": {
         "confirm": {
-          "description": "Must be true to proceed. Set this only after the human has explicitly confirmed they want to permanently delete the recording. Re-invoke with confirm=true after obtaining confirmation.",
+          "description": "Must be true; set only after the human has explicitly confirmed the permanent deletion.",
           "type": "boolean"
         },
         "recording_id": {
@@ -121,54 +144,47 @@
     "name": "delete_recording"
   },
   {
-    "description": "Rename a speaker label across all transcript segments for a recording.",
+    "description": "Edit a recording's transcript. action='rename_speaker' relabels a speaker across all segments; action='correct' does a literal find-and-replace on transcript text (dry_run=true previews the match count).",
     "inputSchema": {
       "properties": {
+        "action": {
+          "enum": [
+            "rename_speaker",
+            "correct"
+          ],
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "action=correct only: return the match count without editing",
+          "type": "boolean"
+        },
+        "find": {
+          "description": "Exact literal text to find (case-sensitive); required for action=correct",
+          "type": "string"
+        },
         "new_name": {
-          "description": "Replacement speaker name",
+          "description": "Replacement speaker name; required for action=rename_speaker",
           "type": "string"
         },
         "original_label": {
-          "description": "Existing speaker label to replace",
-          "type": "string"
-        },
-        "recording_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "recording_id",
-        "original_label",
-        "new_name"
-      ],
-      "type": "object"
-    },
-    "name": "rename_speaker"
-  },
-  {
-    "description": "Fix transcript text by literal find-and-replace across all segments (e.g. correct a misheard word or name). Speaker labels are unaffected \u2014 use rename_speaker for those.",
-    "inputSchema": {
-      "properties": {
-        "find": {
-          "description": "Exact text to find in the transcript (case-sensitive, literal \u2014 not a regex)",
+          "description": "Existing speaker label; required for action=rename_speaker",
           "type": "string"
         },
         "recording_id": {
           "type": "string"
         },
         "replace": {
-          "description": "Replacement text (may be empty to delete the matched text)",
+          "description": "Replacement text, may be empty to delete; required for action=correct",
           "type": "string"
         }
       },
       "required": [
         "recording_id",
-        "find",
-        "replace"
+        "action"
       ],
       "type": "object"
     },
-    "name": "correct_transcript"
+    "name": "edit_transcript"
   },
   {
     "description": "Upload a local audio file to Plaud.",
@@ -238,7 +254,7 @@
         },
         "wait": {
           "default": "transcript",
-          "description": "How long to block after the transcribe/summarize request is accepted: 'none' returns immediately with {recording_id, accepted}, 'transcript' waits only for transcript readiness, and 'summary' waits for both transcript and summary.",
+          "description": "How long to block: none/transcript/summary; waits are bounded and return status='still_processing' if not done in time \u2014 poll get_recording or retry.",
           "enum": [
             "none",
             "transcript",
@@ -279,43 +295,46 @@
     "name": "merge_recordings"
   },
   {
-    "description": "Edit a recording's AI summary. operation='correct' does a literal find-and-replace (e.g. fix a misspelled name); operation='replace' overwrites the whole summary with new markdown. The recording must already have a generated summary.",
+    "description": "Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",
     "inputSchema": {
       "properties": {
-        "content": {
-          "description": "Full replacement summary markdown. Required for operation=replace.",
-          "type": "string"
-        },
-        "find": {
-          "description": "Exact text to find (case-sensitive, literal). Required for operation=correct.",
-          "type": "string"
-        },
-        "operation": {
-          "description": "'correct' = find/replace text; 'replace' = overwrite entire summary",
+        "action": {
           "enum": [
             "correct",
             "replace"
           ],
           "type": "string"
         },
+        "content": {
+          "description": "Full replacement summary markdown; required for action=replace",
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "action=correct only: return the match count without editing",
+          "type": "boolean"
+        },
+        "find": {
+          "description": "Exact text to find (case-sensitive, literal); required for action=correct",
+          "type": "string"
+        },
         "recording_id": {
           "type": "string"
         },
         "replace": {
-          "description": "Replacement text (may be empty to delete). Required for operation=correct.",
+          "description": "Replacement text (may be empty to delete); required for action=correct",
           "type": "string"
         }
       },
       "required": [
         "recording_id",
-        "operation"
+        "action"
       ],
       "type": "object"
     },
     "name": "edit_summary"
   },
   {
-    "description": "Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(mutation='move') instead.",
+    "description": "Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",
     "inputSchema": {
       "properties": {
         "action": {
@@ -331,7 +350,7 @@
           "type": "string"
         },
         "confirm": {
-          "description": "Required true for action=delete. Set only after the human confirms; deleting a folder is irreversible (recordings inside are kept but unfiled).",
+          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted.",
           "type": "boolean"
         },
         "folder_id": {
