@@ -418,6 +418,39 @@ class TestBrowseRecordingsMcpHandler:
         assert call_query.limit == 3
         assert call_query.is_trash == 0
 
+    # -----------------------------------------------------------------------
+    # #148: limit<=0 makes next_after == after forever — an agent that
+    # blindly re-invokes with the returned cursor loops without end. Both
+    # limit and after must be validated before ever touching the client.
+    # -----------------------------------------------------------------------
+
+    def test_zero_limit_returns_validation_error(self):
+        mock_client = MagicMock()
+        handlers = self._build_handlers(mock_client)
+        result = handlers["browse_recordings"](limit=0)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        assert payload["retryable"] is False
+        assert result["isError"] is True
+        mock_client.list_recordings.assert_not_called()
+
+    def test_negative_limit_returns_validation_error(self):
+        mock_client = MagicMock()
+        handlers = self._build_handlers(mock_client)
+        result = handlers["browse_recordings"](limit=-5)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        mock_client.list_recordings.assert_not_called()
+
+    def test_negative_after_returns_validation_error(self):
+        mock_client = MagicMock()
+        handlers = self._build_handlers(mock_client)
+        result = handlers["browse_recordings"](limit=10, after=-1)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        assert result["isError"] is True
+        mock_client.list_recordings.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # CLI list/search — filtered path uses incremental paging

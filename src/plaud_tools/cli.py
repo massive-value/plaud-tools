@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import os
 import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -299,6 +298,20 @@ def _handle_session(args: argparse.Namespace, store: SessionStore) -> str:
 
 
 def _handle_update(args: argparse.Namespace) -> str:  # noqa: ARG001  # never returns — calls sys.exit
+    # #158: in a PyInstaller-frozen bundle, sys.executable is the frozen exe
+    # itself — there is no real Python interpreter behind it, so re-invoking
+    # `[sys.executable, "-m", "pip", ...]` just re-launches this same exe with
+    # "-m pip install --upgrade plaud-tools" as bogus CLI arguments instead of
+    # upgrading anything. This command is pip-install-only; the frozen bundle
+    # has its own tray-driven updater.
+    if getattr(sys, "frozen", False):
+        print(
+            "'update' is for pip installs only. This is the bundled PlaudTools app — "
+            "use the tray's built-in updater, or re-run install.ps1 to get the latest version.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     import subprocess
 
     result = subprocess.run(
@@ -569,14 +582,9 @@ def _handle_set_summary(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
-    import tempfile
-
-    from .transcode import get_file_type, transcode_to_mp3_path
+    from .transcode import upload_with_transcode
 
     path = Path(args.file)
-    if not path.exists():
-        raise ValueError(f"file not found: {args.file}")
-    file_type, needs_transcode = get_file_type(path)
     title = args.title or path.stem
     start_ms: int | None = None
     if args.start_time is not None:
@@ -589,38 +597,28 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
             except ValueError as exc:
                 raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
 
-    if needs_transcode:
-        # Transcode to a temp MP3 on disk, then upload from that path
-        # so the transcoded bytes never round-trip through Python memory.
-        tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
-        os.close(tmp_fd)
-        tmp_mp3_path = Path(tmp_mp3)
-        try:
-            try:
-                transcode_to_mp3_path(path, tmp_mp3_path)
-            except RuntimeError as exc:
-                raise ValueError(str(exc)) from exc
-            recording = client.upload_recording(
-                tmp_mp3_path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
-            )
-        finally:
-            try:
-                tmp_mp3_path.unlink()
-            except OSError:
-                pass
-    else:
-        recording = client.upload_recording(
-            path, title, file_type, start_time=start_ms, timezone_offset=args.timezone_offset
-        )
-
-    if args.folder_id:
-        client.set_recording_folder(recording.id, args.folder_id)
+    # ValueError (missing file / unsupported format) and RuntimeError (ffmpeg
+    # failure) propagate to main()'s except clause, which already prints and
+    # exits non-zero for both.
+    outcome = upload_with_transcode(
+        client,
+        path,
+        title,
+        start_time=start_ms,
+        timezone_offset=args.timezone_offset,
+        folder_id=args.folder_id,
+    )
+    recording = outcome.recording
     upload_result: dict[str, Any] = {
         "ok": True,
         "recording_id": recording.id,
         "filename": recording.filename,
-        "transcoded": needs_transcode,
+        "transcoded": outcome.transcoded,
     }
+    if outcome.folder_error is not None:
+        # #149: upload succeeded but the post-upload folder move failed — the
+        # recording id must still reach the caller so it isn't re-uploaded.
+        upload_result["folder_error"] = outcome.folder_error
     if not args.detach:
         client.transcribe_and_summarize(recording.id)
         client.wait_for_transcription(recording.id)
@@ -768,7 +766,27 @@ def run_cli(
     raise AssertionError(f"unhandled CLI command: {args.command}")
 
 
+def _reconfigure_stdout_utf8() -> None:
+    """Force stdout to UTF-8 so non-ASCII output survives redirection.
+
+    Every command's JSON output is ASCII-safe (json.dumps escapes non-ASCII
+    by default), but `transcript` prints raw transcript text.  On Windows a
+    piped/redirected stdout often falls back to the legacy cp1252 console
+    code page, which raises UnicodeEncodeError on non-Latin-1 characters
+    (issue #155).  reconfigure() is a no-op when stdout is already UTF-8 and
+    is safely skipped when unsupported (e.g. a test harness's captured stream).
+    """
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _reconfigure_stdout_utf8()
     args = list(argv) if argv is not None else sys.argv[1:]
     try:
         output = run_cli(args)

@@ -86,6 +86,7 @@ _TOOLS: list[types.Tool] = [
                 "limit": {
                     "type": "integer",
                     "default": 50,
+                    "minimum": 1,
                     "description": "Max results per page",
                 },
                 "since": {
@@ -107,6 +108,7 @@ _TOOLS: list[types.Tool] = [
                 "after": {
                     "type": "integer",
                     "default": 0,
+                    "minimum": 0,
                     "description": "Cursor from next_after of a previous response",
                 },
             },
@@ -493,10 +495,21 @@ def _make_server() -> Server:
         return _TOOLS
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+    async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        # #139: the MCP SDK's call_tool decorator hard-codes isError=False
+        # whenever the registered handler returns a plain content list (see
+        # mcp.server.lowlevel.server.Server.call_tool) — only an explicit
+        # types.CallToolResult lets us control isError.  Every one of the 3
+        # return paths below must therefore build the CallToolResult itself so
+        # that refused deletes, session-expired, and other tool-level errors
+        # are delivered to clients as errors instead of silent "successes".
         handler = handlers.get(name)
         if handler is None:
-            return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+            payload: dict[str, Any] = {"error": f"Unknown tool: {name}"}
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=json.dumps(payload))],
+                isError=True,
+            )
         try:
             # Wave 2 / C2: run the synchronous handler in a worker thread so
             # blocking network I/O (PlaudClient HTTP calls, keyring reads,
@@ -510,6 +523,7 @@ def _make_server() -> Server:
             # behaviour to the previous synchronous call.
             result = await asyncio.to_thread(handler, **arguments)
             text = result["content"][0]["text"]
+            is_error = bool(result.get("isError"))
         except TypeError as exc:
             # The MCP framework or a misbehaving client passed unexpected / missing
             # keyword arguments.  Returning a structured validation error keeps the
@@ -521,8 +535,14 @@ def _make_server() -> Server:
                 "error_code": "validation",
                 "retryable": False,
             }
-            return [types.TextContent(type="text", text=json.dumps(payload, indent=2))]
-        return [types.TextContent(type="text", text=text)]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=json.dumps(payload, indent=2))],
+                isError=True,
+            )
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=text)],
+            isError=is_error,
+        )
 
     return server
 
