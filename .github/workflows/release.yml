@@ -9,7 +9,46 @@ permissions:
   contents: write
 
 jobs:
+  # Wave 0 / CI-CD 4 — fail fast when the tag doesn't match the committed
+  # pyproject.toml version. Previously the tag->version sync only happened
+  # inside the Windows build job (a text-replace against pyproject.toml in
+  # that job's own checkout); the publish job builds from a *separate* fresh
+  # checkout of the same commit, so an un-bumped pyproject.toml would ship a
+  # GitHub release labeled vX but a PyPI package still labeled the old
+  # version. This job makes that mismatch a hard failure before anything
+  # builds.
+  version-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify tag matches pyproject.toml version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pyproject_version=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "tag=$GITHUB_REF_NAME -> $tag_version"
+          echo "pyproject.toml version=$pyproject_version"
+          if [ "$tag_version" != "$pyproject_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME (version $tag_version) does not match pyproject.toml version $pyproject_version. Bump pyproject.toml to $tag_version and re-tag before releasing."
+            exit 1
+          fi
+
+  # Wave 0 / CI-CD 1 — release build+publish cannot proceed unless the full
+  # check suite (lint, mypy, the 3x3 pytest matrix, the PS 5.1 parse gate,
+  # the CI bundle-smoke, and the per-platform constraints install) is green
+  # for this exact commit. Calling ci.yml as a reusable workflow means this
+  # gate can never drift out of sync with what "green CI" means on main.
+  ci-gate:
+    uses: ./.github/workflows/ci.yml
+
+  ffmpeg-pin:
+    uses: ./.github/workflows/ffmpeg-pin.yml
+
   build:
+    needs: [version-check, ci-gate, ffmpeg-pin]
     runs-on: windows-latest
 
     steps:
@@ -18,8 +57,14 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Sync pyproject version to release tag
+        # Kept as a safety net alongside the version-check job above: this
+        # step is now idempotent in the normal case (tag already matches
+        # pyproject.toml by the time version-check has passed), but keeping
+        # it means a manually-dispatched rebuild of this job still stamps
+        # the correct version into the built artifacts.
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag.TrimStart('v')
@@ -32,7 +77,7 @@ jobs:
         # -c pins every transitive dep to the audited windows constraint file (Wave 2 / C3).
         # Regenerate constraints/windows.txt via: uv pip compile --upgrade --python-platform windows
         #   --python-version 3.12 --extra tray --extra dev pyproject.toml -o constraints/windows.txt
-        run: pip install --force-reinstall -c constraints/windows.txt ".[tray,dev]"
+        run: pip install -c constraints/windows.txt ".[tray,dev]"
 
       - name: Generate Windows PE version info
         run: python pyinstaller/version_info.py
@@ -48,15 +93,10 @@ jobs:
 
       - name: Download ffmpeg
         run: |
-          # Pinned to ffmpeg 8.1.2 (Gyan "essentials" build).
-          # Source is GyanD/codexffmpeg GitHub releases, NOT gyan.dev/builds/packages:
-          # gyan.dev only hosts the single latest version-pinned build (older URLs 404,
-          # which broke this step when 8.1.1 rotated away, 2026-07). GitHub release assets
-          # are immutable and every version tag is kept, so this URL never disappears — the
-          # pin only changes when we deliberately bump it. The zip is byte-identical to the
-          # gyan.dev "essentials" build (same SHA-256 gyan.dev publishes). Keep ci.yml in lockstep.
-          $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip"
-          $expectedHash = "DB580001CAA24AC104C8CB856CD113A87B0A443F7BDF47D8C12B1D740584A2EC"
+          # See .github/workflows/ffmpeg-pin.yml for the single-sourced pin
+          # (URL + SHA-256) shared with ci.yml.
+          $ffmpegUrl = "${{ needs.ffmpeg-pin.outputs.url }}"
+          $expectedHash = "${{ needs.ffmpeg-pin.outputs.sha256 }}"
           Invoke-WebRequest $ffmpegUrl -OutFile ffmpeg.zip
           $actualHash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
           if ($actualHash -ne $expectedHash) {
@@ -81,6 +121,31 @@ jobs:
 
       - name: Smoke test MCP executable
         run: out\plaud-tray\PlaudTools\mcp\plaud-mcp.exe --version
+
+      # Wave 0 / CI-CD 2 — the tray exe itself was never executed at release
+      # (only the two CLI/MCP --version smokes above). Run the same
+      # frozen-import proof ci.yml's bundle-smoke job runs, but against the
+      # actual assembled release layout (out\plaud-tray\PlaudTools\), which
+      # is a distinct build+assembly path from the CI bundle-smoke job.
+      - name: Diagnose-enum proof on assembled release bundle
+        shell: pwsh
+        run: |
+          $output = & "out\plaud-tray\PlaudTools\PlaudTools.exe" --diagnose-enum
+          Write-Host "diagnose-enum output: $output"
+          if ($output -notmatch "enumerator=psutil") {
+            Write-Error "[RELEASE-GATE] psutil is NOT the active enumerator in the assembled release bundle. Output: $output"
+            exit 1
+          }
+          Write-Host "[RELEASE-GATE] psutil confirmed as active enumerator in the assembled release bundle."
+
+      # Wave 0 / CI-CD 2 (continued) — exercise the *shipped* mcp\ffmpeg.exe
+      # in the assembled layout, not just a PATH-resolved ffmpeg. transcode.py
+      # checks the FFMPEG_BIN env var first, so pointing it at the assembled
+      # binary proves the exact file that ships works end-to-end.
+      - name: ffmpeg transcode smoke against shipped mcp\ffmpeg.exe
+        env:
+          FFMPEG_BIN: out\plaud-tray\PlaudTools\mcp\ffmpeg.exe
+        run: python scripts/ffmpeg_smoke.py
 
       - name: Create zip
         run: Compress-Archive -Path out\plaud-tray\PlaudTools -DestinationPath PlaudTools.zip
@@ -112,6 +177,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+          cache: pip
       - run: pip install build
       - run: python -m build
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1

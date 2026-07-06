@@ -1,0 +1,42 @@
+name: ffmpeg-pin
+
+# Reusable workflow: single source of truth for the pinned ffmpeg download
+# URL + expected SHA-256 hash consumed by both ci.yml (bundle-smoke) and
+# release.yml (build). Before this workflow existed, the URL/hash pair was
+# copy-pasted verbatim into both files with a "keep in lockstep" comment —
+# an easy thing to forget when bumping the pin. Now there is exactly one
+# place to edit.
+#
+# Pinned to ffmpeg 8.1.2 (Gyan "essentials" build). Source is the
+# GyanD/codexffmpeg GitHub releases, NOT gyan.dev/builds/packages: gyan.dev
+# only hosts the single latest version-pinned build (older URLs 404, which
+# broke this step when 8.1.1 rotated away, 2026-07). GitHub release assets
+# are immutable and every version tag is kept, so this URL never disappears
+# — the pin only changes when it is deliberately bumped. The zip is
+# byte-identical to the gyan.dev "essentials" build (same SHA-256 gyan.dev
+# publishes).
+
+on:
+  workflow_call:
+    outputs:
+      url:
+        description: "Pinned ffmpeg download URL"
+        value: ${{ jobs.pin.outputs.url }}
+      sha256:
+        description: "Expected SHA-256 of the pinned ffmpeg zip"
+        value: ${{ jobs.pin.outputs.sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.pin.outputs.url }}
+      sha256: ${{ steps.pin.outputs.sha256 }}
+    steps:
+      - id: pin
+        run: |
+          echo "url=https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip" >> "$GITHUB_OUTPUT"
+          echo "sha256=DB580001CAA24AC104C8CB856CD113A87B0A443F7BDF47D8C12B1D740584A2EC" >> "$GITHUB_OUTPUT"

@@ -4,8 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets release.yml gate the release build+publish path on this entire
+  # check suite by calling this workflow as a reusable workflow
+  # (`uses: ./.github/workflows/ci.yml`).
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  ffmpeg-pin:
+    uses: ./.github/workflows/ffmpeg-pin.yml
+
   lint:
     runs-on: ubuntu-latest
 
@@ -15,6 +29,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Install ruff
         run: pip install ruff
@@ -52,17 +67,71 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        # Windows also pulls in the [tray] extra so the tray/tk/pystray
+        # import surface is exercised by the unit test suite itself, not
+        # only by the separate bundle-smoke job.
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            pip install -e ".[tray,dev]"
+          else
+            pip install -e ".[dev]"
+          fi
 
       - name: Run tests
         run: pytest -q
+
+  # PS 5.1 parse gate — both shipped updater regressions (v0.3.4, v0.4.1)
+  # were Windows PowerShell 5.1 execution failures that a PowerShell-Core-only
+  # check would not have caught.  `windows-latest` ships Windows PowerShell
+  # 5.1 as `powershell.exe` (the `powershell` shell keyword below), distinct
+  # from PowerShell 7+ (`pwsh`).  This parses both scripts with the real 5.1
+  # parser and fails on any parse error.
+  #
+  # TODO(Wave 3): this is a parse-only gate. A fuller frozen old-version ->
+  # new-version updater simulation job (actually running update.ps1 under
+  # 5.1 against a fake install tree) is tracked as a follow-up — see
+  # docs/plans/2026-07-06-full-audit-and-remediation-plan.md §4 item 3.
+  ps51-parse-gate:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Parse update.ps1 / install.ps1 under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            'src/plaud_tools/scripts/update.ps1',
+            'scripts/install.ps1'
+          )
+          $failed = $false
+          foreach ($file in $files) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              Write-Host "PS 5.1 parse errors in ${file}:"
+              foreach ($e in $parseErrors) { Write-Host " - $($e.Message)" }
+              $failed = $true
+            } else {
+              Write-Host "OK: $file parses cleanly under Windows PowerShell 5.1"
+            }
+          }
+          if ($failed) {
+            Write-Error "One or more scripts fail to parse under Windows PowerShell 5.1."
+            exit 1
+          }
 
   # bundle-smoke is Windows-only for now because the PyInstaller bundle targets
   # Win32 PE executables.  macOS and Linux bundle jobs will be added as separate
   # sibling jobs here once macOS/Linux bundle support is implemented (B4 scope).
   bundle-smoke:
+    needs: ffmpeg-pin
     runs-on: windows-latest
 
     steps:
@@ -71,9 +140,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Install dependencies
-        run: pip install ".[tray,dev]"
+        # -c pins every transitive dep to the audited windows constraint file,
+        # matching what release.yml ships (Wave 0 / CI-CD 5) — the CI smoke
+        # bundle is no longer built from floating deps while release pins.
+        run: pip install -c constraints/windows.txt ".[tray,dev]"
 
       - name: Generate Windows PE version info
         run: python pyinstaller/version_info.py
@@ -92,15 +165,10 @@ jobs:
 
       - name: Download ffmpeg (pinned)
         run: |
-          # Pinned to ffmpeg 8.1.2 (Gyan "essentials" build) — same pin as release.yml.
-          # Source is GyanD/codexffmpeg GitHub releases, NOT gyan.dev/builds/packages:
-          # gyan.dev only hosts the single latest version-pinned build (older URLs 404,
-          # which broke this step when 8.1.1 rotated away, 2026-07). GitHub release assets
-          # are immutable and every version tag is kept, so this URL never disappears — the
-          # pin only changes when we deliberately bump it. The zip is byte-identical to the
-          # gyan.dev "essentials" build (same SHA-256 gyan.dev publishes). Keep release.yml in lockstep.
-          $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip"
-          $expectedHash = "DB580001CAA24AC104C8CB856CD113A87B0A443F7BDF47D8C12B1D740584A2EC"
+          # See .github/workflows/ffmpeg-pin.yml for the single-sourced pin
+          # (URL + SHA-256) shared with release.yml.
+          $ffmpegUrl = "${{ needs.ffmpeg-pin.outputs.url }}"
+          $expectedHash = "${{ needs.ffmpeg-pin.outputs.sha256 }}"
           Invoke-WebRequest $ffmpegUrl -OutFile ffmpeg.zip
           $actualHash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
           if ($actualHash -ne $expectedHash) {
@@ -167,6 +235,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Verify constraint file installs cleanly
         # -c enforces the pinned constraint file; any version conflict or missing
