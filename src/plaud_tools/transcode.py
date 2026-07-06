@@ -6,7 +6,13 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .client import PlaudClient
+    from .models import Recording
 
 # Formats the Plaud API accepts natively (no transcode needed).
 NATIVE_EXTS: dict[str, str] = {
@@ -148,3 +154,97 @@ def transcode_to_mp3_path(source_path: Path, dest_path: Path, *, quality: int = 
         tail = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
         msg = " ".join(tail[-3:])[:500]
         raise RuntimeError(f"ffmpeg exited {result.returncode}: {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Shared upload+transcode orchestration (issue #149 / Simplification 7.3)
+#
+# cli.py's ``_handle_upload`` and mcp.py's ``upload_recording`` handler used to
+# duplicate this block verbatim: check the file exists, decide whether to
+# transcode, upload, clean up the temp file, then move the new recording into
+# a folder.  Two copies meant the post-upload folder-move bug (#149 — an
+# exception from ``set_recording_folder`` propagated past the caller, losing
+# the freshly created ``recording.id`` and inviting a duplicate re-upload) had
+# to be fixed twice.  Fixing it here fixes it once for both callers: a folder
+# move failure is caught and reported alongside the recording that was
+# already created, instead of discarding it.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class UploadOutcome:
+    """Result of :func:`upload_with_transcode`.
+
+    ``folder_error`` is set (and ``folder_id`` left as the caller's original
+    request) when the upload itself succeeded but the post-upload folder move
+    failed — the "partial success" case for #149.  The recording always
+    exists at this point, so callers must surface ``recording.id`` even when
+    ``folder_error`` is set, so the caller can retry the move instead of
+    re-uploading the file.
+    """
+
+    recording: Recording
+    transcoded: bool
+    folder_id: str | None = None
+    folder_error: str | None = None
+
+
+def upload_with_transcode(
+    client: PlaudClient,
+    path: Path,
+    title: str,
+    *,
+    start_time: int | None = None,
+    timezone_offset: float | None = None,
+    folder_id: str | None = None,
+) -> UploadOutcome:
+    """Upload *path* to Plaud, transcoding first if the format requires it.
+
+    Shared by the CLI ``upload`` command and the MCP ``upload_recording``
+    tool. Raises ``ValueError`` if *path* does not exist or has an
+    unsupported extension, and ``RuntimeError`` if ffmpeg fails — callers
+    already map both into their respective error-reporting conventions.
+
+    If *folder_id* is given, the recording is moved there after upload; a
+    failure at that step does NOT raise — it is reported via
+    :attr:`UploadOutcome.folder_error` so the caller never loses the
+    already-created recording id (see module docstring / issue #149).
+    """
+    if not path.exists():
+        raise ValueError(f"file not found: {path}")
+    file_type, needs_transcode = get_file_type(path)
+
+    if needs_transcode:
+        # Transcode to a temp MP3 on disk, then upload from that path so the
+        # transcoded bytes never round-trip through Python memory.
+        tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3", prefix="plaud-upload-")
+        os.close(tmp_fd)
+        tmp_mp3_path = Path(tmp_mp3)
+        try:
+            transcode_to_mp3_path(path, tmp_mp3_path)
+            recording = client.upload_recording(
+                tmp_mp3_path, title, file_type, start_time=start_time, timezone_offset=timezone_offset
+            )
+        finally:
+            try:
+                tmp_mp3_path.unlink()
+            except OSError:
+                pass
+    else:
+        recording = client.upload_recording(
+            path, title, file_type, start_time=start_time, timezone_offset=timezone_offset
+        )
+
+    folder_error: str | None = None
+    if folder_id:
+        try:
+            client.set_recording_folder(recording.id, folder_id)
+        except Exception as exc:  # noqa: BLE001 — never lose the recording id
+            folder_error = str(exc)
+
+    return UploadOutcome(
+        recording=recording,
+        transcoded=needs_transcode,
+        folder_id=folder_id if folder_error is None else None,
+        folder_error=folder_error,
+    )

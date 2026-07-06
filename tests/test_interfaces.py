@@ -1385,3 +1385,166 @@ def test_cli_folder_delete_with_yes():
     payload = json.loads(output)
     assert payload["ok"] is True
     assert client.delete_call == "f1"
+
+
+# ---------------------------------------------------------------------------
+# #149 — upload partial success: a post-upload folder-move failure must not
+# lose the newly created recording id (via the shared upload_with_transcode
+# helper in transcode.py).
+# ---------------------------------------------------------------------------
+
+
+class FolderFailingUploadStubClient(UploadStubClient):
+    def set_recording_folder(self, recording_id, folder_id):
+        raise ValueError(f"folder not found: {folder_id}")
+
+
+def test_cli_upload_folder_move_failure_is_partial_success(tmp_path):
+    mp3_file = tmp_path / "test.mp3"
+    mp3_file.write_bytes(b"fake mp3 data")
+    client = FolderFailingUploadStubClient()
+    output = run_cli(["upload", str(mp3_file), "--folder-id", "bad-folder", "--detach"], client)
+    payload = json.loads(output)
+    # The upload itself succeeded — the recording id must not be lost.
+    assert payload["ok"] is True
+    assert payload["recording_id"] == "new-rec"
+    assert "folder not found" in payload["folder_error"]
+
+
+class FolderFailingMutateStub(MutateStub):
+    def set_recording_folder(self, recording_id, folder_id):
+        raise ValueError(f"folder not found: {folder_id}")
+
+
+def test_mcp_upload_recording_folder_move_failure_is_partial_success(tmp_path):
+    mp3_file = tmp_path / "audio.mp3"
+    mp3_file.write_bytes(b"fake mp3")
+    client = FolderFailingMutateStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["upload_recording"](str(mp3_file), folder_id="bad-folder")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["recording_id"] == "mcp-rec"
+    assert "folder not found" in payload["folder_error"]
+    # This must NOT be reported as a tool error — the upload succeeded.
+    assert "isError" not in result
+
+
+# ---------------------------------------------------------------------------
+# #158 — `update` must refuse cleanly in a frozen (PyInstaller) bundle instead
+# of spawning itself with `-m pip install ...` as bogus CLI arguments.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_update_refuses_when_frozen(monkeypatch, capsys):
+    import pytest
+
+    import plaud_tools.cli as cli_module
+
+    monkeypatch.setattr(cli_module.sys, "frozen", True, raising=False)
+    # _handle_update never returns — it always calls sys.exit(), frozen or not.
+    with pytest.raises(SystemExit) as exc_info:
+        main(["update"])
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "tray" in captured.err.lower() or "install.ps1" in captured.err
+
+
+def test_cli_update_still_runs_pip_when_not_frozen(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    import plaud_tools.cli as cli_module
+
+    monkeypatch.delattr(cli_module.sys, "frozen", raising=False)
+
+    class FakeCompletedProcess:
+        returncode = 0
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["update"])
+    assert exc_info.value.code == 0
+    assert calls and calls[0][1:3] == ["-m", "pip"]
+
+
+# ---------------------------------------------------------------------------
+# #155 — stdout must be reconfigured to UTF-8 so redirected/piped output on
+# Windows (cp1252 console code page) doesn't crash on non-ASCII transcript text.
+# ---------------------------------------------------------------------------
+
+
+def test_reconfigure_stdout_utf8_calls_reconfigure(monkeypatch):
+    import plaud_tools.cli as cli_module
+
+    calls = []
+
+    class FakeStdout:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(cli_module.sys, "stdout", FakeStdout())
+    cli_module._reconfigure_stdout_utf8()
+    assert calls == [{"encoding": "utf-8"}]
+
+
+def test_reconfigure_stdout_utf8_swallows_reconfigure_errors(monkeypatch):
+    import plaud_tools.cli as cli_module
+
+    class FakeStdout:
+        def reconfigure(self, **kwargs):
+            raise ValueError("stream does not support reconfigure")
+
+    monkeypatch.setattr(cli_module.sys, "stdout", FakeStdout())
+    cli_module._reconfigure_stdout_utf8()  # must not raise
+
+
+def test_reconfigure_stdout_utf8_noop_when_unsupported(monkeypatch):
+    import plaud_tools.cli as cli_module
+
+    class FakeStdout:
+        pass
+
+    monkeypatch.setattr(cli_module.sys, "stdout", FakeStdout())
+    cli_module._reconfigure_stdout_utf8()  # must not raise
+
+
+def test_main_transcript_non_ascii_survives_cp1252_stdout(monkeypatch, tmp_path):
+    """Regression for #155: without the UTF-8 reconfigure, printing non-ASCII
+    transcript text to a stdout hardwired to cp1252 raises UnicodeEncodeError
+    (a ValueError subclass), which main() would silently turn into exit code 1
+    instead of the transcript actually reaching the caller."""
+    import io
+
+    import plaud_tools.cli as cli_module
+
+    class TranscriptClient(StubClient):
+        def fetch_transcript(self, recording_id):
+            return "café — 日本語 — résumé"
+
+    monkeypatch.setattr(cli_module, "_build_runtime_client", lambda store: TranscriptClient())
+    monkeypatch.setattr(
+        cli_module,
+        "SessionStore",
+        lambda: SessionStore(tmp_path / "session.json", service_name="x-155", account_name="y"),
+    )
+    buf = io.BytesIO()
+    # newline="" disables universal-newline translation on write so the
+    # assertion below doesn't have to account for os.linesep — irrelevant to
+    # the #155 fix, which is only about the character *encoding*.
+    wrapper = io.TextIOWrapper(buf, encoding="cp1252", errors="strict", newline="")
+    monkeypatch.setattr(cli_module.sys, "stdout", wrapper)
+
+    code = main(["transcript", "rec1"])
+    wrapper.flush()
+
+    assert code == 0
+    assert buf.getvalue().decode("utf-8") == "café — 日本語 — résumé\n"

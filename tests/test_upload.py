@@ -919,6 +919,147 @@ def test_transcode_to_mp3_path_raises_on_ffmpeg_failure(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# upload_with_transcode — shared CLI/MCP upload orchestration (#149 / Simp 7.3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeUploadClient:
+    """Minimal stand-in for PlaudClient's upload/folder-move surface."""
+
+    def __init__(self, *, folder_move_error: Exception | None = None):
+        self.upload_calls: list[tuple] = []
+        self.folder_calls: list[tuple] = []
+        self._folder_move_error = folder_move_error
+        self._next_id = 0
+
+    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+        from plaud_tools.models import Recording
+
+        self._next_id += 1
+        # Record whether *data* was a real on-disk path so tests can assert
+        # the transcode branch swapped in the temp mp3 path.
+        self.upload_calls.append((data, filename, file_type, start_time, timezone_offset))
+        return Recording(id=f"rec{self._next_id}", filename=filename)
+
+    def set_recording_folder(self, recording_id, folder_id):
+        self.folder_calls.append((recording_id, folder_id))
+        if self._folder_move_error is not None:
+            raise self._folder_move_error
+
+
+def test_upload_with_transcode_native_format_skips_ffmpeg(tmp_path):
+    from plaud_tools.transcode import upload_with_transcode
+
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"fake mp3")
+    client = _FakeUploadClient()
+
+    outcome = upload_with_transcode(client, audio, "My Recording")
+
+    assert outcome.recording.id == "rec1"
+    assert outcome.transcoded is False
+    assert outcome.folder_error is None
+    assert outcome.folder_id is None
+    assert client.upload_calls[0][0] == audio  # uploaded straight from the source path
+    assert client.folder_calls == []
+
+
+def test_upload_with_transcode_transcodes_non_native_format(tmp_path, monkeypatch):
+    from plaud_tools.transcode import upload_with_transcode
+
+    fake_ff = tmp_path / "ffmpeg"
+    fake_ff.write_bytes(b"")
+    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
+
+    written_mp3_paths: list[Path] = []
+
+    def fake_run(cmd, capture_output):
+        out_path = Path(cmd[-1])
+        out_path.write_bytes(b"transcoded")
+        written_mp3_paths.append(out_path)
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"raw wav bytes")
+    client = _FakeUploadClient()
+
+    outcome = upload_with_transcode(client, audio, "Wav Recording")
+
+    assert outcome.transcoded is True
+    uploaded_path = client.upload_calls[0][0]
+    assert uploaded_path != audio  # uploaded from the transcoded temp file, not the source
+    assert client.upload_calls[0][2] == "MP3"
+    # The temp mp3 must be cleaned up after upload.
+    assert not written_mp3_paths[0].exists()
+
+
+def test_upload_with_transcode_missing_file_raises_value_error(tmp_path):
+    from plaud_tools.transcode import upload_with_transcode
+
+    client = _FakeUploadClient()
+    with pytest.raises(ValueError, match="file not found"):
+        upload_with_transcode(client, tmp_path / "missing.mp3", "title")
+    assert client.upload_calls == []
+
+
+def test_upload_with_transcode_ffmpeg_failure_propagates_and_skips_upload(tmp_path, monkeypatch):
+    from plaud_tools.transcode import upload_with_transcode
+
+    fake_ff = tmp_path / "ffmpeg"
+    fake_ff.write_bytes(b"")
+    monkeypatch.setenv("FFMPEG_BIN", str(fake_ff))
+
+    def fake_run(cmd, capture_output):
+        return type("R", (), {"returncode": 1, "stderr": b"bad input"})()
+
+    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"raw wav bytes")
+    client = _FakeUploadClient()
+
+    with pytest.raises(RuntimeError, match="ffmpeg exited 1"):
+        upload_with_transcode(client, audio, "title")
+    assert client.upload_calls == []
+
+
+def test_upload_with_transcode_folder_move_success(tmp_path):
+    from plaud_tools.transcode import upload_with_transcode
+
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"fake mp3")
+    client = _FakeUploadClient()
+
+    outcome = upload_with_transcode(client, audio, "title", folder_id="tag1")
+
+    assert outcome.folder_id == "tag1"
+    assert outcome.folder_error is None
+    assert client.folder_calls == [("rec1", "tag1")]
+
+
+def test_upload_with_transcode_folder_move_failure_is_partial_success(tmp_path):
+    """#149: a post-upload folder-move failure must not lose the recording —
+    the upload already succeeded, so the caller needs the id back to avoid
+    re-uploading a duplicate."""
+    from plaud_tools.errors import PlaudApiError
+    from plaud_tools.transcode import upload_with_transcode
+
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"fake mp3")
+    client = _FakeUploadClient(folder_move_error=PlaudApiError("folder not found", http_status=404))
+
+    outcome = upload_with_transcode(client, audio, "title", folder_id="missing-folder")
+
+    # The recording must still be surfaced — this is the whole point of #149.
+    assert outcome.recording.id == "rec1"
+    assert outcome.folder_id is None
+    assert outcome.folder_error is not None
+    assert "folder not found" in outcome.folder_error
+
+
+# ---------------------------------------------------------------------------
 # Opt-in live integration test
 # ---------------------------------------------------------------------------
 
