@@ -136,5 +136,6 @@ def summarize_recording(item: Any) -> dict[str, Any]:
         "date": datetime.fromtimestamp(item.start_time / 1000).isoformat()[:16],
         "duration_minutes": round(item.duration / 60000),
         "has_transcript": item.is_trans,
+        "has_summary": item.is_summary,
         "folder_id": item.filetag_id_list[0] if item.filetag_id_list else None,
     }

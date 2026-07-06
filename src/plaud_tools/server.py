@@ -85,7 +85,7 @@ _TOOLS: list[types.Tool] = [
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "default": 50,
+                    "default": 20,
                     "minimum": 1,
                     "description": "Max results per page",
                 },
@@ -110,6 +110,11 @@ _TOOLS: list[types.Tool] = [
                     "default": 0,
                     "minimum": 0,
                     "description": "Cursor from next_after of a previous response",
+                },
+                "trash": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "List trashed recordings instead of active ones",
                 },
             },
         },
@@ -136,6 +141,17 @@ _TOOLS: list[types.Tool] = [
                     },
                     "description": "Large fields to include: transcript, speakers, summary",
                 },
+                "transcript_offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Character offset to start the transcript from (with include=[transcript])",  # noqa: E501
+                },
+                "transcript_max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Max transcript characters to return; sets transcript_truncated when cut off",  # noqa: E501
+                },
             },
             "required": ["recording_id"],
         },
@@ -147,12 +163,17 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Apply a reversible state change to a recording: rename, trash, restore, or move.",
+        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {
-                "recording_id": {"type": "string"},
-                "mutation": {
+                "recording_id": {"type": "string", "description": "Single recording ID"},
+                "recording_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Batch of recording IDs (trash/restore/move only, not rename); use instead of recording_id",  # noqa: E501
+                },
+                "action": {
                     "type": "string",
                     "enum": ["rename", "trash", "restore", "move"],
                 },
@@ -169,7 +190,7 @@ _TOOLS: list[types.Tool] = [
                     "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",  # noqa: E501
                 },
             },
-            "required": ["recording_id", "mutation"],
+            "required": ["action"],
         },
         # Reversible write (trash/restore are inverses; rename/move are
         # undoable).  destructiveHint=False signals the client that no
@@ -189,11 +210,7 @@ _TOOLS: list[types.Tool] = [
                 "recording_id": {"type": "string"},
                 "confirm": {
                     "type": "boolean",
-                    "description": (
-                        "Must be true to proceed. Set this only after the human has "
-                        "explicitly confirmed they want to permanently delete the recording. "
-                        "Re-invoke with confirm=true after obtaining confirmation."
-                    ),
+                    "description": "Must be true; set only after the human has explicitly confirmed the permanent deletion.",  # noqa: E501
                 },
             },
             "required": ["recording_id", "confirm"],
@@ -208,54 +225,43 @@ _TOOLS: list[types.Tool] = [
         ),
     ),
     types.Tool(
-        name="rename_speaker",
-        description="Rename a speaker label across all transcript segments for a recording.",
+        name="edit_transcript",
+        description="Edit a recording's transcript. action='rename_speaker' relabels a speaker across all segments; action='correct' does a literal find-and-replace on transcript text (dry_run=true previews the match count).",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "action": {
+                    "type": "string",
+                    "enum": ["rename_speaker", "correct"],
+                },
                 "original_label": {
                     "type": "string",
-                    "description": "Existing speaker label to replace",
+                    "description": "Existing speaker label; required for action=rename_speaker",
                 },
                 "new_name": {
                     "type": "string",
-                    "description": "Replacement speaker name",
+                    "description": "Replacement speaker name; required for action=rename_speaker",
                 },
-            },
-            "required": ["recording_id", "original_label", "new_name"],
-        },
-        # Additive label edit — reversible by calling again with swapped args.
-        # idempotentHint=True: applying the same rename twice leaves the
-        # transcript in the same final state (all occurrences of original_label
-        # become new_name; the second call is a no-op if the label no longer exists).
-        annotations=types.ToolAnnotations(
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=True,
-        ),
-    ),
-    types.Tool(
-        name="correct_transcript",
-        description="Fix transcript text by literal find-and-replace across all segments (e.g. correct a misheard word or name). Speaker labels are unaffected — use rename_speaker for those.",  # noqa: E501
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "recording_id": {"type": "string"},
                 "find": {
                     "type": "string",
-                    "description": "Exact text to find in the transcript (case-sensitive, literal — not a regex)",  # noqa: E501
+                    "description": "Exact literal text to find (case-sensitive); required for action=correct",  # noqa: E501
                 },
                 "replace": {
                     "type": "string",
-                    "description": "Replacement text (may be empty to delete the matched text)",
+                    "description": "Replacement text, may be empty to delete; required for action=correct",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "action=correct only: return the match count without editing",
                 },
             },
-            "required": ["recording_id", "find", "replace"],
+            "required": ["recording_id", "action"],
         },
-        # Reversible content edit — rerun with swapped find/replace to undo.
-        # idempotentHint omitted: once the text is replaced, re-running with the
-        # same find returns "no occurrences" (an error), so it is not a no-op.
+        # Reversible content edit — rerun with swapped args to undo.
+        # idempotentHint omitted: the two actions have different idempotency
+        # (rename_speaker is a no-op on rerun; correct errors on a second
+        # identical rerun since the text is already replaced).
         annotations=types.ToolAnnotations(
             destructiveHint=False,
             openWorldHint=True,
@@ -322,12 +328,7 @@ _TOOLS: list[types.Tool] = [
                     "type": "string",
                     "enum": ["none", "transcript", "summary"],
                     "default": "transcript",
-                    "description": (
-                        "How long to block after the transcribe/summarize request is accepted: "
-                        "'none' returns immediately with {recording_id, accepted}, "
-                        "'transcript' waits only for transcript readiness, and "
-                        "'summary' waits for both transcript and summary."
-                    ),
+                    "description": "How long to block: none/transcript/summary; waits are bounded and return status='still_processing' if not done in time — poll get_recording or retry.",  # noqa: E501
                 },
                 "template_type": {
                     "type": "string",
@@ -387,30 +388,33 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="edit_summary",
-        description="Edit a recording's AI summary. operation='correct' does a literal find-and-replace (e.g. fix a misspelled name); operation='replace' overwrites the whole summary with new markdown. The recording must already have a generated summary.",  # noqa: E501
+        description="Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
-                "operation": {
+                "action": {
                     "type": "string",
                     "enum": ["correct", "replace"],
-                    "description": "'correct' = find/replace text; 'replace' = overwrite entire summary",
                 },
                 "find": {
                     "type": "string",
-                    "description": "Exact text to find (case-sensitive, literal). Required for operation=correct.",  # noqa: E501
+                    "description": "Exact text to find (case-sensitive, literal); required for action=correct",  # noqa: E501
                 },
                 "replace": {
                     "type": "string",
-                    "description": "Replacement text (may be empty to delete). Required for operation=correct.",  # noqa: E501
+                    "description": "Replacement text (may be empty to delete); required for action=correct",
                 },
                 "content": {
                     "type": "string",
-                    "description": "Full replacement summary markdown. Required for operation=replace.",
+                    "description": "Full replacement summary markdown; required for action=replace",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "action=correct only: return the match count without editing",
                 },
             },
-            "required": ["recording_id", "operation"],
+            "required": ["recording_id", "action"],
         },
         # Reversible content edit — a 'correct' can be undone by re-running with
         # swapped find/replace; a 'replace' overwrites, but the prior text can be
@@ -423,7 +427,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_folder",
-        description="Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(mutation='move') instead.",  # noqa: E501
+        description="Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {
@@ -449,10 +453,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": (
-                        "Required true for action=delete. Set only after the human confirms; "
-                        "deleting a folder is irreversible (recordings inside are kept but unfiled)."
-                    ),
+                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted.",  # noqa: E501
                 },
             },
             "required": ["action"],
@@ -507,7 +508,7 @@ def _make_server() -> Server:
         if handler is None:
             payload: dict[str, Any] = {"error": f"Unknown tool: {name}"}
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=json.dumps(payload))],
+                content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
                 isError=True,
             )
         try:
@@ -536,7 +537,7 @@ def _make_server() -> Server:
                 "retryable": False,
             }
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=json.dumps(payload, indent=2))],
+                content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
                 isError=True,
             )
         return types.CallToolResult(

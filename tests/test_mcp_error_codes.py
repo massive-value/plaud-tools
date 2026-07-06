@@ -191,6 +191,50 @@ class TestCallErrorPropagation:
 
 
 # ---------------------------------------------------------------------------
+# §6.2: session-expired errors must instruct the AI client to relay the fix
+# ("open the PlaudTools tray and sign in") — and a 401 arriving through the
+# generic PlaudApiError branch must fire the same tray re-auth event the
+# dedicated PlaudSessionExpiredError branch always fired (Wave 1 follow-up).
+# ---------------------------------------------------------------------------
+
+
+class TestSessionExpiredRemediation:
+    def test_no_session_message_names_the_tray(self):
+        handlers = build_handlers(lambda: None)
+        result = handlers["browse_recordings"]()
+        payload = json.loads(result["content"][0]["text"])
+        assert "tray" in payload["error"].lower()
+
+    def test_session_expired_error_message_names_the_tray(self):
+        handlers = _make_handlers(PlaudSessionExpiredError("token expired"))
+        result = handlers["browse_recordings"]()
+        payload = json.loads(result["content"][0]["text"])
+        assert "tray" in payload["error"].lower()
+
+    def test_401_api_error_message_names_the_tray(self):
+        handlers = _make_handlers(PlaudApiError("unauthorized", http_status=401))
+        result = handlers["browse_recordings"]()
+        payload = json.loads(result["content"][0]["text"])
+        assert "tray" in payload["error"].lower()
+
+    def test_401_api_error_emits_session_expired_event(self, tmp_path, monkeypatch):
+        """A 401 reaching the generic PlaudApiError branch must still fire
+        _emit_session_expired — previously only the dedicated
+        PlaudSessionExpiredError branch did, so the tray toast never appeared
+        for a mid-session 401 even though it was classified session_expired."""
+        events_file = tmp_path / "events.jsonl"
+        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        handlers = _make_handlers(PlaudApiError("unauthorized", http_status=401))
+
+        handlers["browse_recordings"]()
+
+        assert events_file.exists()
+        record = json.loads(events_file.read_text(encoding="utf-8").splitlines()[0])
+        assert record["type"] == "session_expired"
+        assert record["reason"] == "http_401"
+
+
+# ---------------------------------------------------------------------------
 # Inline validation errors in handlers use structured codes
 # ---------------------------------------------------------------------------
 
@@ -202,25 +246,25 @@ class TestMutateRecordingValidation:
 
     def test_rename_without_new_name_returns_validation_code(self):
         handlers, _ = self._handlers()
-        result = handlers["mutate_recording"](recording_id="x", mutation="rename")
+        result = handlers["mutate_recording"](recording_id="x", action="rename")
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
         assert payload["retryable"] is False
 
-    def test_unknown_mutation_returns_validation_code(self):
+    def test_unknown_action_returns_validation_code(self):
         handlers, _ = self._handlers()
-        result = handlers["mutate_recording"](recording_id="x", mutation="explode")
+        result = handlers["mutate_recording"](recording_id="x", action="explode")
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
         assert payload["retryable"] is False
 
     def test_move_without_folder_id_returns_validation_code(self):
-        """#140: folder_id omitted (and clear_folder not set) on mutation=move
+        """#140: folder_id omitted (and clear_folder not set) on action=move
         used to fall through to "clear the folder" — silently unfiling the
         recording instead of erroring. It must now be a validation error, and
         the client must never be called."""
         handlers, mock_client = self._handlers()
-        result = handlers["mutate_recording"](recording_id="x", mutation="move")
+        result = handlers["mutate_recording"](recording_id="x", action="move")
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
         assert payload["retryable"] is False
@@ -231,11 +275,61 @@ class TestMutateRecordingValidation:
         """clear_folder=true remains the explicit, intentional way to unfile —
         that path must still work with folder_id omitted."""
         handlers, mock_client = self._handlers()
-        result = handlers["mutate_recording"](recording_id="x", mutation="move", clear_folder=True)
+        result = handlers["mutate_recording"](recording_id="x", action="move", clear_folder=True)
         payload = json.loads(result["content"][0]["text"])
         assert payload.get("ok") is True
         assert payload["folder_id"] is None
         mock_client.set_recording_folder.assert_called_once_with("x", None)
+
+    def test_recording_id_and_recording_ids_both_given_returns_validation_code(self):
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_id="x", recording_ids=["y", "z"], action="trash")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        mock_client.move_to_trash.assert_not_called()
+
+    def test_neither_recording_id_nor_recording_ids_returns_validation_code(self):
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](action="trash")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        mock_client.move_to_trash.assert_not_called()
+
+    def test_batch_trash_calls_client_with_all_ids(self):
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_ids=["a", "b", "c"], action="trash")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload == {"ok": True, "action": "trash", "recording_ids": ["a", "b", "c"], "count": 3}
+        mock_client.move_to_trash.assert_called_once_with(["a", "b", "c"])
+
+    def test_batch_restore_calls_client_with_all_ids(self):
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_ids=["a", "b"], action="restore")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload == {"ok": True, "action": "restore", "recording_ids": ["a", "b"], "count": 2}
+        mock_client.restore_from_trash.assert_called_once_with(["a", "b"])
+
+    def test_batch_move_calls_client_once_per_id(self):
+        from unittest.mock import call
+
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_ids=["a", "b"], action="move", folder_id="f1")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload == {
+            "ok": True,
+            "action": "move",
+            "recording_ids": ["a", "b"],
+            "count": 2,
+            "folder_id": "f1",
+        }
+        mock_client.set_recording_folder.assert_has_calls([call("a", "f1"), call("b", "f1")])
+
+    def test_rename_rejects_batch_recording_ids(self):
+        handlers, mock_client = self._handlers()
+        result = handlers["mutate_recording"](recording_ids=["a", "b"], action="rename", new_name="New")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+        mock_client.rename_recording.assert_not_called()
 
 
 class TestProcessRecordingValidation:

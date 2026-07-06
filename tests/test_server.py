@@ -17,8 +17,7 @@ _EXPECTED_TOOL_NAMES = {
     "get_recording",
     "mutate_recording",
     "delete_recording",
-    "rename_speaker",
-    "correct_transcript",
+    "edit_transcript",
     "upload_recording",
     "process_recording",
     "list_folders",
@@ -32,10 +31,10 @@ def test_server_exposes_expected_tools():
     assert {t.name for t in _TOOLS} == _EXPECTED_TOOL_NAMES
 
 
-def test_server_edit_summary_requires_recording_id_and_operation():
+def test_server_edit_summary_requires_recording_id_and_action():
     tool = next(t for t in _TOOLS if t.name == "edit_summary")
-    assert set(tool.inputSchema["required"]) == {"recording_id", "operation"}
-    assert tool.inputSchema["properties"]["operation"]["enum"] == ["correct", "replace"]
+    assert set(tool.inputSchema["required"]) == {"recording_id", "action"}
+    assert tool.inputSchema["properties"]["action"]["enum"] == ["correct", "replace"]
 
 
 def test_server_mutate_folder_requires_only_action():
@@ -65,14 +64,19 @@ def test_server_get_recording_requires_recording_id():
     assert "recording_id" in tool.inputSchema["required"]
 
 
-def test_server_mutate_recording_requires_recording_id_and_mutation():
+def test_server_mutate_recording_requires_only_action():
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    assert set(tool.inputSchema["required"]) == {"recording_id", "mutation"}
+    assert tool.inputSchema["required"] == ["action"]
+
+
+def test_server_mutate_recording_has_recording_ids_batch_param():
+    tool = next(t for t in _TOOLS if t.name == "mutate_recording")
+    assert tool.inputSchema["properties"]["recording_ids"]["type"] == "array"
 
 
 def test_server_mutate_recording_enum_excludes_delete_and_rename_speaker():
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    enum_values = tool.inputSchema["properties"]["mutation"]["enum"]
+    enum_values = tool.inputSchema["properties"]["action"]["enum"]
     assert "delete" not in enum_values
     assert "rename_speaker" not in enum_values
     assert set(enum_values) == {"rename", "trash", "restore", "move"}
@@ -85,7 +89,7 @@ def test_server_mutate_recording_has_clear_folder_param():
 
 
 def test_server_mutate_recording_has_no_original_label_param():
-    """original_label is no longer a mutate_recording param — it moved to rename_speaker."""
+    """original_label is no longer a mutate_recording param — it moved to edit_transcript."""
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
     assert "original_label" not in tool.inputSchema["properties"]
 
@@ -96,9 +100,15 @@ def test_server_delete_recording_requires_recording_id():
     assert set(tool.inputSchema["required"]) == {"recording_id", "confirm"}
 
 
-def test_server_rename_speaker_requires_all_three_params():
-    tool = next(t for t in _TOOLS if t.name == "rename_speaker")
-    assert set(tool.inputSchema["required"]) == {"recording_id", "original_label", "new_name"}
+def test_server_edit_transcript_requires_recording_id_and_action():
+    tool = next(t for t in _TOOLS if t.name == "edit_transcript")
+    assert set(tool.inputSchema["required"]) == {"recording_id", "action"}
+    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"rename_speaker", "correct"}
+
+
+def test_server_edit_transcript_has_dry_run_param():
+    tool = next(t for t in _TOOLS if t.name == "edit_transcript")
+    assert tool.inputSchema["properties"]["dry_run"]["type"] == "boolean"
 
 
 def test_server_upload_recording_requires_file_path():
@@ -126,6 +136,25 @@ def test_server_constructs_without_error():
 def test_server_browse_recordings_limit_has_minimum_one():
     tool = next(t for t in _TOOLS if t.name == "browse_recordings")
     assert tool.inputSchema["properties"]["limit"]["minimum"] == 1
+
+
+def test_server_browse_recordings_limit_default_is_twenty():
+    # Lowered from 50 in the v0.7.0 breaking batch — a browse response an
+    # agent skims doesn't need 50 rows by default; next_after covers the rest.
+    tool = next(t for t in _TOOLS if t.name == "browse_recordings")
+    assert tool.inputSchema["properties"]["limit"]["default"] == 20
+
+
+def test_server_browse_recordings_has_trash_param():
+    tool = next(t for t in _TOOLS if t.name == "browse_recordings")
+    assert tool.inputSchema["properties"]["trash"]["type"] == "boolean"
+
+
+def test_server_get_recording_has_transcript_pagination_params():
+    tool = next(t for t in _TOOLS if t.name == "get_recording")
+    props = tool.inputSchema["properties"]
+    assert props["transcript_offset"]["minimum"] == 0
+    assert props["transcript_max_chars"]["minimum"] == 1
 
 
 def test_server_browse_recordings_after_has_minimum_zero():
