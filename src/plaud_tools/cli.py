@@ -30,12 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--folder-id")
     list_cmd.add_argument("--unfiled", action="store_true")
 
-    search_cmd = sub.add_parser("search")
+    search_cmd = sub.add_parser(
+        "search",
+        help="Shorthand for 'list --query QUERY' (identical filtering, positional query arg).",
+    )
     search_cmd.add_argument("query")
     search_cmd.add_argument("--limit", type=int, default=20)
     search_cmd.add_argument("--since")
     search_cmd.add_argument("--until")
     search_cmd.add_argument("--folder-id")
+    search_cmd.add_argument("--unfiled", action="store_true")
 
     detail_cmd = sub.add_parser("detail")
     detail_cmd.add_argument("recording_id")
@@ -74,11 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     folder_delete.add_argument("folder_id")
     folder_delete.add_argument("--yes", action="store_true")
 
-    move_to_folder_cmd = sub.add_parser("move-to-folder")
-    move_to_folder_cmd.add_argument("recording_id")
-    move_to_folder_cmd.add_argument("folder_id")
-
-    move_cmd = sub.add_parser("move")
+    move_cmd = sub.add_parser("move", aliases=["move-to-folder"])
     move_cmd.add_argument("recording_id")
     move_cmd.add_argument("folder_id")
 
@@ -108,12 +108,37 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe_cmd = sub.add_parser("transcribe")
     transcribe_cmd.add_argument("recording_id")
     transcribe_cmd.add_argument("--template")
+    transcribe_cmd.add_argument("--language", help="Language code, e.g. 'en' (default: auto-detect).")
+    transcribe_cmd.add_argument(
+        "--diarization",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable speaker diarization (default: Plaud's default).",
+    )
+    transcribe_cmd.add_argument("--llm", help="LLM to use for summarization (default: auto).")
+    transcribe_cmd.add_argument(
+        "--wait",
+        choices=["none", "transcript", "summary"],
+        default="none",
+        help=(
+            "Block until the given stage completes before returning "
+            "(default: none — accept and return immediately)."
+        ),
+    )
 
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("recording_id", nargs="?")
 
-    trash_cmd = sub.add_parser("trash")
-    trash_cmd.add_argument("recording_id", nargs="?", default=None)
+    trash_cmd = sub.add_parser(
+        "trash", help="Move a recording to trash, or list recordings already in trash."
+    )
+    trash_cmd.add_argument("recording_id", nargs="?", default=None, help="Recording to move to trash.")
+    trash_cmd.add_argument(
+        "--list",
+        dest="list_trash",
+        action="store_true",
+        help="List recordings currently in trash (required instead of a bare 'trash' with no ID).",
+    )
 
     restore_cmd = sub.add_parser("restore")
     restore_cmd.add_argument("recording_id")
@@ -247,7 +272,7 @@ def _handle_refresh(
     stored = store.load()
     email = args.email or (stored.email if stored else None)
     if not email:
-        raise ValueError("No stored email to refresh; run 'plaud login --email ...' instead.")
+        raise ValueError("No stored email to refresh; run 'plaud-tools login --email ...' instead.")
     region = args.region or (stored.region if stored else "us")
     password = args.password or getpass.getpass(f"Plaud password for {email}: ")
     session = (auth or PlaudAuth(store)).login(email, password, region)
@@ -336,10 +361,25 @@ def _handle_doctor(args: argparse.Namespace, store: SessionStore) -> str:  # noq
 # Handlers that DO need a PlaudClient (post-client dispatch).
 
 
-def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
-    has_filters = bool(args.since or args.until or args.query or args.folder_id or args.unfiled)
-    since_ms = parse_isoish(args.since, "--since") if args.since else None
-    until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
+def _list_recordings_filtered(
+    client: PlaudClient,
+    *,
+    limit: int,
+    since: str | None,
+    until: str | None,
+    query: str | None,
+    folder_id: str | None,
+    unfiled: bool,
+) -> list[Any]:
+    """Shared filtering/paging logic behind both ``list`` and ``search``.
+
+    ``search`` is a positional-argument shorthand for ``list --query`` — it
+    has no ranking of its own, so it delegates here instead of re-implementing
+    the same paged-filter call (previously duplicated verbatim).
+    """
+    has_filters = bool(since or until or query or folder_id or unfiled)
+    since_ms = parse_isoish(since, "--since") if since else None
+    until_ms = parse_isoish(until, "--until", end_of_day=True) if until else None
     if has_filters:
         recordings, _ = collect_filtered_paged(
             lambda skip, page_size: client.list_recordings(
@@ -354,57 +394,65 @@ def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
             BROWSE_PAGE_SIZE,
             since_ms=since_ms,
             until_ms=until_ms,
-            query=args.query,
-            folder_id=args.folder_id,
-            unfiled=args.unfiled,
+            query=query,
+            folder_id=folder_id,
+            unfiled=unfiled,
             after=0,
-            limit=args.limit,
+            limit=limit,
         )
-    else:
-        recordings = client.list_recordings(
-            PlaudRecordingQuery(limit=args.limit, is_trash=0, sort_by="start_time", is_desc=True)
-        )
+        return recordings
+    return client.list_recordings(
+        PlaudRecordingQuery(limit=limit, is_trash=0, sort_by="start_time", is_desc=True)
+    )
+
+
+def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
+    recordings = _list_recordings_filtered(
+        client,
+        limit=args.limit,
+        since=args.since,
+        until=args.until,
+        query=args.query,
+        folder_id=args.folder_id,
+        unfiled=args.unfiled,
+    )
     return json.dumps([summarize_recording(r) for r in recordings], indent=2)
 
 
 def _handle_search(args: argparse.Namespace, client: PlaudClient) -> str:
-    since_ms = parse_isoish(args.since, "--since") if args.since else None
-    until_ms = parse_isoish(args.until, "--until", end_of_day=True) if args.until else None
-    recordings, _ = collect_filtered_paged(
-        lambda skip, page_size: client.list_recordings(
-            PlaudRecordingQuery(
-                skip=skip,
-                limit=page_size,
-                is_trash=0,
-                sort_by="start_time",
-                is_desc=True,
-            )
-        ),
-        BROWSE_PAGE_SIZE,
-        since_ms=since_ms,
-        until_ms=until_ms,
+    recordings = _list_recordings_filtered(
+        client,
+        limit=args.limit,
+        since=args.since,
+        until=args.until,
         query=args.query,
         folder_id=args.folder_id,
-        unfiled=False,
-        after=0,
-        limit=args.limit,
+        unfiled=args.unfiled,
     )
     return json.dumps([summarize_recording(r) for r in recordings], indent=2)
 
 
 def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
-    detail = client.get_recording(args.recording_id, include_transcript=args.include_transcript)
-    return json.dumps(
-        {
-            "id": detail.id,
-            "filename": detail.filename,
-            "is_trans": detail.is_trans,
-            "is_summary": detail.is_summary,
-            "transcript": detail.transcript if args.include_transcript else None,
-            "summary": detail.ai_content,
-        },
-        indent=2,
+    # Always fetch the summary (like `summary <id>` does) so "summary" reflects
+    # whether Plaud actually has one, instead of the null it would get here
+    # from a bare GET that never asked for it. The "transcript" key is only
+    # included when requested — an always-present `"transcript": null` implied
+    # absence when it just wasn't fetched.
+    detail = client.get_recording(
+        args.recording_id,
+        include_transcript=args.include_transcript,
+        include_summary=True,
     )
+    payload: dict[str, Any] = {
+        "id": detail.id,
+        "filename": detail.filename,
+        "is_trans": detail.is_trans,
+        "is_summary": detail.is_summary,
+        "summary": detail.ai_content,
+    }
+    if args.include_transcript:
+        payload["transcript"] = detail.transcript
+    return json.dumps(payload, indent=2)
 
 
 def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -486,11 +534,19 @@ def _handle_move(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_trash(args: argparse.Namespace, client: PlaudClient) -> str:
-    if args.recording_id is not None:
-        client.move_to_trash([args.recording_id])
-        return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "trash"}, indent=2)
-    recordings = client.list_trash()
-    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+    # A bare `trash` (no ID, no --list) used to silently list trash — a
+    # dropped/mistyped recording_id argument turned an intended mutation into
+    # a no-op listing with no error. Listing now requires --list explicitly;
+    # trashing requires a recording_id explicitly. Combining both is rejected.
+    if args.list_trash:
+        if args.recording_id is not None:
+            raise ValueError("trash: --list cannot be combined with a recording ID")
+        recordings = client.list_trash()
+        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+    if args.recording_id is None:
+        raise ValueError("trash requires a recording ID, or use 'trash --list' to list trashed recordings")
+    client.move_to_trash([args.recording_id])
+    return json.dumps({"ok": True, "recording_id": args.recording_id, "mutation": "trash"}, indent=2)
 
 
 def _handle_restore(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -644,15 +700,27 @@ def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
-    client.transcribe_and_summarize(args.recording_id, template_type=args.template)
-    return json.dumps(
-        {
-            "accepted": True,
-            "recording_id": args.recording_id,
-            "template_type": args.template or "AUTO-SELECT",
-        },
-        indent=2,
+    client.transcribe_and_summarize(
+        args.recording_id,
+        template_type=args.template,
+        language=args.language,
+        diarization=args.diarization,
+        llm=args.llm,
     )
+    result: dict[str, Any] = {
+        "accepted": True,
+        "recording_id": args.recording_id,
+        "template_type": args.template or "AUTO-SELECT",
+    }
+    if args.wait == "none":
+        return json.dumps(result, indent=2)
+    client.wait_for_transcription(args.recording_id)
+    if args.wait == "summary":
+        client.wait_for_summary(args.recording_id)
+    detail = client.get_recording(args.recording_id)
+    result["is_trans"] = detail.is_trans
+    result["is_summary"] = detail.is_summary
+    return json.dumps(result, indent=2)
 
 
 def _handle_status(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -785,12 +853,35 @@ def _reconfigure_stdout_utf8() -> None:
         pass
 
 
+# §6.2: a session-expired error must name the remedy so a stuck user (or an
+# AI client relaying the message) knows what to do next, instead of a bare
+# "session expired" with no next step. "plaud-tools" is the canonical CLI name
+# — it is the actual [project.scripts] entry point (alongside the "pt" short
+# alias); this file previously drifted to the nonexistent "plaud" in one spot
+# (the old `refresh` error message, fixed alongside this).
+_SESSION_EXPIRED_REMEDY = "Run 'plaud-tools refresh' or open the PlaudTools tray to sign in again."
+
+
+def _with_session_expired_remedy(message: str) -> str:
+    return f"{message} {_SESSION_EXPIRED_REMEDY}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _reconfigure_stdout_utf8()
     args = list(argv) if argv is not None else sys.argv[1:]
     try:
         output = run_cli(args)
-    except (PlaudApiError, PlaudSessionExpiredError, ValueError, RuntimeError) as exc:
+    except PlaudSessionExpiredError as exc:
+        print(_with_session_expired_remedy(str(exc)), file=sys.stderr)
+        return 1
+    except PlaudApiError as exc:
+        error_code, _retryable = exc.classify()
+        message = str(exc)
+        if error_code == "session_expired":
+            message = _with_session_expired_remedy(message)
+        print(message, file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(output)
