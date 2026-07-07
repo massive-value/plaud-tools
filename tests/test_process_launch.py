@@ -144,6 +144,52 @@ def test_breakaway_false_propagates_errors_without_retry(monkeypatch):
     assert len(calls) == 1
 
 
+def test_execution_policy_flags_injected_when_missing(monkeypatch):
+    """A stock machine's default ``Restricted`` execution policy refuses to run
+    any script; every call site must get ``-NonInteractive -ExecutionPolicy
+    Bypass`` even if it forgot to pass them itself (#142).
+    """
+    seen: dict[str, list[str]] = {}
+
+    def fake_popen(args, **kwargs):
+        seen["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(process_launch.subprocess, "Popen", fake_popen)
+
+    launch_hidden_powershell(["powershell.exe", "-WindowStyle", "Hidden", "-Command", "Write-Host hi"])
+
+    assert seen["args"] == [
+        "powershell.exe",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        "Write-Host hi",
+    ]
+
+
+def test_execution_policy_flags_not_duplicated(monkeypatch):
+    """A caller that already passes the flags (the updater, historically)
+    must not get them injected a second time.
+    """
+    seen: dict[str, list[str]] = {}
+
+    def fake_popen(args, **kwargs):
+        seen["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(process_launch.subprocess, "Popen", fake_popen)
+
+    original = ["powershell.exe", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "x.ps1"]
+    launch_hidden_powershell(original)
+
+    assert seen["args"] == original
+    assert seen["args"].count("-NonInteractive") == 1
+
+
 def test_cwd_is_forwarded(monkeypatch):
     seen: dict[str, object] = {}
 

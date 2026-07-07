@@ -43,6 +43,14 @@ POWERSHELL_EXE: str = os.path.join(
 # future Python drops the attribute.
 _CREATE_BREAKAWAY_FROM_JOB: int = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
 
+# On a stock machine the default PowerShell execution policy (``Restricted``)
+# refuses to run any script, and an interactive prompt would hang forever with
+# stdio wired to DEVNULL. Every launch needs both flags to run reliably from
+# the no-console frozen tray; only the updater passed them explicitly, so the
+# uninstall-helper and toast launches could still fail on a stock policy
+# (#142). Injected here (once) so every call site gets them for free.
+_REQUIRED_FLAGS: tuple[str, ...] = ("-NonInteractive", "-ExecutionPolicy", "Bypass")
+
 
 def launch_hidden_powershell(
     args: list[str],
@@ -61,7 +69,15 @@ def launch_hidden_powershell(
     this): ``CREATE_BREAKAWAY_FROM_JOB`` is requested, with a same-args retry
     (flag dropped) if the enclosing Job Object forbids it -- so the operation
     is never worse off than launching without the flag at all.
+
+    ``-NonInteractive -ExecutionPolicy Bypass`` are injected right after
+    ``args[0]`` (the powershell.exe path) unless already present, so every
+    caller is immune to a stock ``Restricted`` execution policy without
+    having to remember the flags itself (#142).
     """
+    if "-NonInteractive" not in args:
+        args = [args[0], *_REQUIRED_FLAGS, *args[1:]]
+
     base_flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     kwargs: dict[str, object] = {
         "stdin": subprocess.DEVNULL,
