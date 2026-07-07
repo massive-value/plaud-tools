@@ -308,6 +308,24 @@ class TestMergeRecordingsSlimResponse:
         payload = json.loads(result["content"][0]["text"])
         assert payload == {"ok": True, "recording_id": "merged1", "title": "Combined"}
 
+    def test_wait_timeout_returns_still_processing(self):
+        # (#151) merge_recordings' own poll loop (up to 300s by default) is
+        # now bounded the same way process_recording's waits are — a soft
+        # deadline that reports still_processing instead of blocking the
+        # handler thread for the full window.
+        mock_client = MagicMock()
+        mock_client.merge_recordings.side_effect = PlaudApiError("merge timed out after 90s")
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["merge_recordings"](recording_ids=["r1", "r2"], title="Combined")
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload == {"recording_ids": ["r1", "r2"], "title": "Combined", "status": "still_processing"}
+        assert "isError" not in result
+        mock_client.merge_recordings.assert_called_once_with(
+            ["r1", "r2"], "Combined", timeout_s=_WAIT_TIMEOUT_S
+        )
+
 
 # ---------------------------------------------------------------------------
 # Compact JSON — no indentation/space tax on every response

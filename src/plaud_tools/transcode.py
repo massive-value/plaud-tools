@@ -147,6 +147,7 @@ def upload_with_transcode(
     start_time: int | None = None,
     timezone_offset: float | None = None,
     folder_id: str | None = None,
+    timeout_s: float | None = None,
 ) -> UploadOutcome:
     """Upload *path* to Plaud, transcoding first if the format requires it.
 
@@ -159,6 +160,12 @@ def upload_with_transcode(
     failure at that step does NOT raise — it is reported via
     :attr:`UploadOutcome.folder_error` so the caller never loses the
     already-created recording id (see module docstring / issue #149).
+
+    timeout_s: (#151) forwarded to ``PlaudClient.upload_recording``'s soft
+    deadline on the S3 multipart loop. ``None`` (the CLI's default) is
+    unbounded, matching pre-existing behaviour; the MCP facade passes a
+    bounded value so a disconnected client can't orphan the process for the
+    whole transfer.
     """
     if not path.exists():
         raise ValueError(f"file not found: {path}")
@@ -173,7 +180,12 @@ def upload_with_transcode(
         try:
             transcode_to_mp3_path(path, tmp_mp3_path)
             recording = client.upload_recording(
-                tmp_mp3_path, title, file_type, start_time=start_time, timezone_offset=timezone_offset
+                tmp_mp3_path,
+                title,
+                file_type,
+                start_time=start_time,
+                timezone_offset=timezone_offset,
+                timeout_s=timeout_s,
             )
         finally:
             try:
@@ -182,7 +194,12 @@ def upload_with_transcode(
                 pass
     else:
         recording = client.upload_recording(
-            path, title, file_type, start_time=start_time, timezone_offset=timezone_offset
+            path,
+            title,
+            file_type,
+            start_time=start_time,
+            timezone_offset=timezone_offset,
+            timeout_s=timeout_s,
         )
 
     folder_error: str | None = None

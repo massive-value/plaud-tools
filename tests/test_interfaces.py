@@ -57,7 +57,7 @@ class StubClient:
         # return all records so client-side filtering can narrow them.
         return list(self._ALL_RECORDINGS)
 
-    def merge_recordings(self, ids: list[str], filename: str):
+    def merge_recordings(self, ids: list[str], filename: str, **kwargs):
         from plaud_tools.models import RecordingDetail
 
         return RecordingDetail(
@@ -76,7 +76,7 @@ class StubClient:
             raw={},
         )
 
-    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None, **kwargs):
         from plaud_tools.models import Recording
 
         return Recording(
@@ -1240,7 +1240,9 @@ def test_mcp_upload_recording_passes_timestamp(tmp_path):
     captured = {}
 
     class TimestampCapturingClient(StubClient):
-        def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+        def upload_recording(
+            self, data, filename, file_type, *, start_time=None, timezone_offset=None, **kwargs
+        ):
             captured["start_time"] = start_time
             captured["timezone_offset"] = timezone_offset
             return super().upload_recording(data, filename, file_type)
@@ -1300,7 +1302,9 @@ def test_mcp_upload_recording_start_time_as_iso_string(tmp_path):
     captured = {}
 
     class IsoCapturingClient(StubClient):
-        def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+        def upload_recording(
+            self, data, filename, file_type, *, start_time=None, timezone_offset=None, **kwargs
+        ):
             captured["start_time"] = start_time
             return super().upload_recording(data, filename, file_type)
 
