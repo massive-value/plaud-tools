@@ -864,7 +864,9 @@ class _FakeUploadClient:
         self._folder_move_error = folder_move_error
         self._next_id = 0
 
-    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+    def upload_recording(
+        self, data, filename, file_type, *, start_time=None, timezone_offset=None, timeout_s=None
+    ):
         from plaud_tools.models import Recording
 
         self._next_id += 1

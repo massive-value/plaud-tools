@@ -246,24 +246,46 @@ PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 # (10 min) each by default — a wait="summary" call can block a handler for
 # ~20 min total, long enough that a disconnected MCP client orphans the
 # process holding the exe lock the updater fights.  Most MCP clients time out
-# long before that (60-120s).  Bounding the wait here to a soft deadline and
-# reporting "still_processing" on timeout is the minimum viable fix; true
-# cancellation on client disconnect is a deeper change tracked as follow-up.
+# long before that (60-120s), so waiting any longer server-side is pointless
+# regardless of which tool is blocking — the caller already gave up.  Bounding
+# every long wait here to the same soft deadline and reporting
+# "still_processing" on timeout is the accepted resolution for #151 (settled
+# 2026-07-07).  Reused below for merge_recordings (client.py's poll-loop wait,
+# same shape as wait_for_transcription/summary) and upload_recording
+# (client.py's multipart S3 loop, bounded by wall-clock rather than a poll
+# interval).
+#
+# ponytail: true cancel-on-disconnect (a shutdown threading.Event threaded
+# through server.py's asyncio.to_thread and checked between poll iterations)
+# is intentionally NOT implemented — the soft deadline already caps the orphan
+# window at ~90s, which is below the exe-lock contention the updater cares
+# about.  Upgrade path if orphan telemetry ever shows 90s still matters: wire
+# that Event; until then it's YAGNI.
 _WAIT_TIMEOUT_S = 90.0
+
+
+def _is_soft_deadline_timeout(exc: PlaudApiError) -> bool:
+    """True if *exc* is one of client.py's soft-deadline timeouts (#151).
+
+    Those are raised with no ``http_status`` and a message ending
+    "timed out after Ns" — see ``wait_for_transcription``, ``wait_for_summary``,
+    ``merge_recordings``, and ``upload_recording``. Any other error (auth
+    failure, 404, non-retryable API error) is not a timeout and must propagate.
+    """
+    return exc.http_status is None and "timed out" in str(exc)
 
 
 def _wait_or_still_processing(wait_fn: Callable[..., None], recording_id: str) -> bool:
     """Call a client wait_for_* method bounded by ``_WAIT_TIMEOUT_S``.
 
     Returns True if the wait completed normally, False if it hit the soft
-    deadline (surfaced by the client as a ``PlaudApiError`` with no
-    http_status whose message ends "timed out after Ns").  Any other error
-    (auth failure, 404, non-retryable API error) propagates unchanged.
+    deadline. Any other error propagates unchanged (see
+    ``_is_soft_deadline_timeout``).
     """
     try:
         wait_fn(recording_id, timeout_s=_WAIT_TIMEOUT_S)
     except PlaudApiError as exc:
-        if exc.http_status is None and "timed out" in str(exc):
+        if _is_soft_deadline_timeout(exc):
             return False
         raise
     return True
@@ -603,14 +625,34 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             # (ffmpeg failure) are intentionally not caught here — they
             # propagate to _call's except clauses, which already map them to
             # the correct structured {error_code, retryable} shape (#150).
-            outcome = upload_with_transcode(
-                client,
-                path,
-                rec_title,
-                start_time=start_ms,
-                timezone_offset=timezone_offset,
-                folder_id=folder_id,
-            )
+            try:
+                outcome = upload_with_transcode(
+                    client,
+                    path,
+                    rec_title,
+                    start_time=start_ms,
+                    timezone_offset=timezone_offset,
+                    folder_id=folder_id,
+                    timeout_s=_WAIT_TIMEOUT_S,  # (#151) bound the S3 multipart wait too
+                )
+            except PlaudApiError as exc:
+                if _is_soft_deadline_timeout(exc):
+                    # Unlike merge/transcription/summary, there is no
+                    # server-side job to check back on — a timed-out upload
+                    # has to be retried, not polled.  We still use the
+                    # "still_processing"-shaped response (rather than an
+                    # error) so a disconnected client's already-abandoned
+                    # call doesn't matter, and a connected caller gets a
+                    # structured, retryable signal instead of a raw timeout.
+                    return _json_result(
+                        {
+                            "title": rec_title,
+                            "filename": path.name,
+                            "status": "still_processing",
+                            "retryable": True,
+                        }
+                    )
+                raise
             payload: dict[str, Any] = {
                 "ok": True,
                 "recording_id": outcome.recording.id,
@@ -686,7 +728,21 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         title: str,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
-            detail = client.merge_recordings(recording_ids, title)
+            try:
+                # (#151) merge_recordings' own poll loop defaults to a 300s
+                # deadline (client.py) — bound it to _WAIT_TIMEOUT_S here for
+                # the same reason process_recording's waits are bounded.
+                detail = client.merge_recordings(recording_ids, title, timeout_s=_WAIT_TIMEOUT_S)
+            except PlaudApiError as exc:
+                if _is_soft_deadline_timeout(exc):
+                    # The merge task keeps running server-side (it's a
+                    # task_id-backed job, like transcription/summary) — no
+                    # merged recording_id exists yet, so report the source
+                    # ids/title so the caller knows what's still in flight.
+                    return _json_result(
+                        {"recording_ids": recording_ids, "title": title, "status": "still_processing"}
+                    )
+                raise
             # Slim response: a fresh merge's detail dict is all nulls besides
             # id/filename (no transcript/summary yet), so the full
             # _summarize_detail() shape is dead weight.

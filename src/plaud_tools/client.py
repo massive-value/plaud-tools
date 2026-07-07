@@ -140,6 +140,7 @@ class PlaudClient:
         *,
         start_time: int | None = ...,
         timezone_offset: float | None = ...,
+        timeout_s: float | None = ...,
     ) -> Recording: ...
 
     @overload
@@ -151,6 +152,7 @@ class PlaudClient:
         *,
         start_time: int | None = ...,
         timezone_offset: float | None = ...,
+        timeout_s: float | None = ...,
     ) -> Recording: ...
 
     def upload_recording(
@@ -161,6 +163,7 @@ class PlaudClient:
         *,
         start_time: int | None = None,
         timezone_offset: float | None = None,
+        timeout_s: float | None = None,
     ) -> Recording:
         """4-step upload: presign → S3 multipart PUT → merge_multipart → confirm_upload.
 
@@ -176,6 +179,14 @@ class PlaudClient:
         start_time_ms: millisecond epoch for the recording's date. Defaults to now.
         Plaud respects whatever value the client sends — pass the original
         recording's timestamp to preserve the date after re-upload.
+
+        timeout_s: (#151) optional overall wall-clock budget for the S3 chunk
+        loop below.  ``None`` (the default) preserves the historical unbounded
+        behaviour — each individual PUT already has its own 120 s ceiling
+        (see ``_s3_put``), so this only matters for many-chunk files on a slow
+        link.  Callers that can retry safely (the MCP facade) pass a soft
+        deadline so a disconnected client doesn't orphan the process for the
+        full multipart transfer; the CLI leaves it unset.
         """
         if not filename.strip():
             raise ValueError("filename cannot be empty")
@@ -227,10 +238,20 @@ class PlaudClient:
         # per part, avoiding a full in-memory buffer.  For the bytes variant we
         # slice the existing buffer as before (no behaviour change for callers
         # that already have bytes in hand).
+        # (#151) Soft deadline across the whole multipart loop — a many-chunk
+        # file on a slow link can accumulate a long total even though each
+        # individual PUT stays under its own 120 s ceiling.  ``None`` (the
+        # CLI's default) skips the check entirely, so this cannot regress
+        # unbounded callers.
+        deadline = None if timeout_s is None else time.time() + timeout_s
+
         parts: list[dict[str, Any]] = []
         if isinstance(data, Path):
             with data.open("rb") as fh:
                 for i, url in enumerate(part_urls):
+                    if deadline is not None and time.time() >= deadline:
+                        assert timeout_s is not None  # deadline is only ever set from timeout_s
+                        raise PlaudApiError(f"upload timed out after {int(timeout_s)}s")
                     chunk = fh.read(_CHUNK_SIZE)
                     if not chunk:
                         # Presign returned more part URLs than the file has
@@ -247,6 +268,9 @@ class PlaudClient:
                     parts.append({"Etag": etag, "PartNumber": i + 1})
         else:
             for i, url in enumerate(part_urls):
+                if deadline is not None and time.time() >= deadline:
+                    assert timeout_s is not None  # deadline is only ever set from timeout_s
+                    raise PlaudApiError(f"upload timed out after {int(timeout_s)}s")
                 start_byte = i * _CHUNK_SIZE
                 end_byte = min(start_byte + _CHUNK_SIZE, len(data))
                 chunk = data[start_byte:end_byte]
