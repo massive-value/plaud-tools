@@ -249,11 +249,18 @@ PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 # long before that (60-120s), so waiting any longer server-side is pointless
 # regardless of which tool is blocking — the caller already gave up.  Bounding
 # every long wait here to the same soft deadline and reporting
-# "still_processing" on timeout is the minimum viable fix; true cancellation
-# on client disconnect is a deeper change tracked as follow-up.  Reused below
-# for merge_recordings (client.py's poll-loop wait, same shape as
-# wait_for_transcription/summary) and upload_recording (client.py's multipart
-# S3 loop, bounded by wall-clock rather than a poll interval).
+# "still_processing" on timeout is the accepted resolution for #151 (settled
+# 2026-07-07).  Reused below for merge_recordings (client.py's poll-loop wait,
+# same shape as wait_for_transcription/summary) and upload_recording
+# (client.py's multipart S3 loop, bounded by wall-clock rather than a poll
+# interval).
+#
+# ponytail: true cancel-on-disconnect (a shutdown threading.Event threaded
+# through server.py's asyncio.to_thread and checked between poll iterations)
+# is intentionally NOT implemented — the soft deadline already caps the orphan
+# window at ~90s, which is below the exe-lock contention the updater cares
+# about.  Upgrade path if orphan telemetry ever shows 90s still matters: wire
+# that Event; until then it's YAGNI.
 _WAIT_TIMEOUT_S = 90.0
 
 

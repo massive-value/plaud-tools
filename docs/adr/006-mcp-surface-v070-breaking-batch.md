@@ -96,6 +96,15 @@ cancellation on client disconnect (a shutdown `Event` threaded through the
 handler) is deeper and deferred; the soft-deadline return is the load-bearing
 mitigation.
 
+> **Update (2026-07-07, #151/#185):** the soft deadline now also bounds
+> `merge_recordings` (300 s poll loop) and `upload_recording` (multipart S3
+> loop), covering all three long-blocking handlers. Full cancel-on-disconnect
+> was deemed **YAGNI** and closed, not deferred: the ~90 s cap is already below
+> the exe-lock contention window the updater fights, so wiring a shutdown
+> `Event` through `server.py`'s `asyncio.to_thread` buys nothing measurable.
+> The soft-deadline return is the accepted resolution for #151; the `Event`
+> path is the documented upgrade if orphan telemetry ever shows 90 s matters.
+
 ### Session-expired remediation strings (§6.2)
 
 MCP session-expired errors now append "Tell the user to open the PlaudTools
