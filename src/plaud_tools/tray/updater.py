@@ -53,13 +53,12 @@ def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
     and update.ps1 then waits for the tray to exit before replacing its files.
     Delegates to :func:`process_launch.launch_hidden_powershell` (#142) for the
     safe-stdio + job-breakaway launch semantics shared with the uninstaller.
+    ``-NonInteractive -ExecutionPolicy Bypass`` are injected by the shared
+    helper itself, so they aren't repeated here.
     """
     args = [
         _POWERSHELL_EXE,
         "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
         "-WindowStyle",
         "Hidden",
         "-File",
