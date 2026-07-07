@@ -109,10 +109,13 @@ jobs:
   # from PowerShell 7+ (`pwsh`).  This parses both scripts with the real 5.1
   # parser and fails on any parse error.
   #
-  # TODO(Wave 3): this is a parse-only gate. A fuller frozen old-version ->
-  # new-version updater simulation job (actually running update.ps1 under
-  # 5.1 against a fake install tree) is tracked as a follow-up — see
-  # docs/plans/2026-07-06-full-audit-and-remediation-plan.md §4 item 3.
+  # Scope: intentionally parse-only. This catches the exact regression class
+  # that actually shipped (v0.3.4/v0.4.1 were PS 5.1 parse/exec failures). A
+  # full frozen old->new updater simulation under 5.1 (build a bundle + fake
+  # install tree, run update.ps1, assert the version flip) is deliberately NOT
+  # automated here: the release's manual frozen-e2e validation covers it, and
+  # the CI cost/maintenance isn't justified unless an updater regression ever
+  # slips past both this gate and that manual check.
   ps51-parse-gate:
     runs-on: windows-latest
 
