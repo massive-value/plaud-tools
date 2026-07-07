@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-07
+
+Follow-up patch that formally closes the last open items from the #138–#164
+audit. All 27 findings were fixed in 0.7.0, but the remediation PRs omitted
+`Closes #` keywords so 26 stayed open on the tracker; each was re-verified
+against `main` and closed. Two needed a small amount of additional code
+(below); the rest were already shipped.
+
+### Fixed
+
+- **Windows uninstall/toast now run under a stock execution policy (#142).**
+  `-NonInteractive -ExecutionPolicy Bypass` is injected once in the shared
+  `launch_hidden_powershell` helper, so the uninstall-helper (`-File`) and
+  toast (`-Command`) launches no longer risk failing on a machine with the
+  default `Restricted` policy — previously only the updater passed the flags.
+- **MCP `merge_recordings` and `upload_recording` waits are now bounded (#151).**
+  The 90 s soft-deadline 0.7.0 added to `process_recording` now also caps these
+  two handlers, shrinking the worst-case orphaned-process window after a client
+  disconnect. A timed-out upload returns `still_processing` but is not resumable
+  server-side (retry). Full cancel-on-disconnect is intentionally not
+  implemented (YAGNI).
+
+### Changed
+
+- CI: the PS 5.1 parse gate's `TODO(Wave 3)` comment is settled as a deliberate
+  scope decision — the parse gate plus manual frozen-e2e is the accepted updater
+  coverage (#186). Comment-only; no behavior change.
+
 ## [0.7.0] - 2026-07-06
 
 Consolidated release from a full second-engineering audit (27 findings, #138–#164).
@@ -1471,7 +1499,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/massive-value/plaud-tools/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/massive-value/plaud-tools/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/massive-value/plaud-tools/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/massive-value/plaud-tools/compare/v0.4.1...v0.5.0
