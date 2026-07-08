@@ -127,7 +127,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $files = @(
-            'src/plaud_tools/scripts/update.ps1',
+            'src/plaud_tools/tray/scripts/update.ps1',
             'scripts/install.ps1'
           )
           $failed = $false
