@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from plaud_tools.session import (
+from plaud_tools.core.session import (
     FileSessionStore,
     PlaudSession,
     SessionManager,
@@ -50,7 +50,7 @@ def _keyring_patch(monkeypatch: pytest.MonkeyPatch, kr: Any) -> None:
     """Patch importlib so that ``import keyring`` returns *kr*."""
     real_import = __import__
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda n: kr if n == "keyring" else real_import(n),
     )
 
@@ -180,7 +180,7 @@ class TestMtimeProbeWithSessionStore:
         )
         # Disable keyring so load() falls through to file_store.
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
         store1.file_store.save(PlaudSession(access_token=jwt_v1, region="us", email="v1@example.com"))
@@ -278,7 +278,7 @@ class TestTtlFallbackWithMinimalStore:
         # Fast-forward time past the TTL by patching `time()` inside session.py.
         original_time = _time.time()
         monkeypatch.setattr(
-            "plaud_tools.session.time",
+            "plaud_tools.core.session.time",
             lambda: original_time + SessionManager._CACHE_TTL_SECONDS + 1.0,
         )
 
@@ -310,7 +310,7 @@ class TestTtlFallbackWithMinimalStore:
         # Fast-forward past TTL.
         original_time = _time.time()
         monkeypatch.setattr(
-            "plaud_tools.session.time",
+            "plaud_tools.core.session.time",
             lambda: original_time + SessionManager._CACHE_TTL_SECONDS + 1.0,
         )
 

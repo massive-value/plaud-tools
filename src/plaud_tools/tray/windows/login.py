@@ -8,9 +8,9 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
 
-from ...auth import PlaudAuth
-from ...errors import PlaudApiError, PlaudSessionExpiredError
-from ...session import SessionStore
+from ...core.auth import PlaudAuth
+from ...core.errors import PlaudApiError, PlaudSessionExpiredError
+from ...core.session import SessionStore
 from ..setup import APP_NAME, _set_app_icon, _widget_alive
 
 # Plaud's password-based login endpoint returns a bare HTTP 401 for Google-SSO

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal: reorganized `src/plaud_tools/` by surface instead of a flat file list.**
+  New packages `core/` (shared client/session/auth/transport/etc., used by all
+  three surfaces), `cli/`, `mcp_pt/` (named to avoid shadowing the `mcp` SDK
+  package), and consolidated `assets/completions/scripts` PS1-template data
+  into `tray/` where they're actually consumed. `mcp_lifecycle.py` renamed to
+  `cli/process_probe.py` (its name had outlived a prior dead-code removal).
+  No behavior, CLI/MCP surface, or entry-point change — pure module reorg for
+  maintainability.
+
 ## [0.7.1] - 2026-07-07
 
 Follow-up patch that formally closes the last open items from the #138–#164

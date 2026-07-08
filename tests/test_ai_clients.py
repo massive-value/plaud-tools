@@ -3,7 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from plaud_tools import ai_clients
+from plaud_tools.core import ai_clients
 
 
 def test_codex_connect_writes_parsable_toml_with_windows_path(tmp_path: Path, monkeypatch):

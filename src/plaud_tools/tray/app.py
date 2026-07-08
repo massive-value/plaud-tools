@@ -23,9 +23,9 @@ import pystray
 from PIL import Image
 
 from .. import __version__ as APP_VERSION
-from ..client import PlaudClient
-from ..errors import PlaudSessionExpiredError
-from ..session import TRAY_EXPIRY_WARNING_DAYS, PlaudSession, SessionManager, SessionStore
+from ..core.client import PlaudClient
+from ..core.errors import PlaudSessionExpiredError
+from ..core.session import TRAY_EXPIRY_WARNING_DAYS, PlaudSession, SessionManager, SessionStore
 from .background import _BackgroundMixin
 from .icons import _load_icon, _load_icons
 from .setup import (
@@ -293,7 +293,7 @@ class TrayApp(_BackgroundMixin):
         self._open_url(REPO_URL)
 
     def _open_log_folder(self) -> None:
-        from ..appdata import data_dir as _data_dir
+        from ..core.appdata import data_dir as _data_dir
 
         log_dir = _data_dir()
         log_dir.mkdir(parents=True, exist_ok=True)

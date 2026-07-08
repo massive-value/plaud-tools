@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from plaud_tools.cli import main, run_cli
-from plaud_tools.client import PlaudClient
-from plaud_tools.mcp import build_handlers
-from plaud_tools.models import FileTag, Recording, RecordingDetail
-from plaud_tools.session import SessionStore
+from plaud_tools.cli.cli import main, run_cli
+from plaud_tools.core.client import PlaudClient
+from plaud_tools.core.models import FileTag, Recording, RecordingDetail
+from plaud_tools.core.session import SessionStore
+from plaud_tools.mcp_pt.mcp import build_handlers
 
 
 class StubClient:
@@ -58,7 +58,7 @@ class StubClient:
         return list(self._ALL_RECORDINGS)
 
     def merge_recordings(self, ids: list[str], filename: str, **kwargs):
-        from plaud_tools.models import RecordingDetail
+        from plaud_tools.core.models import RecordingDetail
 
         return RecordingDetail(
             id="merged1",
@@ -77,7 +77,7 @@ class StubClient:
         )
 
     def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None, **kwargs):
-        from plaud_tools.models import Recording
+        from plaud_tools.core.models import Recording
 
         return Recording(
             id="uploaded1",
@@ -609,7 +609,7 @@ class StubAuth:
 
 def test_login_password_help_warns_about_exposure():
     """--password help text must warn about process-listing exposure and point to safer alternatives."""
-    from plaud_tools.cli import build_parser
+    from plaud_tools.cli.cli import build_parser
 
     parser = build_parser()
     # Drill into the login subparser to get its specific help
@@ -641,7 +641,7 @@ def test_cli_login_uses_auth_and_returns_stored_shape(tmp_path: Path):
 
 
 def test_cli_main_prints_output_for_session_command(tmp_path: Path, capsys):
-    from plaud_tools import cli as cli_module
+    from plaud_tools.cli import cli as cli_module
 
     original_store = cli_module.SessionStore
     cli_module.SessionStore = lambda: SessionStore(
@@ -665,7 +665,7 @@ def test_cli_main_returns_nonzero_on_missing_session(capsys, monkeypatch, tmp_pa
     monkeypatch.delenv("PLAUD_REGION", raising=False)
     monkeypatch.delenv("PLAUD_EMAIL", raising=False)
     monkeypatch.setattr(
-        "plaud_tools.cli.SessionStore",
+        "plaud_tools.cli.cli.SessionStore",
         lambda: SessionStore(
             tmp_path / "missing.json", service_name="plaud-tools-test-main", account_name="session"
         ),
@@ -688,7 +688,7 @@ def _run_main_with_client(monkeypatch, client, argv):
     a specific client-raised error through main()'s except clauses, patch
     run_cli to forward the given client instead.
     """
-    from plaud_tools import cli as cli_module
+    from plaud_tools.cli import cli as cli_module
 
     real_run_cli = cli_module.run_cli
     monkeypatch.setattr(cli_module, "run_cli", lambda argv_inner: real_run_cli(argv_inner, client=client))
@@ -696,7 +696,7 @@ def _run_main_with_client(monkeypatch, client, argv):
 
 
 def test_cli_main_session_expired_error_names_remedy(capsys, monkeypatch):
-    from plaud_tools.errors import PlaudSessionExpiredError
+    from plaud_tools.core.errors import PlaudSessionExpiredError
 
     class ExpiredClient:
         def list_recordings(self, query=None):
@@ -711,7 +711,7 @@ def test_cli_main_session_expired_error_names_remedy(capsys, monkeypatch):
 
 
 def test_cli_main_401_api_error_names_remedy(capsys, monkeypatch):
-    from plaud_tools.errors import PlaudApiError
+    from plaud_tools.core.errors import PlaudApiError
 
     class UnauthorizedClient:
         def list_recordings(self, query=None):
@@ -724,7 +724,7 @@ def test_cli_main_401_api_error_names_remedy(capsys, monkeypatch):
 
 
 def test_cli_main_non_session_api_error_has_no_remedy_text(capsys, monkeypatch):
-    from plaud_tools.errors import PlaudApiError
+    from plaud_tools.core.errors import PlaudApiError
 
     class NotFoundClient:
         def list_recordings(self, query=None):
@@ -803,7 +803,7 @@ def test_mcp_browse_recordings_next_after_set_when_full_page():
     class ManyRecordingsClient(StubClient):
         def list_recordings(self, query=None):
             # Return enough items to fill a limit=1 page when filtered by folder
-            from plaud_tools.models import Recording
+            from plaud_tools.core.models import Recording
 
             return [
                 Recording(
@@ -829,7 +829,7 @@ def test_mcp_browse_recordings_pagination_cursor_advances():
 
     class ManyRecordingsClient(StubClient):
         def list_recordings(self, query=None):
-            from plaud_tools.models import Recording
+            from plaud_tools.core.models import Recording
 
             return [
                 Recording(
@@ -1324,8 +1324,8 @@ def test_cli_dump_returns_raw_json():
 
 
 def test_extract_inline_summary_handles_dict_data_content():
-    from plaud_tools.client import PlaudClient
-    from plaud_tools.session import SessionManager, SessionStore
+    from plaud_tools.core.client import PlaudClient
+    from plaud_tools.core.session import SessionManager, SessionStore
 
     client = PlaudClient(SessionManager(SessionStore()))
     raw = {
@@ -1339,8 +1339,8 @@ def test_extract_inline_summary_handles_dict_data_content():
 
 
 def test_extract_inline_summary_fallback_by_data_type():
-    from plaud_tools.client import PlaudClient
-    from plaud_tools.session import SessionManager, SessionStore
+    from plaud_tools.core.client import PlaudClient
+    from plaud_tools.core.session import SessionManager, SessionStore
 
     client = PlaudClient(SessionManager(SessionStore()))
     raw = {
@@ -1359,9 +1359,9 @@ def test_extract_inline_summary_fallback_by_data_type():
 
 
 def test_fetch_summary_from_data_link_handles_plain_text():
-    from plaud_tools.client import PlaudClient
-    from plaud_tools.session import SessionManager, SessionStore
-    from plaud_tools.transport import HttpResponse
+    from plaud_tools.core.client import PlaudClient
+    from plaud_tools.core.session import SessionManager, SessionStore
+    from plaud_tools.core.transport import HttpResponse
 
     class PlainTextTransport:
         def request(self, method, url, headers, body=None, *, timeout=None):
@@ -1640,7 +1640,7 @@ def test_mcp_upload_recording_folder_move_failure_is_partial_success(tmp_path):
 def test_cli_update_refuses_when_frozen(monkeypatch, capsys):
     import pytest
 
-    import plaud_tools.cli as cli_module
+    import plaud_tools.cli.cli as cli_module
 
     monkeypatch.setattr(cli_module.sys, "frozen", True, raising=False)
     # _handle_update never returns — it always calls sys.exit(), frozen or not.
@@ -1656,7 +1656,7 @@ def test_cli_update_still_runs_pip_when_not_frozen(monkeypatch):
 
     import pytest
 
-    import plaud_tools.cli as cli_module
+    import plaud_tools.cli.cli as cli_module
 
     monkeypatch.delattr(cli_module.sys, "frozen", raising=False)
 
@@ -1684,7 +1684,7 @@ def test_cli_update_still_runs_pip_when_not_frozen(monkeypatch):
 
 
 def test_reconfigure_stdout_utf8_calls_reconfigure(monkeypatch):
-    import plaud_tools.cli as cli_module
+    import plaud_tools.cli.cli as cli_module
 
     calls = []
 
@@ -1698,7 +1698,7 @@ def test_reconfigure_stdout_utf8_calls_reconfigure(monkeypatch):
 
 
 def test_reconfigure_stdout_utf8_swallows_reconfigure_errors(monkeypatch):
-    import plaud_tools.cli as cli_module
+    import plaud_tools.cli.cli as cli_module
 
     class FakeStdout:
         def reconfigure(self, **kwargs):
@@ -1709,7 +1709,7 @@ def test_reconfigure_stdout_utf8_swallows_reconfigure_errors(monkeypatch):
 
 
 def test_reconfigure_stdout_utf8_noop_when_unsupported(monkeypatch):
-    import plaud_tools.cli as cli_module
+    import plaud_tools.cli.cli as cli_module
 
     class FakeStdout:
         pass
@@ -1725,7 +1725,7 @@ def test_main_transcript_non_ascii_survives_cp1252_stdout(monkeypatch, tmp_path)
     instead of the transcript actually reaching the caller."""
     import io
 
-    import plaud_tools.cli as cli_module
+    import plaud_tools.cli.cli as cli_module
 
     class TranscriptClient(StubClient):
         def fetch_transcript(self, recording_id):

@@ -3,7 +3,7 @@ import sys
 # ---------------------------------------------------------------------------
 # --diagnose-enum: frozen-import proof for Wave 2 / C4 (psutil in bundle).
 #
-# When this flag is present the entry point imports plaud_tools.mcp_lifecycle
+# When this flag is present the entry point imports plaud_tools.cli.process_probe
 # and reports which process enumerator is active (psutil vs PowerShell
 # fallback), then exits 0 WITHOUT importing pystray / PIL / tkinter or
 # launching any GUI.  This is intentional: CI runners have no display, so
@@ -31,12 +31,12 @@ if "--diagnose-enum" in sys.argv:
     _enumerator = "psutil" if _psutil_available else "powershell_fallback"
     print(f"enumerator={_enumerator}", flush=True)
 
-    # Also import mcp_lifecycle to ensure its full import chain resolves
+    # Also import process_probe to ensure its full import chain resolves
     # in the frozen build (exercises the hiddenimport entries in the spec).
     try:
-        import plaud_tools.mcp_lifecycle as _ml  # noqa: F401
+        import plaud_tools.cli.process_probe as _ml  # noqa: F401
     except Exception as _exc:
-        print(f"mcp_lifecycle import failed: {_exc}", flush=True)
+        print(f"process_probe import failed: {_exc}", flush=True)
         sys.exit(1)
 
     sys.exit(0)
@@ -55,7 +55,7 @@ if "--diagnose-enum" in sys.argv:
 # the tray.
 if "--com-activate" not in sys.argv:
     try:
-        from plaud_tools.session import SessionStore
+        from plaud_tools.core.session import SessionStore
 
         SessionStore().prime_dpapi_shadow()
     except Exception:

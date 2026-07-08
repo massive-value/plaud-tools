@@ -1,3 +1,3 @@
-from plaud_tools.server import main
+from plaud_tools.mcp_pt.server import main
 
 main()

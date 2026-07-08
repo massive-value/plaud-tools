@@ -43,9 +43,9 @@ Issues = "https://github.com/massive-value/plaud-tools/issues"
 Changelog = "https://github.com/massive-value/plaud-tools/blob/master/CHANGELOG.md"
 
 [project.scripts]
-plaud-tools = "plaud_tools.cli:main"
-pt = "plaud_tools.cli:main"
-plaud-mcp = "plaud_tools.server:main"
+plaud-tools = "plaud_tools.cli.cli:main"
+pt = "plaud_tools.cli.cli:main"
+plaud-mcp = "plaud_tools.mcp_pt.server:main"
 plaud-tray = "plaud_tools.tray.app:main"
 
 [tool.setuptools]
@@ -160,10 +160,10 @@ disallow_untyped_defs = false
 # package.  Stricter checking here gives the most signal-to-noise benefit.
 [[tool.mypy.overrides]]
 module = [
-    "plaud_tools.session",
-    "plaud_tools.client",
-    "plaud_tools.layout",
-    "plaud_tools.appdata",
+    "plaud_tools.core.session",
+    "plaud_tools.core.client",
+    "plaud_tools.core.layout",
+    "plaud_tools.core.appdata",
 ]
 disallow_untyped_defs = true
 warn_return_any = true

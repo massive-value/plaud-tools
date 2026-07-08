@@ -127,7 +127,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $files = @(
-            'src/plaud_tools/scripts/update.ps1',
+            'src/plaud_tools/tray/scripts/update.ps1',
             'scripts/install.ps1'
           )
           $failed = $false
@@ -210,7 +210,7 @@ jobs:
       # Wave 2 / C4 — frozen psutil import proof.
       #
       # Build the tray bundle and run PlaudTools.exe --diagnose-enum.  This flag
-      # imports plaud_tools.mcp_lifecycle (exercising all hiddenimports) and
+      # imports plaud_tools.cli.process_probe (exercising all hiddenimports) and
       # prints "enumerator=psutil" when psutil is bundled correctly, then exits 0
       # WITHOUT starting the tkinter/pystray GUI (critical: no display on CI).
       #

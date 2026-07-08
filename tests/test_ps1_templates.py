@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from plaud_tools.ps1_templates import (
+from plaud_tools.tray.ps1_templates import (
     _ps_escape,
     render_uninstall_ps1,
     render_update_ps1,

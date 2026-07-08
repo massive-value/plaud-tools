@@ -8,11 +8,11 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import __version__
-from .auth import PlaudAuth
-from .client import PlaudClient, PlaudRecordingQuery
-from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import (
+from .. import __version__
+from ..core.auth import PlaudAuth
+from ..core.client import PlaudClient, PlaudRecordingQuery
+from ..core.errors import PlaudApiError, PlaudSessionExpiredError
+from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
     detail_summary_dict,
@@ -20,7 +20,7 @@ from .query import (
     parse_isoish,
     summarize_recording,
 )
-from .session import PlaudSession, SessionManager, SessionStore
+from ..core.session import PlaudSession, SessionManager, SessionStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -625,7 +625,7 @@ def _handle_set_summary(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
-    from .transcode import upload_with_transcode
+    from ..core.transcode import upload_with_transcode
 
     path = Path(args.file)
     title = args.title or path.stem

@@ -8,10 +8,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .appdata import events_path as _events_path
-from .client import PlaudClient, PlaudRecordingQuery
-from .errors import PlaudApiError, PlaudSessionExpiredError
-from .query import (
+from ..core.appdata import events_path as _events_path
+from ..core.client import PlaudClient, PlaudRecordingQuery
+from ..core.errors import PlaudApiError, PlaudSessionExpiredError
+from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
     detail_summary_dict,
@@ -19,7 +19,7 @@ from .query import (
     parse_isoish,
     summarize_recording,
 )
-from .session import SessionManager, SessionStore
+from ..core.session import SessionManager, SessionStore
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def _diagnose_session_state() -> dict[str, Any]:
     """
     # Lazy import to avoid the circular import surfaced by
     # ``plaud_tools/__init__.py`` re-exporting ``build_handlers`` from this module.
-    from . import __version__ as _app_version
+    from .. import __version__ as _app_version
 
     diag: dict[str, Any] = {
         "mcp_pid": os.getpid(),
@@ -611,7 +611,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         timezone_offset: float | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
-            from .transcode import upload_with_transcode
+            from ..core.transcode import upload_with_transcode
 
             path = Path(file_path)
             rec_title = title or path.stem

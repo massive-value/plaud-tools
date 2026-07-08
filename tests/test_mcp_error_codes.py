@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
-from plaud_tools.mcp import (
+from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError
+from plaud_tools.mcp_pt.mcp import (
     _diagnose_session_state,
     _error_result,
     _write_event,
@@ -223,7 +223,7 @@ class TestSessionExpiredRemediation:
         PlaudSessionExpiredError branch did, so the tray toast never appeared
         for a mid-session 401 even though it was classified session_expired."""
         events_file = tmp_path / "events.jsonl"
-        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        monkeypatch.setattr("plaud_tools.mcp_pt.mcp._events_path", lambda: events_file)
         handlers = _make_handlers(PlaudApiError("unauthorized", http_status=401))
 
         handlers["browse_recordings"]()
@@ -353,7 +353,7 @@ class TestProcessRecordingValidation:
 class TestWriteEvent:
     def test_writes_session_expired_event(self, tmp_path, monkeypatch):
         events_file = tmp_path / "events.jsonl"
-        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        monkeypatch.setattr("plaud_tools.mcp_pt.mcp._events_path", lambda: events_file)
 
         _write_event("session_expired", reason="token_expired")
 
@@ -368,7 +368,7 @@ class TestWriteEvent:
     def test_write_event_never_raises(self, tmp_path, monkeypatch):
         """_write_event must not propagate even when the path is unwritable."""
         monkeypatch.setattr(
-            "plaud_tools.mcp._events_path",
+            "plaud_tools.mcp_pt.mcp._events_path",
             lambda: Path("/this/does/not/exist/events.jsonl"),
         )
         # Should not raise
@@ -377,7 +377,7 @@ class TestWriteEvent:
     def test_session_expired_via_handler_writes_event(self, tmp_path, monkeypatch):
         """Hitting PlaudSessionExpiredError through _call writes an event."""
         events_file = tmp_path / "events.jsonl"
-        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        monkeypatch.setattr("plaud_tools.mcp_pt.mcp._events_path", lambda: events_file)
 
         mock_client = MagicMock()
         mock_client.list_recordings.side_effect = PlaudSessionExpiredError("expired")
@@ -400,7 +400,7 @@ class TestWriteEvent:
 
     def test_no_session_event_includes_diagnostic(self, tmp_path, monkeypatch):
         events_file = tmp_path / "events.jsonl"
-        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        monkeypatch.setattr("plaud_tools.mcp_pt.mcp._events_path", lambda: events_file)
         handlers = build_handlers(lambda: None)
         handlers["browse_recordings"]()
         record = json.loads(events_file.read_text(encoding="utf-8").splitlines()[0])
@@ -447,13 +447,13 @@ class TestDiagnoseSessionState:
             return _b64.urlsafe_b64encode(s.encode()).decode().rstrip("=")
 
         fake_jwt = ".".join([_b64u('{"alg":"HS256","typ":"UT"}'), _b64u('{"exp":9999999999}'), "sig"])
-        from plaud_tools.session import FileSessionStore, PlaudSession, SessionStore
+        from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionStore
 
         session_path = tmp_path / "session.json"
         FileSessionStore(session_path).save(PlaudSession(access_token=fake_jwt, region="us"))
 
         # Force the diagnostic to use the file store by making keyring unavailable.
-        import plaud_tools.mcp as mcp_mod
+        import plaud_tools.mcp_pt.mcp as mcp_mod
 
         class _StoreFromTmp(SessionStore):
             def __init__(self):
@@ -588,7 +588,7 @@ class TestWriteEventRotation:
         - events.jsonl exists and contains exactly the new event
         - no exception escaped _write_event
         """
-        from plaud_tools import mcp as mcp_mod
+        from plaud_tools.mcp_pt import mcp as mcp_mod
 
         events_file = tmp_path / "events.jsonl"
         monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)
@@ -620,7 +620,7 @@ class TestWriteEventRotation:
         present; os.replace must be used instead.  This test confirms no
         exception escapes and the stale .1 is replaced.
         """
-        from plaud_tools import mcp as mcp_mod
+        from plaud_tools.mcp_pt import mcp as mcp_mod
 
         events_file = tmp_path / "events.jsonl"
         rotated = tmp_path / "events.jsonl.1"
@@ -652,8 +652,8 @@ class TestWriteEventRotation:
         even if the rotation fails the append can still succeed.  But the key
         guarantee — no exception escapes — must hold regardless.
         """
-        import plaud_tools.mcp as _mcp_module
-        from plaud_tools import mcp as mcp_mod
+        import plaud_tools.mcp_pt.mcp as _mcp_module
+        from plaud_tools.mcp_pt import mcp as mcp_mod
 
         events_file = tmp_path / "events.jsonl"
         monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)
@@ -671,7 +671,7 @@ class TestWriteEventRotation:
 
     def test_no_rotation_below_cap(self, tmp_path, monkeypatch):
         """Files smaller than _EVENTS_MAX_BYTES must not be rotated."""
-        from plaud_tools import mcp as mcp_mod
+        from plaud_tools.mcp_pt import mcp as mcp_mod
 
         events_file = tmp_path / "events.jsonl"
         monkeypatch.setattr(mcp_mod, "_events_path", lambda: events_file)

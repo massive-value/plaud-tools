@@ -13,14 +13,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import __version__
-from . import ai_clients as _ai_clients_mod
-from .ai_clients import CLIENTS
-from .appdata import tray_log as _log_path
-from .errors import PlaudSessionExpiredError
-from .layout import InstallLayout
-from .mcp_lifecycle import active_enumerator_name
-from .session import SessionManager, SessionStore
+from .. import __version__
+from ..core import ai_clients as _ai_clients_mod
+from ..core.ai_clients import CLIENTS
+from ..core.appdata import tray_log as _log_path
+from ..core.errors import PlaudSessionExpiredError
+from ..core.layout import InstallLayout
+from ..core.session import SessionManager, SessionStore
+from .process_probe import active_enumerator_name
 
 # ---------------------------------------------------------------------------
 # Install-dir / executable resolution (delegated to InstallLayout)

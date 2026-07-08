@@ -16,11 +16,11 @@ import mcp.types as types
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
-from . import __version__
-from .appdata import mcp_log as _mcp_log_path
-from .client import PlaudClient
+from .. import __version__
+from ..core.appdata import mcp_log as _mcp_log_path
+from ..core.client import PlaudClient
+from ..core.session import SessionManager, SessionStore
 from .mcp import build_handlers
-from .session import SessionManager, SessionStore
 
 
 def _setup_mcp_logging() -> None:

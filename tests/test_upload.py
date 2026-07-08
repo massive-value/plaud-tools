@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from plaud_tools.client import _CHUNK_SIZE, PlaudClient
-from plaud_tools.errors import PlaudApiError
-from plaud_tools.session import FileSessionStore, PlaudSession, SessionManager
-from plaud_tools.transcode import get_file_type, transcode_to_mp3_path
-from plaud_tools.transport import HttpResponse
+from plaud_tools.core.client import _CHUNK_SIZE, PlaudClient
+from plaud_tools.core.errors import PlaudApiError
+from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager
+from plaud_tools.core.transcode import get_file_type, transcode_to_mp3_path
+from plaud_tools.core.transport import HttpResponse
 
 # ---------------------------------------------------------------------------
 # Helpers shared with test_client.py
@@ -611,7 +611,7 @@ def test_wait_for_transcription_times_out(tmp_path):
 
 def test_transcode_raises_when_ffmpeg_not_found(tmp_path, monkeypatch):
     monkeypatch.delenv("FFMPEG_BIN", raising=False)
-    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: None)
+    monkeypatch.setattr("plaud_tools.core.transcode.shutil.which", lambda _: None)
     src = tmp_path / "audio.wav"
     src.write_bytes(b"x")
     with pytest.raises(RuntimeError, match="Could not locate ffmpeg"):
@@ -620,7 +620,7 @@ def test_transcode_raises_when_ffmpeg_not_found(tmp_path, monkeypatch):
 
 def test_find_ffmpeg_frozen_sibling(tmp_path, monkeypatch):
     """Frozen mode: ffmpeg.exe beside the exe is found first (MCP path)."""
-    from plaud_tools.transcode import _find_ffmpeg
+    from plaud_tools.core.transcode import _find_ffmpeg
 
     exe_dir = tmp_path / "mcp"
     exe_dir.mkdir()
@@ -630,16 +630,16 @@ def test_find_ffmpeg_frozen_sibling(tmp_path, monkeypatch):
 
     monkeypatch.delenv("FFMPEG_BIN", raising=False)
     monkeypatch.setattr(
-        "plaud_tools.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_exe)})()
+        "plaud_tools.core.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_exe)})()
     )
-    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: None)
+    monkeypatch.setattr("plaud_tools.core.transcode.shutil.which", lambda _: None)
 
     assert _find_ffmpeg() == str(ffmpeg_exe)
 
 
 def test_find_ffmpeg_frozen_cli_falls_back_to_mcp_sibling(tmp_path, monkeypatch):
     """Frozen CLI mode: no ffmpeg beside the CLI exe, resolves ../mcp/ffmpeg.exe."""
-    from plaud_tools.transcode import _find_ffmpeg
+    from plaud_tools.core.transcode import _find_ffmpeg
 
     # Lay out PlaudTools/cli/ and PlaudTools/mcp/ under tmp_path
     cli_dir = tmp_path / "cli"
@@ -652,16 +652,16 @@ def test_find_ffmpeg_frozen_cli_falls_back_to_mcp_sibling(tmp_path, monkeypatch)
 
     monkeypatch.delenv("FFMPEG_BIN", raising=False)
     monkeypatch.setattr(
-        "plaud_tools.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_cli_exe)})()
+        "plaud_tools.core.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_cli_exe)})()
     )
-    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: None)
+    monkeypatch.setattr("plaud_tools.core.transcode.shutil.which", lambda _: None)
 
     assert _find_ffmpeg() == str(ffmpeg_exe)
 
 
 def test_find_ffmpeg_frozen_no_bundle_falls_back_to_path(tmp_path, monkeypatch):
     """Frozen mode: no bundled ffmpeg at all → falls back to shutil.which."""
-    from plaud_tools.transcode import _find_ffmpeg
+    from plaud_tools.core.transcode import _find_ffmpeg
 
     cli_dir = tmp_path / "cli"
     cli_dir.mkdir()
@@ -669,9 +669,9 @@ def test_find_ffmpeg_frozen_no_bundle_falls_back_to_path(tmp_path, monkeypatch):
 
     monkeypatch.delenv("FFMPEG_BIN", raising=False)
     monkeypatch.setattr(
-        "plaud_tools.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_cli_exe)})()
+        "plaud_tools.core.transcode.sys", type("S", (), {"frozen": True, "executable": str(fake_cli_exe)})()
     )
-    monkeypatch.setattr("plaud_tools.transcode.shutil.which", lambda _: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("plaud_tools.core.transcode.shutil.which", lambda _: "/usr/bin/ffmpeg")
 
     assert _find_ffmpeg() == "/usr/bin/ffmpeg"
 
@@ -820,7 +820,7 @@ def test_transcode_to_mp3_path_writes_output(tmp_path, monkeypatch):
         Path(cmd[-1]).write_bytes(expected_output)
         return type("R", (), {"returncode": 0, "stderr": b""})()
 
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+    monkeypatch.setattr("plaud_tools.core.transcode.subprocess.run", fake_run)
 
     src = tmp_path / "audio.m4a"
     src.write_bytes(b"source audio")
@@ -840,7 +840,7 @@ def test_transcode_to_mp3_path_raises_on_ffmpeg_failure(tmp_path, monkeypatch):
     def fake_run(cmd, capture_output):
         return type("R", (), {"returncode": 1, "stderr": b"bad input"})()
 
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+    monkeypatch.setattr("plaud_tools.core.transcode.subprocess.run", fake_run)
 
     src = tmp_path / "audio.m4a"
     src.write_bytes(b"bad audio")
@@ -867,7 +867,7 @@ class _FakeUploadClient:
     def upload_recording(
         self, data, filename, file_type, *, start_time=None, timezone_offset=None, timeout_s=None
     ):
-        from plaud_tools.models import Recording
+        from plaud_tools.core.models import Recording
 
         self._next_id += 1
         # Record whether *data* was a real on-disk path so tests can assert
@@ -882,7 +882,7 @@ class _FakeUploadClient:
 
 
 def test_upload_with_transcode_native_format_skips_ffmpeg(tmp_path):
-    from plaud_tools.transcode import upload_with_transcode
+    from plaud_tools.core.transcode import upload_with_transcode
 
     audio = tmp_path / "audio.mp3"
     audio.write_bytes(b"fake mp3")
@@ -899,7 +899,7 @@ def test_upload_with_transcode_native_format_skips_ffmpeg(tmp_path):
 
 
 def test_upload_with_transcode_transcodes_non_native_format(tmp_path, monkeypatch):
-    from plaud_tools.transcode import upload_with_transcode
+    from plaud_tools.core.transcode import upload_with_transcode
 
     fake_ff = tmp_path / "ffmpeg"
     fake_ff.write_bytes(b"")
@@ -913,7 +913,7 @@ def test_upload_with_transcode_transcodes_non_native_format(tmp_path, monkeypatc
         written_mp3_paths.append(out_path)
         return type("R", (), {"returncode": 0, "stderr": b""})()
 
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+    monkeypatch.setattr("plaud_tools.core.transcode.subprocess.run", fake_run)
 
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"raw wav bytes")
@@ -930,7 +930,7 @@ def test_upload_with_transcode_transcodes_non_native_format(tmp_path, monkeypatc
 
 
 def test_upload_with_transcode_missing_file_raises_value_error(tmp_path):
-    from plaud_tools.transcode import upload_with_transcode
+    from plaud_tools.core.transcode import upload_with_transcode
 
     client = _FakeUploadClient()
     with pytest.raises(ValueError, match="file not found"):
@@ -939,7 +939,7 @@ def test_upload_with_transcode_missing_file_raises_value_error(tmp_path):
 
 
 def test_upload_with_transcode_ffmpeg_failure_propagates_and_skips_upload(tmp_path, monkeypatch):
-    from plaud_tools.transcode import upload_with_transcode
+    from plaud_tools.core.transcode import upload_with_transcode
 
     fake_ff = tmp_path / "ffmpeg"
     fake_ff.write_bytes(b"")
@@ -948,7 +948,7 @@ def test_upload_with_transcode_ffmpeg_failure_propagates_and_skips_upload(tmp_pa
     def fake_run(cmd, capture_output):
         return type("R", (), {"returncode": 1, "stderr": b"bad input"})()
 
-    monkeypatch.setattr("plaud_tools.transcode.subprocess.run", fake_run)
+    monkeypatch.setattr("plaud_tools.core.transcode.subprocess.run", fake_run)
 
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"raw wav bytes")
@@ -960,7 +960,7 @@ def test_upload_with_transcode_ffmpeg_failure_propagates_and_skips_upload(tmp_pa
 
 
 def test_upload_with_transcode_folder_move_success(tmp_path):
-    from plaud_tools.transcode import upload_with_transcode
+    from plaud_tools.core.transcode import upload_with_transcode
 
     audio = tmp_path / "audio.mp3"
     audio.write_bytes(b"fake mp3")
@@ -977,8 +977,8 @@ def test_upload_with_transcode_folder_move_failure_is_partial_success(tmp_path):
     """#149: a post-upload folder-move failure must not lose the recording —
     the upload already succeeded, so the caller needs the id back to avoid
     re-uploading a duplicate."""
-    from plaud_tools.errors import PlaudApiError
-    from plaud_tools.transcode import upload_with_transcode
+    from plaud_tools.core.errors import PlaudApiError
+    from plaud_tools.core.transcode import upload_with_transcode
 
     audio = tmp_path / "audio.mp3"
     audio.write_bytes(b"fake mp3")
@@ -1005,14 +1005,14 @@ def test_upload_with_transcode_folder_move_failure_is_partial_success(tmp_path):
 )
 def test_live_upload_small_mp3():
     """Upload a small MP3 and confirm a transcript is produced."""
-    import plaud_tools.session as session_mod
+    import plaud_tools.core.session as session_mod
 
     session_path = os.getenv("PLAUD_SESSION_PATH")
     audio_path = os.getenv("PLAUD_TEST_AUDIO_PATH")
     if not session_path or not audio_path:
         pytest.skip("Set PLAUD_SESSION_PATH and PLAUD_TEST_AUDIO_PATH to run this test.")
 
-    from plaud_tools.transcode import get_file_type
+    from plaud_tools.core.transcode import get_file_type
 
     store = session_mod.FileSessionStore(session_path)
     client = PlaudClient(SessionManager(store))

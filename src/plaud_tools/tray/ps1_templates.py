@@ -1,8 +1,8 @@
 """Helpers for locating and rendering the bundled PS1 update/uninstall scripts.
 
-The scripts live at ``src/plaud_tools/scripts/{update,uninstall}.ps1`` in the
-source tree, and are shipped into the bundle under a ``scripts/`` directory
-relative to ``sys._MEIPASS`` (PyInstaller onedir).
+The scripts live at ``src/plaud_tools/tray/scripts/{update,uninstall}.ps1`` in
+the source tree, and are shipped into the bundle under a ``scripts/``
+directory relative to ``sys._MEIPASS`` (PyInstaller onedir).
 
 Public API
 ----------
@@ -51,7 +51,7 @@ def scripts_dir() -> Path:
             if (c / "update.ps1").exists():
                 return c
         return candidates[0]
-    # Dev / editable install: scripts live next to this file in scripts/
+    # Dev / editable install: scripts live in tray/scripts/, next to this file.
     return Path(__file__).parent / "scripts"
 
 

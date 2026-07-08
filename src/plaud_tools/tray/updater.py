@@ -18,10 +18,10 @@ from tkinter import ttk
 from typing import TYPE_CHECKING
 
 from .. import __version__ as APP_VERSION
-from ..layout import InstallLayout
-from ..ps1_templates import render_update_ps1
+from ..core.layout import InstallLayout
 from .process_launch import _CREATE_BREAKAWAY_FROM_JOB, launch_hidden_powershell
 from .process_launch import POWERSHELL_EXE as _POWERSHELL_EXE
+from .ps1_templates import render_update_ps1
 from .setup import APP_NAME, _configure_if_alive, _set_app_icon
 
 if TYPE_CHECKING:  # pragma: no cover

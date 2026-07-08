@@ -28,7 +28,7 @@ The default suite is offline and runs in a few seconds.
 
 `tests/data/tool_descriptions.golden.json` is a snapshot of every MCP tool's
 name, description, and `inputSchema`.  If you intentionally change any tool
-definition in `server.py`, regenerate it and commit the updated fixture
+definition in `mcp_pt/server.py`, regenerate it and commit the updated fixture
 alongside your code change:
 
 ```

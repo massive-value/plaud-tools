@@ -28,7 +28,7 @@ a = Analysis(
     datas=[*_plaud_metadata],
     hiddenimports=[
         # transcode is imported inside an if-branch; static analysis misses it
-        'plaud_tools.transcode',
+        'plaud_tools.core.transcode',
         # keyring selects its backend at runtime
         'keyring.backends.Windows',
         'keyring.backends.fail',

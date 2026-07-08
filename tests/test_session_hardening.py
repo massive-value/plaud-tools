@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from plaud_tools.session import FileSessionStore, PlaudSession, SessionStore
+from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionStore
 
 # ---------------------------------------------------------------------------
 # #145 — FileSessionStore.load() must tolerate BOM / corrupt / partial JSON
@@ -113,7 +113,7 @@ class TestFileSessionStoreSaveIsAtomic:
         """Pin the mechanism explicitly: save() must go through os.replace
         (atomic on both POSIX and Windows), not Path.rename or a direct write
         to the final path."""
-        import plaud_tools.session as session_mod
+        import plaud_tools.core.session as session_mod
 
         path = tmp_path / "session.json"
         store = FileSessionStore(path)
@@ -194,7 +194,7 @@ class TestClearRemovesLegacyFile:
     ) -> None:
         """Same guarantee through the full SessionStore.clear() (keyring +
         dpapi + file), not just FileSessionStore.clear() directly."""
-        from plaud_tools.session import PlaudSession as _PlaudSession
+        from plaud_tools.core.session import PlaudSession as _PlaudSession
 
         legacy_dir = tmp_path / "legacy" / ".config" / "plaud-tools"
         legacy_dir.mkdir(parents=True)

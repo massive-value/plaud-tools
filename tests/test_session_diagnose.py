@@ -17,7 +17,7 @@ import base64
 import json
 import time as _time
 
-from plaud_tools.session import (
+from plaud_tools.core.session import (
     FileSessionStore,
     PlaudSession,
     SessionManager,
@@ -69,7 +69,7 @@ class TestSessionManagerDiagnoseNoSession:
         )
         # Disable keyring so the file-store is the last resort
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
         manager = SessionManager(store)
@@ -87,7 +87,7 @@ class TestSessionManagerDiagnoseNoSession:
             dpapi_path=None,
         )
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
         manager = SessionManager(store)
@@ -176,7 +176,7 @@ class TestSessionManagerDiagnoseMalformedJwt:
             dpapi_path=None,
         )
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
         manager = SessionManager(store)
@@ -203,7 +203,7 @@ class TestSessionManagerDiagnoseMalformedJwt:
             dpapi_path=None,
         )
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
         manager = SessionManager(store)
@@ -240,7 +240,7 @@ class TestSessionManagerDiagnoseKeyringSource:
                 return None
 
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: FakeKeyring if name == "keyring" else __import__(name),
         )
         monkeypatch.delenv("PLAUD_ACCESS_TOKEN", raising=False)
@@ -282,7 +282,7 @@ class TestSessionManagerDiagnoseFileSource:
             dpapi_path=None,
         )
         monkeypatch.setattr(
-            "plaud_tools.session.importlib.import_module",
+            "plaud_tools.core.session.importlib.import_module",
             lambda name: None if name == "keyring" else __import__(name),
         )
         manager = SessionManager(store)
@@ -353,9 +353,9 @@ class TestSessionExpiredPayloadGolden:
         monkeypatch.setenv("PLAUD_ACCESS_TOKEN", fake_jwt)
 
         events_file = tmp_path / "events.jsonl"
-        monkeypatch.setattr("plaud_tools.mcp._events_path", lambda: events_file)
+        monkeypatch.setattr("plaud_tools.mcp_pt.mcp._events_path", lambda: events_file)
 
-        from plaud_tools.mcp import _emit_session_expired
+        from plaud_tools.mcp_pt.mcp import _emit_session_expired
 
         _emit_session_expired("token_expired")
 

@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from plaud_tools.errors import PlaudApiError
-from plaud_tools.mcp import _WAIT_TIMEOUT_S, build_handlers
-from plaud_tools.models import RecordingDetail
+from plaud_tools.core.errors import PlaudApiError
+from plaud_tools.core.models import RecordingDetail
+from plaud_tools.mcp_pt.mcp import _WAIT_TIMEOUT_S, build_handlers
 
 # ---------------------------------------------------------------------------
 # edit_transcript — merged rename_speaker + correct_transcript
@@ -334,7 +334,7 @@ class TestMergeRecordingsSlimResponse:
 
 class TestCompactJson:
     def test_json_result_has_no_extra_whitespace(self):
-        from plaud_tools.mcp import _json_result
+        from plaud_tools.mcp_pt.mcp import _json_result
 
         result = _json_result({"a": 1, "b": [1, 2, 3]})
         text = result["content"][0]["text"]

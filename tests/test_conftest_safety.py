@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from plaud_tools import appdata
+from plaud_tools.core import appdata
 
 
 def test_dpapi_shadow_path_is_redirected_to_none():

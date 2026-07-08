@@ -1,4 +1,4 @@
-"""Unit tests for plaud_tools.layout.InstallLayout.detect().
+"""Unit tests for plaud_tools.core.layout.InstallLayout.detect().
 
 Covers all three channels (bundle, pip, dev) plus the critical regression
 test for the canonical-path autostart bug: a frozen-bundle install relocated
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from plaud_tools.layout import InstallLayout
+from plaud_tools.core.layout import InstallLayout
 
 # ---------------------------------------------------------------------------
 # Helpers
