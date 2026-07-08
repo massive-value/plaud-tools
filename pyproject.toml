@@ -62,7 +62,7 @@ include = ["plaud_tools*"]
 plaud_tools = ["py.typed"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy>=1.10"]
+dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy>=1.10", "mcp[cli]>=1.0,<2.0"]
 tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4", "psutil>=5.9"]
 
 [tool.pytest.ini_options]

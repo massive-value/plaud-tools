@@ -59,6 +59,15 @@ Thumbs.db
 .env.*
 !.env.example
 
+# uv project lockfile — this repo pins deps via constraints/*.txt
+# (docs/agents/lockfiles.md), not uv's native project-lock workflow.
+# `uv run`/`uv sync` auto-generate this locally; never commit it.
+uv.lock
+
+# playwright-cli browser-automation artifacts (snapshots/console logs),
+# left behind if the skill is ever run with this repo as cwd.
+.playwright-cli/
+
 # Logs
 *.log
 logs/

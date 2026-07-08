@@ -12,9 +12,42 @@ cd plaud-tools
 pip install -e ".[dev,tray]"
 ```
 
-The `dev` extra installs `pytest`, `pyinstaller`, and `build`. The `tray`
-extra installs the optional Windows tray dependencies (`pystray`, `Pillow`,
-`sv-ttk`). On non-Windows hosts you can drop the `tray` extra.
+The `dev` extra installs `pytest`, `pyinstaller`, `build`, `mypy`, and
+`mcp[cli]`. The `tray` extra installs the optional Windows tray dependencies
+(`pystray`, `Pillow`, `sv-ttk`). On non-Windows hosts you can drop the `tray`
+extra.
+
+Equivalent with [uv](https://docs.astral.sh/uv/) (faster, and what CI's
+`constraints/*.txt` files are compiled with):
+
+```
+uv venv
+uv pip install -e ".[dev,tray]"
+```
+
+`uv run <cmd>` also works without activating the venv, but note it silently
+creates a `uv.lock` project lockfile the first time you use it — this repo
+pins dependencies via `constraints/*.txt` instead (see
+`docs/agents/lockfiles.md`), so `uv.lock` is gitignored; delete it or ignore it.
+
+### Testing MCP tools interactively (Inspector)
+
+The MCP server (`plaud-mcp`) uses the low-level `mcp.server.lowlevel.Server`
+class, not `FastMCP`, so the `mcp dev` CLI shortcut doesn't work — it only
+supports `FastMCP` instances. Use the standalone Inspector instead, which
+works with any stdio MCP server (requires Node.js/`npx`):
+
+```
+npx @modelcontextprotocol/inspector uv run plaud-mcp
+```
+
+This opens a browser UI pre-filled with `Command: uv`, `Arguments: run
+plaud-mcp`. Click **Connect**, then **Tools → List Tools** to see all 11
+tools, select one, fill in its arguments, and **Run Tool**. It talks to your
+real Plaud session (keyring-backed), so reads are safe but destructive tools
+(`delete_recording`, `mutate_recording` with `action=trash`, etc.) act on
+your actual account — point `PLAUD_SESSION_PATH` at a sacrificial session
+first if you want to exercise those.
 
 ## Running tests
 
