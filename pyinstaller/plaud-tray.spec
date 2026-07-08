@@ -56,8 +56,8 @@ block_cipher = None
 src = Path(SPECPATH).parent / 'src'
 
 _assets = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets')
-_completions = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'completions')
-_scripts = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'scripts')
+_completions = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'tray' / 'completions')
+_scripts = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'tray' / 'scripts')
 _icon = str(Path(SPECPATH).parent / 'src' / 'plaud_tools' / 'assets' / 'icon.ico')
 
 # sv_ttk ships a Tcl theme file (sun-valley.tcl + sibling .tcl files) as
@@ -88,7 +88,7 @@ a = Analysis(
         'keyring.backends.fail',
         'keyring.core',
         # ai_clients imported inside tray.background at module level
-        'plaud_tools.ai_clients',
+        'plaud_tools.core.ai_clients',
         # sv_ttk applies a Tcl theme at runtime
         'sv_ttk',
         # pywin32 / win32 used by keyring and pystray on Windows

@@ -14,8 +14,8 @@ import json
 from typing import Any
 from unittest.mock import MagicMock
 
-from plaud_tools.models import Recording
-from plaud_tools.query import BROWSE_PAGE_SIZE, collect_filtered_paged
+from plaud_tools.core.models import Recording
+from plaud_tools.core.query import BROWSE_PAGE_SIZE, collect_filtered_paged
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -318,7 +318,7 @@ class TestBrowseRecordingsMcpHandler:
         return mock_client, calls
 
     def _build_handlers(self, mock_client: Any) -> Any:
-        from plaud_tools.mcp import build_handlers
+        from plaud_tools.mcp_pt.mcp import build_handlers
 
         return build_handlers(lambda: mock_client)
 
@@ -493,7 +493,7 @@ class TestCliIncrementalBrowse:
         return mock_client, calls
 
     def test_list_with_query_filter_uses_paging(self):
-        from plaud_tools.cli import run_cli
+        from plaud_tools.cli.cli import run_cli
 
         recs = [make_rec(f"r{i}", filename="Meeting Note", start_time=i * 1000) for i in range(5)]
         client, call_log = self._make_client([recs])
@@ -504,7 +504,7 @@ class TestCliIncrementalBrowse:
         assert len(call_log) >= 1
 
     def test_search_uses_paging(self):
-        from plaud_tools.cli import run_cli
+        from plaud_tools.cli.cli import run_cli
 
         recs = [make_rec(f"r{i}", filename="Project X", start_time=i * 1000) for i in range(4)]
         client, call_log = self._make_client([recs])
@@ -515,7 +515,7 @@ class TestCliIncrementalBrowse:
 
     def test_list_without_filters_does_not_use_paging_path(self):
         # Without filters the CLI calls list_recordings with a limit query directly.
-        from plaud_tools.cli import run_cli
+        from plaud_tools.cli.cli import run_cli
 
         direct_recs = [make_rec(f"r{i}", start_time=i * 1000) for i in range(3)]
         mock_client = MagicMock()
@@ -529,7 +529,7 @@ class TestCliIncrementalBrowse:
         assert query_arg.limit == 3
 
     def test_list_sparse_matches_fetches_multiple_pages(self):
-        from plaud_tools.cli import run_cli
+        from plaud_tools.cli.cli import run_cli
 
         # Page 1: 200 records, 1 matches query; Page 2: 3 records, all match.
         def make_page1() -> list[Recording]:

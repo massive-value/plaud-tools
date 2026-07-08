@@ -1,4 +1,4 @@
-"""MCP process-enumerator introspection.
+"""Process-enumerator introspection for `doctor` (formerly `mcp_lifecycle.py`).
 
 Historically this module also contained a scoped-shutdown helper and two
 PowerShell-snippet generators (ADR 003). An audit (2026-07-06) found those

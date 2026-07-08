@@ -48,7 +48,7 @@ against this by raising `PlaudSessionExpiredError` when the UT is within
 `TOKEN_REFRESH_BUFFER_SECONDS` (24 hours) of expiry — shrunk from an earlier
 3-day buffer that burned 10% of every token's life. The tray/HomeWindow
 separately warn starting `TRAY_EXPIRY_WARNING_DAYS` (5 days) before expiry,
-so the warning always precedes the refusal (see `session.py`).
+so the warning always precedes the refusal (see `core/session.py`).
 
 If a future Plaud API endpoint requires a workspace-scoped token, this
 model needs to grow: store all three tokens, exchange via the workspace
@@ -66,7 +66,7 @@ endpoint, refresh on demand.  Until then, simplicity wins.
 
 **Install layout** — the on-disk arrangement of binaries for the *running*
 plaud-tools install, derived from `sys.executable`.  Distribution-channel
-aware (bundle / pip / dev).  Represented by `InstallLayout` in `layout.py`.
+aware (bundle / pip / dev).  Represented by `InstallLayout` in `core/layout.py`.
 Tray uninstall, tray update, MCP-child process scoping, and AI-client wiring
 all act on the *running* install, never a hardcoded canonical path.  The
 canonical install path (`%LOCALAPPDATA%\Programs\PlaudTools\`) is the
@@ -77,7 +77,7 @@ code.
 (session storage, tray log, MCP log, events).  Channel-agnostic,
 platform-aware via `platformdirs`.  On Windows: `%LOCALAPPDATA%\PlaudTools\`.
 On macOS / Linux: per `platformdirs.user_data_dir` conventions.  Lives in
-`appdata.py`.  All log and event files share the data directory; logs do
+`core/appdata.py`.  All log and event files share the data directory; logs do
 not get a separate `user_log_dir` subtree (deliberate — preserves existing
 Windows file locations as a no-op and keeps Mac/Linux conventions simple).
 
@@ -86,12 +86,12 @@ Windows file locations as a no-op and keeps Mac/Linux conventions simple).
 The CLI and MCP surfaces apply different but complementary mechanisms to guard
 destructive operations:
 
-**CLI (`cli.py`)** — interactive sessions use a `--yes` / `-y` flag.  Without
+**CLI (`cli/cli.py`)** — interactive sessions use a `--yes` / `-y` flag.  Without
 the flag, a destructive subcommand (e.g. `plaud delete`) prints a confirmation
 prompt and exits; with `--yes` it proceeds immediately.  This is appropriate
 for terminal users who can read and respond to stdout.
 
-**MCP (`server.py` + `mcp.py`)** — the MCP server runs over stdio and cannot
+**MCP (`mcp_pt/server.py` + `mcp_pt/mcp.py`)** — the MCP server runs over stdio and cannot
 display interactive prompts.  Safety is layered:
 
 1. `ToolAnnotations` on every `types.Tool` entry in `_TOOLS` declare

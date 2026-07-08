@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from plaud_tools.session import TRAY_EXPIRY_WARNING_DAYS
+from plaud_tools.core.session import TRAY_EXPIRY_WARNING_DAYS
 from plaud_tools.tray.app import TrayApp
 
 

@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from plaud_tools.server import _TOOLS
+from plaud_tools.mcp_pt.server import _TOOLS
 
 _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 

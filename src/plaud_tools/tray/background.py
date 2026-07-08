@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from ..ai_clients import connect_all, status_all
+from ..core.ai_clients import connect_all, status_all
 from .setup import (
     _ACTIVATE_EVENT,
     EnvStatus,
@@ -34,7 +34,7 @@ from .updater import _check_for_update
 if TYPE_CHECKING:
     import tkinter as tk
 
-    from ..session import PlaudSession
+    from ..core.session import PlaudSession
     from .windows.home import HomeWindow
     from .windows.login import LoginWindow
 

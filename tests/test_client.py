@@ -9,11 +9,11 @@ from urllib.error import HTTPError
 
 import pytest
 
-import plaud_tools.client as client_mod
-from plaud_tools.client import PlaudClient, PlaudRecordingQuery
-from plaud_tools.errors import PlaudApiError, PlaudSessionExpiredError
-from plaud_tools.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
-from plaud_tools.transport import HttpResponse
+import plaud_tools.core.client as client_mod
+from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery
+from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError
+from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
+from plaud_tools.core.transport import HttpResponse
 
 
 class StubTransport:
@@ -1234,7 +1234,7 @@ def test_session_store_prefers_keyring_when_available(tmp_path, monkeypatch):
         def get_password(service, account):
             return FakeKeyring.value
 
-    monkeypatch.setattr("plaud_tools.session.importlib.import_module", lambda name: FakeKeyring)
+    monkeypatch.setattr("plaud_tools.core.session.importlib.import_module", lambda name: FakeKeyring)
     # dpapi_path MUST be pinned under tmp_path.  Leaving it unset on Windows
     # makes appdata.dpapi_shadow_path() resolve to the real
     # %LOCALAPPDATA%\PlaudTools\session.dat, so store.save() DPAPI-encrypts
@@ -1253,7 +1253,7 @@ def test_session_store_falls_back_to_file_when_keyring_unavailable(tmp_path, mon
     def raise_import_error(name):
         raise ImportError(name)
 
-    monkeypatch.setattr("plaud_tools.session.importlib.import_module", raise_import_error)
+    monkeypatch.setattr("plaud_tools.core.session.importlib.import_module", raise_import_error)
     # Explicitly disable DPAPI for this test — we are pinning the plaintext
     # file-store fallback that fires when *every* OS-protected path is
     # unavailable.  The DPAPI path has its own dedicated tests.

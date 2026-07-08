@@ -201,7 +201,7 @@ def test_test_connection_succeeds_when_api_responds():
 
 
 def test_test_connection_reports_api_error():
-    from plaud_tools.errors import PlaudApiError
+    from plaud_tools.core.errors import PlaudApiError
 
     results = _run_test_connection(_FakePlaudClient(raises=PlaudApiError("bad auth")))
     assert len(results) == 1
@@ -251,13 +251,13 @@ def test_mcp_upload_recording_catches_ffmpeg_runtime_error(tmp_path, monkeypatch
     not the file's own get_file_type/transcode split) so this pins actual
     behaviour rather than a hand-rolled reimplementation of the handler.
     """
-    from plaud_tools.mcp import build_handlers
+    from plaud_tools.mcp_pt.mcp import build_handlers
 
     # .wav needs transcoding (unlike .mp3, which is uploaded natively).
     wav_file = tmp_path / "audio.wav"
     wav_file.write_bytes(b"fake wav")
 
-    import plaud_tools.transcode as transcode_module
+    import plaud_tools.core.transcode as transcode_module
 
     monkeypatch.setattr(
         transcode_module,
@@ -276,8 +276,8 @@ def test_mcp_upload_recording_catches_ffmpeg_runtime_error(tmp_path, monkeypatch
 
 def test_mcp_call_still_catches_plaud_api_error():
     """_call must still catch PlaudApiError and return an MCP error dict."""
-    from plaud_tools.errors import PlaudApiError
-    from plaud_tools.mcp import _call
+    from plaud_tools.core.errors import PlaudApiError
+    from plaud_tools.mcp_pt.mcp import _call
 
     def get_client():
         return MagicMock()
@@ -293,7 +293,7 @@ def test_mcp_call_still_catches_plaud_api_error():
 
 def test_mcp_call_still_catches_value_error():
     """_call must still catch ValueError and return an MCP error dict."""
-    from plaud_tools.mcp import _call
+    from plaud_tools.mcp_pt.mcp import _call
 
     def get_client():
         return MagicMock()

@@ -24,7 +24,7 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-from plaud_tools.errors import PlaudApiError
+from plaud_tools.core.errors import PlaudApiError
 from plaud_tools.tray.setup import _widget_alive
 from plaud_tools.tray.windows import login as login_mod
 

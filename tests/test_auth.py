@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from plaud_tools.auth import PlaudAuth
-from plaud_tools.errors import PlaudApiError
-from plaud_tools.session import SessionStore
-from plaud_tools.transport import HttpResponse
+from plaud_tools.core.auth import PlaudAuth
+from plaud_tools.core.errors import PlaudApiError
+from plaud_tools.core.session import SessionStore
+from plaud_tools.core.transport import HttpResponse
 
 # Capture the production retry-delays sequence at import time (before any
 # monkeypatch can override it on the class).  Tests that need the full retry
@@ -85,7 +85,7 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
     """
     import logging
 
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     payload = json.dumps({"access_token": "header.payload.sig", "region": "us", "email": "u@example.com"})
     call_count = {"n": 0}
@@ -99,7 +99,7 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
             return payload
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: FlakeyKeyring if name == "keyring" else __import__(name),
     )
     # Don't let the retry delay slow the suite down — zero-delay single entry
@@ -108,7 +108,7 @@ def test_load_retries_keyring_on_transient_failure(tmp_path, caplog, monkeypatch
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-retry")
 
-    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.core.session"):
         session = store.load()
 
     assert session is not None, "Expected retry to recover the session"
@@ -131,7 +131,7 @@ def test_load_retries_then_falls_through_on_persistent_none(tmp_path, monkeypatc
     nothing is stored, so every read returns None and we expect exactly the
     configured number of reads.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     call_count = {"n": 0}
 
@@ -142,7 +142,7 @@ def test_load_retries_then_falls_through_on_persistent_none(tmp_path, monkeypatc
             return None  # consistently absent — should settle after the retry budget
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: EmptyKeyring if name == "keyring" else __import__(name),
     )
     # Preserve the full retry count while zeroing delays so the assertion on
@@ -150,7 +150,7 @@ def test_load_retries_then_falls_through_on_persistent_none(tmp_path, monkeypatc
     # constant (captured before any monkeypatch) rather than reading the class
     # attribute, which the autouse fixture has already overridden to ``()``.
     monkeypatch.setattr(
-        "plaud_tools.session.SessionStore._KEYRING_RETRY_DELAYS_S",
+        "plaud_tools.core.session.SessionStore._KEYRING_RETRY_DELAYS_S",
         (0.0,) * len(_PROD_RETRY_DELAYS_S),
     )
 
@@ -170,7 +170,7 @@ def test_load_recovers_from_late_keyring(tmp_path, monkeypatch):
     import json
     from dataclasses import asdict
 
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     session_data = json.dumps(asdict(PlaudSession(access_token="tok", email="cold@example.com")))
     call_count = {"n": 0}
@@ -183,7 +183,7 @@ def test_load_recovers_from_late_keyring(tmp_path, monkeypatch):
             return None if call_count["n"] < settle_after else session_data
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: SlowKeyring if name == "keyring" else __import__(name),
     )
     # settle_after=4 needs at least 3 delays; use a full-length zero sequence
@@ -191,7 +191,7 @@ def test_load_recovers_from_late_keyring(tmp_path, monkeypatch):
     # module-level constant (captured before any monkeypatch) rather than
     # reading the class attribute, which the autouse fixture overrides to ``()``.
     monkeypatch.setattr(
-        "plaud_tools.session.SessionStore._KEYRING_RETRY_DELAYS_S",
+        "plaud_tools.core.session.SessionStore._KEYRING_RETRY_DELAYS_S",
         (0.0,) * len(_PROD_RETRY_DELAYS_S),
     )
 
@@ -209,7 +209,7 @@ def test_load_recovers_from_transient_none(tmp_path, monkeypatch):
     import json
     from dataclasses import asdict
 
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     session_data = json.dumps(asdict(PlaudSession(access_token="tok", email="u@example.com")))
     call_count = {"n": 0}
@@ -221,7 +221,7 @@ def test_load_recovers_from_transient_none(tmp_path, monkeypatch):
             return None if call_count["n"] == 1 else session_data
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: TransientKeyring if name == "keyring" else __import__(name),
     )
     # Single zero-delay entry keeps the attempt count (2) without sleeping.
@@ -238,7 +238,7 @@ def test_load_retry_gives_up_after_persistent_failures(tmp_path, caplog, monkeyp
     """If every attempt raises, surface the failure (return None, fall back to file)."""
     import logging
 
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     call_count = {"n": 0}
 
@@ -249,7 +249,7 @@ def test_load_retry_gives_up_after_persistent_failures(tmp_path, caplog, monkeyp
             raise RuntimeError("persistent failure")
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: BrokenKeyring if name == "keyring" else __import__(name),
     )
     # Preserve the full retry count while zeroing delays so the assertion on
@@ -259,7 +259,7 @@ def test_load_retry_gives_up_after_persistent_failures(tmp_path, caplog, monkeyp
     monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", (0.0,) * len(_PROD_RETRY_DELAYS_S))
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-broken")
-    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.core.session"):
         assert store.load() is None
     assert call_count["n"] == (len(_PROD_RETRY_DELAYS_S) + 1)
 
@@ -274,7 +274,7 @@ def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
     """
     import logging
 
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     class BrokenKeyring:
         @staticmethod
@@ -286,14 +286,14 @@ def test_save_logs_warning_on_keyring_failure(tmp_path, caplog, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: BrokenKeyring if name == "keyring" else __import__(name),
     )
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-keyring-warn")
     session = PlaudSession(access_token="header.payload.sig", region="us", email="user@example.com")
 
-    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.core.session"):
         store.save(session)
 
     # File store wrote the fallback.
@@ -360,7 +360,7 @@ def test_legacy_keyring_migration_happy_path(tmp_path, monkeypatch, caplog):
     """
     import logging
 
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     fake = _FakeLegacyKeyring(
         {
@@ -369,14 +369,14 @@ def test_legacy_keyring_migration_happy_path(tmp_path, monkeypatch, caplog):
         }
     )
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
     monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=None)
 
-    with caplog.at_level(logging.INFO, logger="plaud_tools.session"):
+    with caplog.at_level(logging.INFO, logger="plaud_tools.core.session"):
         session, source = store.load_with_source()
 
     assert session is not None
@@ -399,7 +399,7 @@ def test_legacy_keyring_migration_idempotent_on_second_load(tmp_path, monkeypatc
     """After the first load migrates, a second load reads from the new entry
     and never touches the legacy slots again.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     fake = _FakeLegacyKeyring(
         {
@@ -408,7 +408,7 @@ def test_legacy_keyring_migration_idempotent_on_second_load(tmp_path, monkeypatc
         }
     )
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
     monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
@@ -427,7 +427,7 @@ def test_legacy_keyring_missing_one_half_does_not_migrate(tmp_path, monkeypatch)
     """If only the jwt entry exists (no profile), no migration happens — we
     don't want to invent an email/region we don't have evidence for.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     fake = _FakeLegacyKeyring(
         {
@@ -435,7 +435,7 @@ def test_legacy_keyring_missing_one_half_does_not_migrate(tmp_path, monkeypatch)
         }
     )
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
     monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
@@ -453,7 +453,7 @@ def test_legacy_keyring_migration_handles_malformed_profile(tmp_path, monkeypatc
     """A non-JSON profile blob falls back to defaults (region='us', email=None);
     the JWT still migrates.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     fake = _FakeLegacyKeyring(
         {
@@ -462,7 +462,7 @@ def test_legacy_keyring_migration_handles_malformed_profile(tmp_path, monkeypatc
         }
     )
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
     monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
@@ -508,8 +508,8 @@ class _FakeDpapi:
 
 
 def _patch_fake_dpapi(monkeypatch):
-    monkeypatch.setattr("plaud_tools.session._dpapi_protect", _FakeDpapi.protect)
-    monkeypatch.setattr("plaud_tools.session._dpapi_unprotect", _FakeDpapi.unprotect)
+    monkeypatch.setattr("plaud_tools.core.session._dpapi_protect", _FakeDpapi.protect)
+    monkeypatch.setattr("plaud_tools.core.session._dpapi_unprotect", _FakeDpapi.unprotect)
 
 
 def test_save_writes_keyring_and_dpapi_shadow(tmp_path, monkeypatch):
@@ -517,12 +517,12 @@ def test_save_writes_keyring_and_dpapi_shadow(tmp_path, monkeypatch):
     a subsequent cold-start MCP load has a Credential-Manager-independent
     path to the session.
     """
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     fake = _FakeLegacyKeyring()
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
 
@@ -548,7 +548,7 @@ def test_load_falls_back_to_dpapi_when_keyring_returns_none(tmp_path, monkeypatc
     """
     import logging
 
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
 
@@ -570,7 +570,7 @@ def test_load_falls_back_to_dpapi_when_keyring_returns_none(tmp_path, monkeypatc
             pass
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: EmptyKeyring if name == "keyring" else __import__(name),
     )
 
@@ -581,7 +581,7 @@ def test_load_falls_back_to_dpapi_when_keyring_returns_none(tmp_path, monkeypatc
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=shadow)
 
-    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.core.session"):
         session, source = store.load_with_source()
 
     assert session is not None, "DPAPI fallback should have recovered the session"
@@ -596,12 +596,12 @@ def test_dpapi_disabled_when_path_is_none(tmp_path, monkeypatch):
     tests that pin the plaintext file-store fallback and for non-Windows users
     who want zero filesystem residue beyond the keyring.
     """
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     fake = _FakeLegacyKeyring()
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
 
@@ -617,7 +617,7 @@ def test_dpapi_not_enabled_for_non_canonical_service(tmp_path):
     """Auto-default is gated to service_name=='plaud-tools' so test fixtures
     using synthetic service names never touch the real user's session.dat.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools-test-foo")
     assert store.dpapi_path is None
@@ -627,12 +627,12 @@ def test_clear_removes_dpapi_shadow(tmp_path, monkeypatch):
     """clear() must wipe the keyring entry AND the DPAPI shadow AND the
     plaintext file — sign-out should leave no recoverable session anywhere.
     """
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     fake = _FakeLegacyKeyring()
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: fake if name == "keyring" else __import__(name),
     )
 
@@ -656,12 +656,12 @@ def test_load_ignores_dpapi_when_decryption_fails(tmp_path, monkeypatch, caplog)
     """
     import logging
 
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     def _broken_unprotect(_blob):
         raise OSError("DPAPI decryption failed (simulated)")
 
-    monkeypatch.setattr("plaud_tools.session._dpapi_unprotect", _broken_unprotect)
+    monkeypatch.setattr("plaud_tools.core.session._dpapi_unprotect", _broken_unprotect)
 
     shadow = tmp_path / "session.dat"
     shadow.write_bytes(b"\x01\x02\x03\x04")  # bytes the broken unprotect will reject
@@ -676,12 +676,12 @@ def test_load_ignores_dpapi_when_decryption_fails(tmp_path, monkeypatch, caplog)
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: EmptyKeyring if name == "keyring" else __import__(name),
     )
 
     store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=shadow)
-    with caplog.at_level(logging.WARNING, logger="plaud_tools.session"):
+    with caplog.at_level(logging.WARNING, logger="plaud_tools.core.session"):
         session, source = store.load_with_source()
 
     assert session is None
@@ -699,7 +699,7 @@ def test_real_dpapi_roundtrip(tmp_path):
     CI on windows-latest instead of only when a user actually signs in to the
     frozen bundle.
     """
-    from plaud_tools.session import _dpapi_protect, _dpapi_unprotect
+    from plaud_tools.core.session import _dpapi_protect, _dpapi_unprotect
 
     plaintext = b'{"access_token":"x","region":"us","email":"u@example.com"}'
     blob = _dpapi_protect(plaintext)
@@ -713,7 +713,7 @@ def test_keyring_load_self_heals_missing_dpapi_shadow(tmp_path, monkeypatch):
     populate the shadow so the fallback is available on the *next* cold-start
     MCP read — without forcing the user to sign out + sign in.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     payload = json.dumps({"access_token": "tok", "region": "us", "email": "u@example.com"})
@@ -728,7 +728,7 @@ def test_keyring_load_self_heals_missing_dpapi_shadow(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: HealthyKeyring if name == "keyring" else __import__(name),
     )
 
@@ -750,7 +750,7 @@ def test_self_heal_does_not_overwrite_existing_shadow(tmp_path, monkeypatch):
     that protects a freshly-saved shadow against accidental rewrites from a
     racing stale keyring read.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     new_payload = json.dumps({"access_token": "new", "region": "us", "email": "new@example.com"})
@@ -766,7 +766,7 @@ def test_self_heal_does_not_overwrite_existing_shadow(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: HealthyKeyring if name == "keyring" else __import__(name),
     )
 
@@ -785,7 +785,7 @@ def test_save_succeeds_when_keyring_fails_but_dpapi_works(tmp_path, monkeypatch)
     closes the door on a security regression where a keyring outage forced
     us to write the token plaintext to ~/.config/plaud-tools/session.json.
     """
-    from plaud_tools.session import PlaudSession, SessionStore
+    from plaud_tools.core.session import PlaudSession, SessionStore
 
     _patch_fake_dpapi(monkeypatch)
 
@@ -803,7 +803,7 @@ def test_save_succeeds_when_keyring_fails_but_dpapi_works(tmp_path, monkeypatch)
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: BrokenKeyring if name == "keyring" else __import__(name),
     )
 
@@ -824,7 +824,7 @@ def test_save_succeeds_when_keyring_fails_but_dpapi_works(tmp_path, monkeypatch)
 
 
 def test_prime_writes_shadow_when_keyring_healthy_and_shadow_missing(tmp_path, monkeypatch):
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     payload = json.dumps({"access_token": "tok", "region": "us", "email": "u@example.com"})
@@ -835,7 +835,7 @@ def test_prime_writes_shadow_when_keyring_healthy_and_shadow_missing(tmp_path, m
             return payload
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: HealthyKeyring if name == "keyring" else __import__(name),
     )
 
@@ -853,7 +853,7 @@ def test_prime_is_noop_when_shadow_already_exists(tmp_path, monkeypatch):
     that protects a freshly-saved shadow against an accidental rewrite from a
     racing keyring read inside prime.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     sentinel = b"PRE-EXISTING-SHADOW"
@@ -867,7 +867,7 @@ def test_prime_is_noop_when_shadow_already_exists(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: TrackingKeyring if name == "keyring" else __import__(name),
     )
 
@@ -885,7 +885,7 @@ def test_prime_is_noop_when_keyring_returns_none(tmp_path, monkeypatch):
     """Signed-out users (keyring legitimately empty) must not be charged any
     retry budget here — prime must read exactly once and give up.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
 
@@ -898,7 +898,7 @@ def test_prime_is_noop_when_keyring_returns_none(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: EmptyKeyring if name == "keyring" else __import__(name),
     )
 
@@ -915,7 +915,7 @@ def test_prime_swallows_keyring_exception(tmp_path, monkeypatch):
     the tray entry script wraps prime in its own try/except but the contract
     is that prime itself is fully best-effort.
     """
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
 
@@ -925,7 +925,7 @@ def test_prime_swallows_keyring_exception(tmp_path, monkeypatch):
             raise RuntimeError("vault locked")
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: BrokenKeyring if name == "keyring" else __import__(name),
     )
 
@@ -937,7 +937,7 @@ def test_prime_swallows_keyring_exception(tmp_path, monkeypatch):
 
 
 def test_prime_is_noop_when_dpapi_disabled(tmp_path, monkeypatch):
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core.session import SessionStore
 
     _patch_fake_dpapi(monkeypatch)
     payload = json.dumps({"access_token": "tok", "region": "us", "email": "u@example.com"})
@@ -948,7 +948,7 @@ def test_prime_is_noop_when_dpapi_disabled(tmp_path, monkeypatch):
             return payload
 
     monkeypatch.setattr(
-        "plaud_tools.session.importlib.import_module",
+        "plaud_tools.core.session.importlib.import_module",
         lambda name: HealthyKeyring if name == "keyring" else __import__(name),
     )
 
@@ -973,8 +973,8 @@ def test_file_session_store_default_path_uses_appdata_session_path(monkeypatch, 
     We verify the resolved path equals whatever appdata.session_path() returns
     in this context (which is the redirected tmp path).
     """
-    from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import FileSessionStore
+    from plaud_tools.core import appdata as appdata_mod
+    from plaud_tools.core.session import FileSessionStore
 
     expected = appdata_mod.session_path()
     store = FileSessionStore()
@@ -998,8 +998,8 @@ def test_session_store_default_dpapi_path_uses_appdata_on_windows(monkeypatch, t
     """
     import sys as _sys
 
-    from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core import appdata as appdata_mod
+    from plaud_tools.core.session import SessionStore
 
     # Simulate Windows: patch appdata.dpapi_shadow_path to return a known path
     fake_shadow = tmp_path / "fake_shadow.dat"
@@ -1019,8 +1019,8 @@ def test_session_store_default_dpapi_path_is_none_off_windows(monkeypatch, tmp_p
     """
     import sys as _sys
 
-    from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import SessionStore
+    from plaud_tools.core import appdata as appdata_mod
+    from plaud_tools.core.session import SessionStore
 
     monkeypatch.setattr(_sys, "platform", "linux")
     monkeypatch.setattr(appdata_mod, "dpapi_shadow_path", lambda: None)
@@ -1039,8 +1039,8 @@ def test_session_store_default_dpapi_path_is_none_off_windows(monkeypatch, tmp_p
 
 def test_file_session_store_load_clean_install(tmp_path, monkeypatch):
     """Clean install: neither new path nor legacy path exists -> returns None."""
-    from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import FileSessionStore
+    from plaud_tools.core import appdata as appdata_mod
+    from plaud_tools.core.session import FileSessionStore
 
     new_path = tmp_path / "new" / "session.json"
     monkeypatch.setattr(appdata_mod, "session_path", lambda: new_path)
@@ -1055,8 +1055,8 @@ def test_file_session_store_load_upgrade_with_legacy_file(tmp_path, monkeypatch)
     """
     import json as _json
 
-    from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import FileSessionStore
+    from plaud_tools.core import appdata as appdata_mod
+    from plaud_tools.core.session import FileSessionStore
 
     new_path = tmp_path / "new" / "session.json"
     legacy_dir = tmp_path / "legacy" / ".config" / "plaud-tools"
@@ -1096,8 +1096,8 @@ def test_file_session_store_load_upgrade_new_path_wins(tmp_path, monkeypatch):
     """
     import json as _json
 
-    from plaud_tools import appdata as appdata_mod
-    from plaud_tools.session import FileSessionStore
+    from plaud_tools.core import appdata as appdata_mod
+    from plaud_tools.core.session import FileSessionStore
 
     new_path = tmp_path / "new" / "session.json"
     new_path.parent.mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
 
-from ...ai_clients import CLIENTS, connect, disconnect, status_all
+from ...core.ai_clients import CLIENTS, connect, disconnect, status_all
 from ..setup import APP_NAME, _mcp_exe, _set_app_icon
 
 _STATUS_BADGE: dict[str, tuple[str, str]] = {

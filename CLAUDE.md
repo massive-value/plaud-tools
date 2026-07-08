@@ -4,12 +4,12 @@ This file provides working guidance for agents operating in this repository.
 
 ## Current State
 
-The Python rewrite is complete. The active code lives under `src/plaud_tools/`:
+The Python rewrite is complete. The active code lives under `src/plaud_tools/`, grouped by which surface owns each concern:
 
-- `client.py` — Plaud domain/client layer (auth, session, all API flows)
-- `cli.py` — Python CLI (`plaud-tools` / `pt` entry points)
-- `mcp.py` — MCP handler functions (11 tools: browse_recordings, get_recording, mutate_recording, delete_recording, edit_transcript, upload_recording, process_recording, list_folders, merge_recordings, edit_summary, mutate_folder)
-- `server.py` — Python MCP server process (`plaud-mcp` entry point, stdio transport)
+- `core/` — shared Plaud domain/client layer (client, session, auth, transport, models, errors, appdata, layout, transcode, query, ai_clients) used by all three surfaces below
+- `cli/` — Python CLI (`plaud-tools` / `pt` entry points) plus `doctor` diagnostics
+- `mcp_pt/` — MCP handler functions (11 tools: browse_recordings, get_recording, mutate_recording, delete_recording, edit_transcript, upload_recording, process_recording, list_folders, merge_recordings, edit_summary, mutate_folder) and the MCP server process (`plaud-mcp` entry point, stdio transport). Named `mcp_pt` rather than `mcp` to avoid shadowing the `mcp` SDK package these modules import.
+- `tray/` — Windows tray app, updater/uninstaller, and first-run setup (`plaud-tray` entry point)
 
 The TypeScript prior art has been removed. The `har-captures/` directory contains live Plaud API traffic captures (gitignored — local reference only).
 

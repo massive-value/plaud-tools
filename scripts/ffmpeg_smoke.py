@@ -67,7 +67,7 @@ def main() -> int:
 
     # 2. Transcode to MP3 via the real ffmpeg subprocess (path-in/path-out —
     #    the same function production upload flows use).
-    from plaud_tools.transcode import transcode_to_mp3_path
+    from plaud_tools.core.transcode import transcode_to_mp3_path
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="plaud-ffmpeg-smoke-"))
     src_path = tmp_dir / "silence.wav"

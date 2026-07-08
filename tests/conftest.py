@@ -35,7 +35,7 @@ def _zero_keyring_retry_delay(monkeypatch):
     zero-delay sequence of the appropriate length.
     """
     try:
-        from plaud_tools.session import SessionStore
+        from plaud_tools.core.session import SessionStore
     except Exception:
         return
     monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", (), raising=False)
@@ -46,7 +46,7 @@ def _zero_keyring_retry_delay(monkeypatch):
 # lazy variant of this lookup would resolve to ``None`` inside the fixtures
 # (the redirect fixture wins) and silently disable the trip-wire.
 try:
-    from plaud_tools.appdata import dpapi_shadow_path as _resolve_dpapi_shadow_path
+    from plaud_tools.core.appdata import dpapi_shadow_path as _resolve_dpapi_shadow_path
 
     _REAL_DPAPI_SHADOW_PATH = _resolve_dpapi_shadow_path()
 except Exception:
@@ -67,7 +67,7 @@ def _block_real_dpapi_shadow(monkeypatch):
     the default to ``None`` here means any future regression that forgets
     ``dpapi_path=`` writes nothing — it does not corrupt the user's session.
     """
-    monkeypatch.setattr("plaud_tools.appdata.dpapi_shadow_path", lambda: None)
+    monkeypatch.setattr("plaud_tools.core.appdata.dpapi_shadow_path", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +80,7 @@ def _block_real_session_path(monkeypatch, tmp_path):
     session file.  Redirect to a per-test tmp directory so accidental omissions
     fail safely (file simply won't exist) rather than corrupting real state.
     """
-    monkeypatch.setattr("plaud_tools.appdata.session_path", lambda: tmp_path / "session.json")
+    monkeypatch.setattr("plaud_tools.core.appdata.session_path", lambda: tmp_path / "session.json")
 
 
 @pytest.fixture(autouse=True)

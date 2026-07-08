@@ -651,7 +651,7 @@ class TestRenderedPs1NoStrayPaths:
     OTHER_DIR = r"C:\Programs\OtherTool"
 
     def test_render_update_ps1_no_stray_install_dir(self):
-        from plaud_tools.ps1_templates import render_update_ps1
+        from plaud_tools.tray.ps1_templates import render_update_ps1
 
         result = render_update_ps1(
             tray_pid=1,
@@ -662,7 +662,7 @@ class TestRenderedPs1NoStrayPaths:
         assert self.OTHER_DIR not in result
 
     def test_render_uninstall_ps1_no_stray_install_dir(self):
-        from plaud_tools.ps1_templates import render_uninstall_ps1
+        from plaud_tools.tray.ps1_templates import render_uninstall_ps1
 
         result = render_uninstall_ps1(
             tray_pid=1,
@@ -671,7 +671,7 @@ class TestRenderedPs1NoStrayPaths:
         assert self.OTHER_DIR not in result
 
     def test_render_update_ps1_contains_only_supplied_dir(self):
-        from plaud_tools.ps1_templates import render_update_ps1
+        from plaud_tools.tray.ps1_templates import render_update_ps1
 
         result = render_update_ps1(
             tray_pid=42,
@@ -685,7 +685,7 @@ class TestRenderedPs1NoStrayPaths:
         assert r"C:\Temp\plaud_update_42.zip" in result
 
     def test_render_uninstall_ps1_contains_only_supplied_dir(self):
-        from plaud_tools.ps1_templates import render_uninstall_ps1
+        from plaud_tools.tray.ps1_templates import render_uninstall_ps1
 
         result = render_uninstall_ps1(
             tray_pid=99,
@@ -702,7 +702,7 @@ class TestRenderedPs1NoStrayPaths:
         The docstring may show examples like C:\\Programs\\PlaudTools, but the
         functional code must not reference any machine-specific install path.
         """
-        from plaud_tools.ps1_templates import scripts_dir
+        from plaud_tools.tray.ps1_templates import scripts_dir
 
         content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
         # The functional code must reference $InstallDir
@@ -713,7 +713,7 @@ class TestRenderedPs1NoStrayPaths:
 
     def test_uninstall_ps1_script_uses_install_dir_parameter_not_literals(self):
         """The raw uninstall.ps1 code sections use $InstallDir, not hard-coded paths."""
-        from plaud_tools.ps1_templates import scripts_dir
+        from plaud_tools.tray.ps1_templates import scripts_dir
 
         content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
         assert "$InstallDir" in content
@@ -730,7 +730,7 @@ class TestRenderUpdatePs1Snapshot:
     """Structural snapshot tests for the rendered update dispatcher."""
 
     def _render(self, **kwargs):
-        from plaud_tools.ps1_templates import render_update_ps1
+        from plaud_tools.tray.ps1_templates import render_update_ps1
 
         defaults = dict(
             tray_pid=1234,
@@ -777,7 +777,7 @@ class TestRenderUninstallPs1Snapshot:
     """Structural snapshot tests for the rendered uninstall dispatcher."""
 
     def _render(self, **kwargs):
-        from plaud_tools.ps1_templates import render_uninstall_ps1
+        from plaud_tools.tray.ps1_templates import render_uninstall_ps1
 
         defaults = dict(
             tray_pid=999,

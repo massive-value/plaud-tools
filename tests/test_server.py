@@ -10,7 +10,7 @@ import time
 
 import mcp.types as mcp_types
 
-from plaud_tools.server import _TOOLS, _make_server, _mcp_log_path, _setup_mcp_logging
+from plaud_tools.mcp_pt.server import _TOOLS, _make_server, _mcp_log_path, _setup_mcp_logging
 
 _EXPECTED_TOOL_NAMES = {
     "browse_recordings",
@@ -216,7 +216,7 @@ class TestCallToolIsErrorPropagation:
         reports "no session" so this cannot accidentally hit a real Plaud
         session/network on the machine running the tests.
         """
-        from plaud_tools import server as srv_mod
+        from plaud_tools.mcp_pt import server as srv_mod
 
         monkeypatch.setattr(srv_mod, "SessionStore", lambda: _NoSessionStore())
         server = srv_mod._make_server()
@@ -229,7 +229,7 @@ class TestCallToolIsErrorPropagation:
         """A validation-refused delete (confirm=false) must set isError=True on
         the CallToolResult, independent of whether a session even exists — the
         confirm gate is checked before any client call."""
-        from plaud_tools import server as srv_mod
+        from plaud_tools.mcp_pt import server as srv_mod
 
         monkeypatch.setattr(srv_mod, "SessionStore", lambda: _NoSessionStore())
         server = srv_mod._make_server()
@@ -334,7 +334,7 @@ def test_make_server_constructs_one_session_manager(monkeypatch):
     The fix hoists construction into ``_make_server`` itself, so the count
     is exactly one immediately after the function returns.
     """
-    from plaud_tools import server as srv_mod
+    from plaud_tools.mcp_pt import server as srv_mod
 
     instances: list[object] = []
     original_init = srv_mod.SessionManager.__init__

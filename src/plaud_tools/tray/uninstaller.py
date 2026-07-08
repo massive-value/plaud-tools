@@ -10,12 +10,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from ..appdata import data_dir as _data_dir
-from ..layout import InstallLayout
-from ..ps1_templates import render_uninstall_ps1
-from ..session import SessionStore
+from ..core.appdata import data_dir as _data_dir
+from ..core.layout import InstallLayout
+from ..core.session import SessionStore
 from .process_launch import POWERSHELL_EXE as _POWERSHELL_EXE
 from .process_launch import launch_hidden_powershell
+from .ps1_templates import render_uninstall_ps1
 from .setup import (
     APP_NAME,
     _cli_dir,
@@ -295,7 +295,7 @@ class UninstallDialog:
             # Execute simple removals first.
             if var_clients.get():
                 try:
-                    from ..ai_clients import disconnect_all
+                    from ..core.ai_clients import disconnect_all
 
                     disconnect_all()
                     logging.info("Disconnected AI clients")

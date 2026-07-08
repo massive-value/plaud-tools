@@ -1,4 +1,4 @@
-"""Unit tests for plaud_tools.doctor.
+"""Unit tests for plaud_tools.cli.doctor.
 
 Every section of the JSON is independently testable via monkeypatching.
 No network calls or real filesystem state is required.
@@ -10,8 +10,8 @@ import json
 import sys
 from pathlib import Path
 
-from plaud_tools import doctor as _doctor_mod
-from plaud_tools.doctor import (
+from plaud_tools.cli import doctor as _doctor_mod
+from plaud_tools.cli.doctor import (
     _ai_clients_section,
     _executables_section,
     _ffmpeg_path,
@@ -21,7 +21,7 @@ from plaud_tools.doctor import (
     run_doctor,
     run_doctor_json,
 )
-from plaud_tools.session import PlaudSession, SessionStore
+from plaud_tools.core.session import PlaudSession, SessionStore
 
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
@@ -218,7 +218,7 @@ class TestAiClientsSection:
             "claude-code": tmp_path / "nonexistent2.json",
             "codex": tmp_path / "nonexistent.toml",
         }
-        monkeypatch.setattr("plaud_tools.ai_clients._client_paths", lambda: fake_paths)
+        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_paths)
         monkeypatch.setattr(_doctor_mod, "_mcp_exe_path", lambda: tmp_path / "plaud-mcp.exe")
 
         section = _ai_clients_section()
@@ -241,7 +241,7 @@ class TestAiClientsSection:
             "claude-code": tmp_path / "nonexistent.json",
             "codex": tmp_path / "nonexistent.toml",
         }
-        monkeypatch.setattr("plaud_tools.ai_clients._client_paths", lambda: fake_paths)
+        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_paths)
         monkeypatch.setattr(_doctor_mod, "_mcp_exe_path", lambda: mcp_exe)
 
         section = _ai_clients_section()
@@ -265,7 +265,7 @@ class TestAiClientsSection:
             "claude-code": tmp_path / "nonexistent.json",
             "codex": tmp_path / "nonexistent.toml",
         }
-        monkeypatch.setattr("plaud_tools.ai_clients._client_paths", lambda: fake_paths)
+        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_paths)
         monkeypatch.setattr(_doctor_mod, "_mcp_exe_path", lambda: new_mcp)
 
         section = _ai_clients_section()
@@ -299,7 +299,7 @@ class TestRunDoctor:
             "claude-code": tmp_path / "nonexistent2.json",
             "codex": tmp_path / "nonexistent.toml",
         }
-        monkeypatch.setattr("plaud_tools.ai_clients._client_paths", lambda: fake_client_paths)
+        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_client_paths)
 
     def test_schema_keys_present(self, monkeypatch, tmp_path):
         self._stub_env(monkeypatch, tmp_path)
@@ -384,10 +384,10 @@ class TestDoctorCli:
             "claude-code": tmp_path / "nonexistent2.json",
             "codex": tmp_path / "nonexistent.toml",
         }
-        monkeypatch.setattr("plaud_tools.ai_clients._client_paths", lambda: fake_client_paths)
+        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_client_paths)
 
     def test_doctor_returns_valid_json(self, monkeypatch, tmp_path):
-        from plaud_tools.cli import run_cli
+        from plaud_tools.cli.cli import run_cli
 
         self._stub_env(monkeypatch, tmp_path)
 
@@ -430,7 +430,7 @@ class TestMcpLifecycleField:
             "claude-code": tmp_path / "nonexistent2.json",
             "codex": tmp_path / "nonexistent.toml",
         }
-        monkeypatch.setattr("plaud_tools.ai_clients._client_paths", lambda: fake_client_paths)
+        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_client_paths)
 
     def test_mcp_lifecycle_field_present(self, monkeypatch, tmp_path):
         self._stub_env(monkeypatch, tmp_path)
@@ -457,7 +457,7 @@ class TestMcpLifecycleField:
         fake_psutil = types.ModuleType("psutil")
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
-        import plaud_tools.mcp_lifecycle as _lc
+        import plaud_tools.cli.process_probe as _lc
 
         monkeypatch.setattr(_lc, "active_enumerator_name", lambda: "psutil")
         monkeypatch.setattr(_doctor_mod, "active_enumerator_name", lambda: "psutil")

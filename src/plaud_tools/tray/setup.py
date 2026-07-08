@@ -10,9 +10,9 @@ import tkinter as tk
 from pathlib import Path
 from typing import TypeGuard, TypeVar
 
-from ..appdata import events_path as _events_path
-from ..appdata import tray_log as _tray_log_path
-from ..layout import InstallLayout
+from ..core.appdata import events_path as _events_path
+from ..core.appdata import tray_log as _tray_log_path
+from ..core.layout import InstallLayout
 
 APP_NAME = "Plaud Tools"
 

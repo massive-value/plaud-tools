@@ -156,7 +156,8 @@ unexpected DLL load failure).
 **CI frozen-import proof:** The `bundle-smoke` job in `.github/workflows/ci.yml`
 now builds the tray spec and runs
 `PlaudTools.exe --diagnose-enum`.  This flag is implemented in
-`scripts/plaud_tray_entry.py`; it imports `plaud_tools.mcp_lifecycle`, reports
+`scripts/plaud_tray_entry.py`; it imports `plaud_tools.cli.process_probe` (renamed
+from `plaud_tools.mcp_lifecycle` in the src/ package-by-surface reorg), reports
 `enumerator=psutil` when psutil is importable in the frozen context, and exits 0
 without starting the tkinter/pystray GUI (critical: CI runners have no display).
 The CI step asserts the output contains `enumerator=psutil`; any regression

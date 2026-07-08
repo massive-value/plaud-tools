@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from plaud_tools.client import PlaudClient, PlaudRecordingQuery
-from plaud_tools.session import FileSessionStore, SessionManager
+from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery
+from plaud_tools.core.session import FileSessionStore, SessionManager
 
 pytestmark = [
     pytest.mark.live,

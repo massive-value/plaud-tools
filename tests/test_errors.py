@@ -12,7 +12,7 @@ import io
 import json
 from urllib.error import HTTPError
 
-from plaud_tools.errors import PlaudApiError
+from plaud_tools.core.errors import PlaudApiError
 
 # ---------------------------------------------------------------------------
 # Helper: build a urllib.error.HTTPError with a readable body
@@ -195,7 +195,7 @@ class TestClassify:
 class TestOldSymbolsDeleted:
     def test_http_error_to_api_error_gone_from_transport(self):
         """_http_error_to_api_error must not be importable from transport."""
-        import plaud_tools.transport as transport_mod
+        import plaud_tools.core.transport as transport_mod
 
         assert not hasattr(transport_mod, "_http_error_to_api_error"), (
             "_http_error_to_api_error still exists in transport — delete it"
@@ -203,7 +203,7 @@ class TestOldSymbolsDeleted:
 
     def test_classify_api_error_gone_from_mcp(self):
         """_classify_api_error must not be importable from mcp."""
-        import plaud_tools.mcp as mcp_mod
+        import plaud_tools.mcp_pt.mcp as mcp_mod
 
         assert not hasattr(mcp_mod, "_classify_api_error"), (
             "_classify_api_error still exists in mcp — delete it"

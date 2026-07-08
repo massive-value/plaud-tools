@@ -13,8 +13,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from plaud_tools.models import Recording
-from plaud_tools.query import filter_recordings, parse_isoish, summarize_recording
+from plaud_tools.core.models import Recording
+from plaud_tools.core.query import filter_recordings, parse_isoish, summarize_recording
 
 # ---------------------------------------------------------------------------
 # Helpers

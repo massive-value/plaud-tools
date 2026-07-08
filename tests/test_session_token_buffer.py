@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from plaud_tools.errors import PlaudSessionExpiredError
-from plaud_tools.session import (
+from plaud_tools.core.errors import PlaudSessionExpiredError
+from plaud_tools.core.session import (
     TOKEN_REFRESH_BUFFER_SECONDS,
     TRAY_EXPIRY_WARNING_DAYS,
     FileSessionStore,
@@ -152,7 +152,7 @@ class TestCachedSessionCrossesBuffer:
         # would have kept serving the cached (now-refusable) session.
         real_time = _time.time
         monkeypatch.setattr(
-            "plaud_tools.session.time",
+            "plaud_tools.core.session.time",
             lambda: real_time() + TOKEN_REFRESH_BUFFER_SECONDS + 120,
         )
 

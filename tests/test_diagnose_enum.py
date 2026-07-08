@@ -5,7 +5,7 @@ These tests verify the flag's contract WITHOUT running a frozen build:
   - exits 0
   - does NOT import pystray, PIL, or tkinter (GUI modules must stay out of
     the --diagnose-enum code path so CI runners without a display are safe)
-  - imports plaud_tools.mcp_lifecycle successfully (exercises the module's
+  - imports plaud_tools.cli.process_probe successfully (exercises the module's
     import chain in a non-frozen context as a unit-level smoke test)
 
 The actual frozen-build assertion ("enumerator=psutil") is performed by the
@@ -185,23 +185,23 @@ def test_diagnose_enum_does_not_import_gui_modules():
     )
 
 
-def test_diagnose_enum_imports_mcp_lifecycle():
-    """--diagnose-enum must import plaud_tools.mcp_lifecycle without error.
+def test_diagnose_enum_imports_process_probe():
+    """--diagnose-enum must import plaud_tools.cli.process_probe without error.
 
-    This is the chain exercised by the frozen hiddenimports: mcp_lifecycle
+    This is the chain exercised by the frozen hiddenimports: process_probe
     imports psutil (or falls back), and the flag verifies the import resolves.
-    If mcp_lifecycle import fails the flag exits 1 and prints an error line —
+    If process_probe import fails the flag exits 1 and prints an error line —
     we assert it does NOT print a failure line and exits 0.
     """
     result = _run_entry_with_flag("--diagnose-enum")
     assert result.returncode == 0, (
-        f"Expected exit 0 (mcp_lifecycle imported OK), "
+        f"Expected exit 0 (process_probe imported OK), "
         f"got {result.returncode}.\n"
         f"stdout: {result.stdout!r}\n"
         f"stderr: {result.stderr!r}"
     )
-    assert "mcp_lifecycle import failed" not in result.stdout, (
-        f"mcp_lifecycle import failure detected in output: {result.stdout!r}"
+    assert "process_probe import failed" not in result.stdout, (
+        f"process_probe import failure detected in output: {result.stdout!r}"
     )
 
 
