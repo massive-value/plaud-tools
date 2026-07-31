@@ -9,13 +9,20 @@ from pathlib import Path
 from typing import Any
 
 from ..core.appdata import events_path as _events_path
-from ..core.client import PlaudClient, PlaudRecordingQuery
+from ..core.client import (
+    AUDIO_URL_TTL_S,
+    DEFAULT_TRANSCRIPT_BLOCK,
+    TRANSCRIPT_BLOCKS,
+    PlaudClient,
+    PlaudRecordingQuery,
+)
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError
 from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
     detail_summary_dict,
     folder_dict,
+    format_transcript,
     parse_isoish,
     summarize_recording,
 )
@@ -200,18 +207,58 @@ def _summarize_detail(detail: Any) -> dict[str, Any]:
     return output
 
 
-def _slice_transcript(transcript: str, offset: int, max_chars: int | None) -> tuple[str, bool]:
-    """Slice a formatted transcript string for pagination.
+# Utterances returned per get_recording call when the caller doesn't say.
+# Chosen well above the 50 the official Plaud MCP uses: our responses are
+# compact JSON (no pretty-printing) and a single recording is usually the whole
+# task, so paying for extra round trips is worse than one larger payload.  The
+# cap exists so a 3-hour recording can't blow the client's message-size limit.
+DEFAULT_TRANSCRIPT_UTTERANCES = 200
+MAX_TRANSCRIPT_UTTERANCES = 1000
 
-    Pure client-side slicing of the transcript text already fetched by
-    ``get_recording`` (client.py's ``_fetch_transcript_segments`` /
-    ``_format_transcript_from_segments``) — no extra network call. ``offset``
-    and ``max_chars`` are validated by the caller before this runs.
+
+def _page_transcript(
+    segments: list[dict[str, Any]], after: int, limit: int
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Return one page of utterances plus the cursor for the next.
+
+    Paging on utterance boundaries rather than characters: a character offset
+    cuts mid-word and hands the model a fragment ("…and then Sar"), and forces
+    it to do offset arithmetic to continue. An utterance index can't tear a
+    record, and ``next_after`` is directly reusable as the next ``after``.
+
+    ``after`` past the end yields an empty page and no cursor rather than an
+    error — a caller that reuses a stale cursor after the transcript shrank
+    gets "nothing more", which is true.
     """
-    end = len(transcript) if max_chars is None else offset + max_chars
-    sliced = transcript[offset:end]
-    truncated = offset > 0 or end < len(transcript)
-    return sliced, truncated
+    page = segments[after : after + limit]
+    next_after = after + len(page) if after + len(page) < len(segments) else None
+    return page, next_after
+
+
+def _transcript_unavailable_note(detail: Any, requested_block: str) -> str | None:
+    """Explain an empty transcript, or return None when there is nothing to explain.
+
+    An empty ``transcript`` has three very different causes and an LLM caller
+    cannot tell them apart from the absence of text alone: the recording was
+    never transcribed, the *requested* block does not exist for it (asking for
+    the AI-polished pass on a recording Plaud never polished), or the
+    transcript is genuinely empty. Each note names the next action.
+    """
+    if detail.transcript:
+        return None
+    available = list(detail.transcript_blocks_available or [])
+    if not available:
+        return (
+            "No transcript has been generated for this recording yet. "
+            "Call process_recording to transcribe it."
+        )
+    if requested_block not in available:
+        return (
+            f"The {requested_block!r} transcript block is not available for this recording. "
+            f"Available blocks: {', '.join(available)}. "
+            f"Retry with transcript_block set to one of those."
+        )
+    return None
 
 
 def _count_transcript_matches(client: PlaudClient, recording_id: str, find: str) -> int:
@@ -271,8 +318,11 @@ def _is_soft_deadline_timeout(exc: PlaudApiError) -> bool:
     "timed out after Ns" — see ``wait_for_transcription``, ``wait_for_summary``,
     ``merge_recordings``, and ``upload_recording``. Any other error (auth
     failure, 404, non-retryable API error) is not a timeout and must propagate.
+
+    The predicate itself moved to ``PlaudApiError`` so the CLI can share it
+    (exit code 4); this stays as the local spelling for the call sites below.
     """
-    return exc.http_status is None and "timed out" in str(exc)
+    return exc.is_soft_deadline_timeout()
 
 
 def _wait_or_still_processing(wait_fn: Callable[..., None], recording_id: str) -> bool:
@@ -376,18 +426,25 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     def get_recording(
         recording_id: str,
         include: list[str] | None = None,
-        transcript_offset: int = 0,
-        transcript_max_chars: int | None = None,
+        transcript_after: int = 0,
+        transcript_limit: int = DEFAULT_TRANSCRIPT_UTTERANCES,
+        transcript_block: str = DEFAULT_TRANSCRIPT_BLOCK,
     ) -> dict[str, Any]:
-        if transcript_offset < 0:
+        if transcript_block not in TRANSCRIPT_BLOCKS:
             return _error_result(
-                "transcript_offset must be a non-negative integer (>= 0)",
+                f"transcript_block must be one of: {', '.join(TRANSCRIPT_BLOCKS)}",
                 error_code="validation",
                 retryable=False,
             )
-        if transcript_max_chars is not None and transcript_max_chars <= 0:
+        if transcript_after < 0:
             return _error_result(
-                "transcript_max_chars must be a positive integer (> 0)",
+                "transcript_after must be a non-negative integer (>= 0)",
+                error_code="validation",
+                retryable=False,
+            )
+        if not 1 <= transcript_limit <= MAX_TRANSCRIPT_UTTERANCES:
+            return _error_result(
+                f"transcript_limit must be between 1 and {MAX_TRANSCRIPT_UTTERANCES}",
                 error_code="validation",
                 retryable=False,
             )
@@ -400,19 +457,47 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 recording_id,
                 include_transcript=need_transcript,
                 include_summary=need_summary,
+                transcript_block=transcript_block,
             )
             output = _summarize_detail(detail)
             if "speakers" in include_set:
                 output["speakers"] = detail.speakers
+            if "audio_url" in include_set:
+                url = client.get_audio_url(recording_id)
+                output["audio_url"] = url
+                if url is None:
+                    output["note"] = (
+                        "No audio is available for this recording — it may not have finished "
+                        "syncing from the device yet."
+                    )
+                else:
+                    output["audio_url_expires_in_s"] = AUDIO_URL_TTL_S
             if "transcript" in include_set:
-                sliced, truncated = _slice_transcript(
-                    detail.transcript or "", transcript_offset, transcript_max_chars
-                )
-                output["transcript"] = sliced
-                output["transcript_truncated"] = truncated
+                segments = detail.transcript_segments or []
+                page, next_after = _page_transcript(segments, transcript_after, transcript_limit)
+                output["transcript"] = format_transcript(page)
+                output["transcript_block"] = transcript_block
+                output["transcript_utterance_count"] = len(segments)
+                # Keep transcript_truncated as the loud "this is partial" flag —
+                # a caller that ignores transcript_next_after would otherwise
+                # summarize half a meeting believing it had the whole thing.
+                output["transcript_truncated"] = next_after is not None or transcript_after > 0
+                if next_after is not None:
+                    output["transcript_next_after"] = next_after
+                note = _transcript_unavailable_note(detail, transcript_block)
+                if note is not None:
+                    output["note"] = note
             if "summary" in include_set:
                 if detail.ai_content is None and detail.is_summary:
-                    output["summary"] = "(summary exists on Plaud but could not be fetched)"
+                    output["summary"] = None
+                    # Don't dead-end the caller: Plaud says a summary exists but
+                    # the data_link fetch came back empty, which is transient
+                    # far more often than not.  Name the retry explicitly.
+                    output["note"] = (
+                        "Plaud reports a summary exists for this recording but its content could "
+                        "not be fetched. This is usually transient — retry get_recording in a "
+                        "few moments."
+                    )
                 else:
                     output["summary"] = detail.ai_content
             return _json_result(output)

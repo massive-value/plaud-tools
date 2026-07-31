@@ -10,6 +10,27 @@ plaud-tools <subcommand> --help
 
 All read commands return JSON. The output is suitable for piping into `jq` or capturing for scripts.
 
+## Exit codes
+
+Errors go to stderr, keeping stdout clean for piping. The exit code tells a
+script *why* it failed without having to match on the message:
+
+| Code | Meaning | What a script should do |
+|---|---|---|
+| `0` | Success | — |
+| `1` | Invalid arguments, recording not found, or an unclassified error | Fail; the message is on stderr |
+| `2` | Authentication failed — no session, expired session, or HTTP 401 | Run `plaud-tools refresh`, or sign in via the tray |
+| `3` | Transient network or server error (connection failure, 429, 5xx) | Retry with backoff |
+| `4` | Timed out waiting on a job that is **still running** on Plaud's side | Poll with `status <id>` rather than re-running the command |
+
+Code `4` matters for the long-running commands (`transcribe --wait`, `merge`,
+`upload`): the work has not failed, it just outlived the client-side wait.
+Re-running the command would start a *second* job.
+
+One wrinkle: a malformed command line exits `2` as well, because that is
+argparse's own convention for a usage error. A usage message on stderr
+distinguishes it from an auth failure.
+
 ---
 
 ## Sign-in and session
@@ -134,9 +155,18 @@ Lower-level dump of the recording's API fields. Always includes the AI summary (
 
 ```
 plaud-tools transcript <recording-id>
+plaud-tools transcript <recording-id> --polish
 ```
 
-Prints the full transcript text.
+Prints the full transcript text. By default this is the raw diarized transcript.
+
+`--polish` returns Plaud's AI-cleaned pass instead — filler words removed and
+punctuation repaired, with the same speakers and timestamps. Not every recording
+has one; when it's missing the command errors and names the blocks that are
+available rather than printing nothing.
+
+Note that the editing commands (`rename-speaker`, `correct-transcript`) always
+operate on the raw transcript, whichever block you read.
 
 ### `summary`
 
@@ -145,6 +175,22 @@ plaud-tools summary <recording-id>
 ```
 
 Prints the AI-generated summary if one exists. Returns `null` for recordings that haven't been processed yet.
+
+### `audio`
+
+```
+plaud-tools audio <recording-id>
+plaud-tools audio <recording-id> -o meeting.mp3
+plaud-tools audio <recording-id> -o ./downloads/
+```
+
+Without `-o`, prints a temporary download URL for the recording's audio plus its
+lifetime in seconds. **The URL expires after one hour** — don't store it or reuse
+it later in a script; ask for a fresh one.
+
+With `-o`, downloads the audio to that path instead. Pass a directory to save as
+`<recording-id>.mp3` inside it. Errors if Plaud has no audio for the recording,
+which usually means it hasn't finished syncing from the device.
 
 ---
 

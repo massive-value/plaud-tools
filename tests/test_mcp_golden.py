@@ -38,12 +38,18 @@ from plaud_tools.mcp_pt.server import _TOOLS
 
 _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 
-# 1.1 * 442 word baseline set at v0.6.0's 12-tool surface. Wave 4A (v0.7.0)
-# merged rename_speaker + correct_transcript into edit_transcript(action=...),
-# dropping the count to 11 tools and the actual live count to ~439 words --
-# comfortably under this budget, so it was left as-is rather than re-tightened.
-# Update intentionally (and re-baseline the comment) if descriptions change.
-_TOKEN_BUDGET_WORDS = 486
+# 1.1 * 470 word baseline, re-set for the v0.8.0 surface (still 11 tools).
+# The prior budget was 486 (1.1 * 442 from v0.6.0's 12-tool surface); the
+# 2026-07-31 competitive-audit batch pushed the live count to ~470 by adding
+# three things that each buy their words back:
+#   - get_recording's transcript_block enum + description (AI-polished transcript)
+#   - get_recording's transcript_after/transcript_limit pagination contract,
+#     which the model must understand to avoid summarizing a partial transcript
+#   - audio_url in the include enum
+# Raised deliberately rather than trimming, because every added word is a
+# parameter contract an LLM caller has to get right. Re-baseline this comment
+# alongside any future change.
+_TOKEN_BUDGET_WORDS = 517
 
 
 def _serialize_tools() -> str:

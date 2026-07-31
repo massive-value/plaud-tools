@@ -31,6 +31,23 @@ def test_server_exposes_expected_tools():
     assert {t.name for t in _TOOLS} == _EXPECTED_TOOL_NAMES
 
 
+def test_every_tool_declares_an_annotation_title():
+    """Clients use annotations.title as the human-readable tool label.
+
+    The golden fixture snapshots name/description/inputSchema only, so a tool
+    added without a title would otherwise ship unnoticed.
+    """
+    missing = [t.name for t in _TOOLS if not (t.annotations and t.annotations.title)]
+    assert missing == [], f"tools missing annotations.title: {missing}"
+
+
+def test_server_get_recording_offers_both_transcript_blocks():
+    tool = next(t for t in _TOOLS if t.name == "get_recording")
+    block = tool.inputSchema["properties"]["transcript_block"]
+    assert block["enum"] == ["transaction", "transaction_polish"]
+    assert block["default"] == "transaction"
+
+
 def test_server_edit_summary_requires_recording_id_and_action():
     tool = next(t for t in _TOOLS if t.name == "edit_summary")
     assert set(tool.inputSchema["required"]) == {"recording_id", "action"}
@@ -153,8 +170,12 @@ def test_server_browse_recordings_has_trash_param():
 def test_server_get_recording_has_transcript_pagination_params():
     tool = next(t for t in _TOOLS if t.name == "get_recording")
     props = tool.inputSchema["properties"]
-    assert props["transcript_offset"]["minimum"] == 0
-    assert props["transcript_max_chars"]["minimum"] == 1
+    assert props["transcript_after"]["minimum"] == 0
+    assert props["transcript_limit"]["default"] == 200
+    assert props["transcript_limit"]["maximum"] == 1000
+    # Character-window params were removed in the v0.8.0 breaking batch.
+    assert "transcript_offset" not in props
+    assert "transcript_max_chars" not in props
 
 
 def test_server_browse_recordings_after_has_minimum_zero():

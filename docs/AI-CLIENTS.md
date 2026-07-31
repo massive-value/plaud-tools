@@ -159,7 +159,7 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | Tool | What it does |
 |---|---|
 | `browse_recordings` | List and filter recordings by date, title, folder, or trash status |
-| `get_recording` | Full detail for one recording; opt in to transcript (with offset/length slicing) / speakers / summary |
+| `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary / audio download URL |
 | `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`) |
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
 | `edit_transcript` | Rename a speaker label (`action="rename_speaker"`, matches the displayed name or the original `Speaker N`) or literal find-and-replace on transcript text (`action="correct"`, supports `dry_run`) |
@@ -169,3 +169,29 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | `merge_recordings` | Merge two or more recordings into a single new recording |
 | `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary |
 | `mutate_folder` | Create, edit, or delete a folder |
+
+## Optional: install the agent skill
+
+`skills/plaud-tools/SKILL.md` in this repo is a briefing for the assistant on how
+to drive the tools well — transcript pagination, `dry_run` before bulk text
+edits, the confirm gates, and how to read the structured error codes. It is
+optional; the tools work without it.
+
+Claude Code and Claude Desktop both read skills from `~/.claude/skills/`:
+
+```powershell
+# Windows
+$dest = "$env:USERPROFILE\.claude\skills\plaud-tools"
+New-Item -ItemType Directory -Force $dest | Out-Null
+Copy-Item .\skills\plaud-tools\SKILL.md $dest
+```
+
+```bash
+# macOS / Linux
+mkdir -p ~/.claude/skills/plaud-tools
+cp skills/plaud-tools/SKILL.md ~/.claude/skills/plaud-tools/
+```
+
+Restart the client afterwards. The tray installer does not copy this for you
+yet — see the roadmap in
+[docs/plans/2026-07-31-official-plaud-mcp-cli-competitive-audit.md](plans/2026-07-31-official-plaud-mcp-cli-competitive-audit.md).

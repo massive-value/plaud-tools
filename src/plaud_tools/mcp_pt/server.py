@@ -18,9 +18,13 @@ from mcp.server.models import InitializationOptions
 
 from .. import __version__
 from ..core.appdata import mcp_log as _mcp_log_path
-from ..core.client import PlaudClient
+from ..core.client import DEFAULT_TRANSCRIPT_BLOCK, TRANSCRIPT_BLOCKS, PlaudClient
 from ..core.session import SessionManager, SessionStore
-from .mcp import build_handlers
+from .mcp import (
+    DEFAULT_TRANSCRIPT_UTTERANCES,
+    MAX_TRANSCRIPT_UTTERANCES,
+    build_handlers,
+)
 
 
 def _setup_mcp_logging() -> None:
@@ -122,13 +126,14 @@ _TOOLS: list[types.Tool] = [
         # idempotentHint omitted: redundant when readOnlyHint=True (reads are
         # inherently idempotent; stating it again adds noise without value).
         annotations=types.ToolAnnotations(
+            title="Browse recordings",
             readOnlyHint=True,
             openWorldHint=True,
         ),
     ),
     types.Tool(
         name="get_recording",
-        description="Fetch full detail for one recording.",
+        description="Fetch full detail for one recording. Transcripts are returned a page of utterances at a time — check transcript_truncated and follow transcript_next_after to read the rest.",  # noqa: E501
         inputSchema={
             "type": "object",
             "properties": {
@@ -137,26 +142,35 @@ _TOOLS: list[types.Tool] = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["transcript", "speakers", "summary"],
+                        "enum": ["transcript", "speakers", "summary", "audio_url"],
                     },
-                    "description": "Large fields to include: transcript, speakers, summary",
+                    "description": "Large or extra fields to include: transcript, speakers, summary, audio_url",  # noqa: E501
                 },
-                "transcript_offset": {
+                "transcript_after": {
                     "type": "integer",
                     "default": 0,
                     "minimum": 0,
-                    "description": "Character offset to start the transcript from (with include=[transcript])",  # noqa: E501
+                    "description": "Utterance index to start the transcript from; pass the transcript_next_after of a previous response to continue",  # noqa: E501
                 },
-                "transcript_max_chars": {
+                "transcript_limit": {
                     "type": "integer",
+                    "default": DEFAULT_TRANSCRIPT_UTTERANCES,
                     "minimum": 1,
-                    "description": "Max transcript characters to return; sets transcript_truncated when cut off",  # noqa: E501
+                    "maximum": MAX_TRANSCRIPT_UTTERANCES,
+                    "description": f"Max utterances to return (default {DEFAULT_TRANSCRIPT_UTTERANCES}). When more remain, the response sets transcript_truncated=true and transcript_next_after.",  # noqa: E501
+                },
+                "transcript_block": {
+                    "type": "string",
+                    "enum": list(TRANSCRIPT_BLOCKS),
+                    "default": DEFAULT_TRANSCRIPT_BLOCK,
+                    "description": "Which transcript to return: 'transaction' (default; raw diarized transcript) or 'transaction_polish' (Plaud's AI-cleaned pass — filler words removed, punctuation repaired; same speakers and timestamps). Not every recording has a polished block; the response names what is available when the requested block is missing.",  # noqa: E501
                 },
             },
             "required": ["recording_id"],
         },
         # Pure read — same rationale as browse_recordings.
         annotations=types.ToolAnnotations(
+            title="Get recording",
             readOnlyHint=True,
             openWorldHint=True,
         ),
@@ -197,6 +211,7 @@ _TOOLS: list[types.Tool] = [
         # data is permanently lost.  idempotentHint omitted: repeated
         # renames with a different new_name have different outcomes.
         annotations=types.ToolAnnotations(
+            title="Rename, move, or trash recordings",
             destructiveHint=False,
             openWorldHint=True,
         ),
@@ -219,6 +234,7 @@ _TOOLS: list[types.Tool] = [
         # because deleting an already-deleted ID will raise an error from Plaud
         # (not a no-op), so clients must not retry blindly.
         annotations=types.ToolAnnotations(
+            title="Permanently delete recording",
             destructiveHint=True,
             idempotentHint=False,
             openWorldHint=True,
@@ -263,6 +279,7 @@ _TOOLS: list[types.Tool] = [
         # (rename_speaker is a no-op on rerun; correct errors on a second
         # identical rerun since the text is already replaced).
         annotations=types.ToolAnnotations(
+            title="Edit transcript",
             destructiveHint=False,
             openWorldHint=True,
         ),
@@ -300,6 +317,7 @@ _TOOLS: list[types.Tool] = [
         # idempotentHint omitted: uploading the same file twice creates two
         # separate recordings, so the operation is not idempotent.
         annotations=types.ToolAnnotations(
+            title="Upload audio file",
             destructiveHint=False,
             openWorldHint=True,
         ),
@@ -313,6 +331,7 @@ _TOOLS: list[types.Tool] = [
         },
         # Pure read — same rationale as browse_recordings / get_recording.
         annotations=types.ToolAnnotations(
+            title="List folders",
             readOnlyHint=True,
             openWorldHint=True,
         ),
@@ -354,6 +373,7 @@ _TOOLS: list[types.Tool] = [
         # idempotentHint=True: re-triggering on an already-processed recording
         # is a no-op on the Plaud side (the existing transcript is kept).
         annotations=types.ToolAnnotations(
+            title="Transcribe and summarize",
             destructiveHint=False,
             idempotentHint=True,
             openWorldHint=True,
@@ -382,6 +402,7 @@ _TOOLS: list[types.Tool] = [
         # idempotentHint omitted: merging the same IDs twice creates two
         # separate merged recordings (not idempotent).
         annotations=types.ToolAnnotations(
+            title="Merge recordings",
             destructiveHint=False,
             openWorldHint=True,
         ),
@@ -421,6 +442,7 @@ _TOOLS: list[types.Tool] = [
         # re-supplied.  idempotentHint omitted: a second 'correct' with the same
         # find returns "no occurrences" (an error), so it is not a no-op.
         annotations=types.ToolAnnotations(
+            title="Edit summary",
             destructiveHint=False,
             openWorldHint=True,
         ),
@@ -463,6 +485,7 @@ _TOOLS: list[types.Tool] = [
         # in the handler.  destructiveHint=True flags the delete path to clients;
         # idempotentHint=False because deleting a missing folder errors, not no-ops.
         annotations=types.ToolAnnotations(
+            title="Create, edit, or delete folder",
             destructiveHint=True,
             idempotentHint=False,
             openWorldHint=True,

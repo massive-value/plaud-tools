@@ -154,6 +154,22 @@ class PlaudApiError(PlaudError):
             retry_after=retry_after,
         )
 
+    def is_soft_deadline_timeout(self) -> bool:
+        """True if this is one of client.py's soft-deadline timeouts (#151).
+
+        Those are raised with no ``http_status`` and a message ending
+        "timed out after Ns" — see ``wait_for_transcription``,
+        ``wait_for_summary``, ``merge_recordings``, and ``upload_recording``.
+        Any other error (auth failure, 404, non-retryable API error) is not a
+        timeout.
+
+        Lives here rather than in a single facade because both surfaces need
+        it: the MCP maps it to a ``status="still_processing"`` response, and
+        the CLI maps it to exit code 4 so a wrapper script can tell "the job
+        is still running server-side, poll later" from a hard failure.
+        """
+        return self.http_status is None and "timed out" in str(self)
+
     def classify(self) -> tuple[str, bool]:
         """Return ``(error_code, retryable)`` for this error.
 

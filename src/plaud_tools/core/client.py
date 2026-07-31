@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 from .errors import PlaudApiError, PlaudSessionExpiredError
 from .models import BASE_URLS, BROWSER_USER_AGENT, FileTag, Recording, RecordingDetail, TaskStatus
+from .query import format_transcript
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
 
@@ -62,6 +63,31 @@ _BACKOFF_BASE = 1.0  # seconds — see formula above
 _DEFAULT_FOLDER_ICON = "e627"
 _DEFAULT_FOLDER_COLOR = "#4c8eff"
 
+# Transcript blocks Plaud publishes in a recording's ``content_list``, each a
+# separate `data_type` with its own `data_link`:
+#
+#   transaction         raw diarized transcript — speaker + timestamps.  The
+#                       only editable block: rename_speaker / correct_transcript
+#                       PATCH `trans_result` back, so they must read what they
+#                       write.  Always the default.
+#   transaction_polish  Plaud's AI-cleaned pass over the same utterances (filler
+#                       words dropped, punctuation repaired), same per-utterance
+#                       shape, speaker + timestamps preserved.  Read-only here —
+#                       editing it is not a flow the web app exposes.
+#
+# Plaud also publishes an `outline` block, deliberately NOT listed: it is not an
+# utterance list, so format_transcript would render it as nonsense.  Supporting
+# it means a second parse+format path.
+# ponytail: add `outline` when something actually asks for a section outline —
+# the shape work is real and nothing needs it today.
+TRANSCRIPT_BLOCKS = ("transaction", "transaction_polish")
+DEFAULT_TRANSCRIPT_BLOCK = "transaction"
+
+# How long `/file/temp-url/{id}` presigned audio URLs stay valid, from the
+# `Expires` parameter observed across captures.  Notably shorter than the 24h
+# the official Plaud developer API hands out, which is why nothing caches these.
+AUDIO_URL_TTL_S = 3600
+
 
 @dataclass(slots=True)
 class PlaudRecordingQuery:
@@ -106,12 +132,19 @@ class PlaudClient:
         recording_id: str,
         include_transcript: bool = False,
         include_summary: bool = False,
+        transcript_block: str = DEFAULT_TRANSCRIPT_BLOCK,
     ) -> RecordingDetail:
+        if transcript_block not in TRANSCRIPT_BLOCKS:
+            raise ValueError(
+                f"transcript_block must be one of {', '.join(TRANSCRIPT_BLOCKS)}; got {transcript_block!r}"
+            )
         data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
         raw = data.get("data", data)
         detail = self._normalize_recording_detail(raw, recording_id)
         if include_transcript:
-            segments = self._fetch_transcript_segments(raw)
+            detail.transcript_blocks_available = self._available_transcript_blocks(raw)
+            segments = self._fetch_transcript_segments(raw, transcript_block)
+            detail.transcript_segments = segments
             detail.speakers = list(
                 dict.fromkeys(
                     s.get("speaker") or s.get("original_speaker") or ""
@@ -119,13 +152,55 @@ class PlaudClient:
                     if s.get("speaker") or s.get("original_speaker")
                 )
             )
-            detail.transcript = self._format_transcript_from_segments(segments)
+            detail.transcript = format_transcript(segments)
         if include_summary and detail.is_summary and not detail.ai_content:
             detail.ai_content = self._fetch_summary_from_data_link(raw)
         return detail
 
-    def fetch_transcript(self, recording_id: str) -> str:
-        return self.get_recording(recording_id, include_transcript=True).transcript
+    def get_audio_url(self, recording_id: str) -> str | None:
+        """Return a temporary download URL for a recording's audio, or None.
+
+        ``GET /file/temp-url/{id}`` answers ``{"status": 0, "temp_url": ...,
+        "temp_url_opus": ...}``.  The URL is a presigned S3 link to
+        ``audiofiles/{id}.mp3`` valid for ``AUDIO_URL_TTL_S`` — an hour, so it
+        is not worth caching or persisting anywhere; fetch it when needed.
+
+        ``temp_url_opus`` was null for every recording observed (device-recorded
+        and uploaded alike), so it is treated as a fallback rather than a
+        separate format choice.  Returns None when Plaud has no audio for the
+        recording (nothing synced from the device yet).
+        """
+        data = self._request_json("GET", f"/file/temp-url/{recording_id}", strict=True)
+        url = data.get("temp_url") or data.get("temp_url_opus")
+        return str(url) if url else None
+
+    def download_audio(self, recording_id: str, destination: Path) -> Path:
+        """Download a recording's audio to *destination*, returning the path.
+
+        Reads the whole response into memory before writing.  Plaud recordings
+        are mp3s of a meeting — single-digit MB in the captures — so streaming
+        to disk in chunks would add a code path for no practical gain.
+        ponytail: switch to chunked writes if multi-hour recordings turn out to
+        be hundreds of MB.
+        """
+        url = self.get_audio_url(recording_id)
+        if url is None:
+            raise ValueError(f"recording {recording_id} has no downloadable audio")
+        # No Plaud auth header: the signature lives in the URL, same as the
+        # transcript data_link fetches and the multipart upload PUTs.
+        response = self._transport.request(
+            method="GET",
+            url=url,
+            headers={"User-Agent": BROWSER_USER_AGENT},
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise PlaudApiError(
+                f"audio download failed (HTTP {response.status_code})",
+                http_status=response.status_code,
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(response.body)
+        return destination
 
     def get_user_info(self) -> dict[str, Any]:
         data = self._request_json("GET", "/user/me", strict=True)
@@ -1056,10 +1131,35 @@ class PlaudClient:
                     return val
         return None
 
-    def _fetch_transcript_segments(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
+    def _available_transcript_blocks(self, raw: dict[str, Any]) -> list[str]:
+        """Which blocks in ``TRANSCRIPT_BLOCKS`` are finished for this recording.
+
+        Returned in ``TRANSCRIPT_BLOCKS`` order (not Plaud's ``content_list``
+        order) so the value is stable across responses.
+        """
+        done = {
+            item.get("data_type")
+            for item in raw.get("content_list") or []
+            if item.get("task_status") == 1 and item.get("data_link")
+        }
+        return [block for block in TRANSCRIPT_BLOCKS if block in done]
+
+    def _fetch_transcript_segments(
+        self, raw: dict[str, Any], block: str = DEFAULT_TRANSCRIPT_BLOCK
+    ) -> list[dict[str, Any]]:
+        """Fetch and parse one transcript block's segments.
+
+        *block* defaults to ``"transaction"`` — the raw transcript, and the only
+        block the edit paths may touch (``rename_speaker`` /
+        ``correct_transcript`` PATCH ``trans_result`` back, so they must read
+        the same block they write). Read-only callers may request any block in
+        ``TRANSCRIPT_BLOCKS``. Returns ``[]`` when the block is absent or
+        unfinished; callers distinguish that from "no transcript at all" via
+        ``_available_transcript_blocks``.
+        """
         transcript_item = None
         for item in raw.get("content_list") or []:
-            if item.get("data_type") == "transaction" and item.get("task_status") == 1:
+            if item.get("data_type") == block and item.get("task_status") == 1:
                 transcript_item = item
                 break
         if not transcript_item or not transcript_item.get("data_link"):
@@ -1090,11 +1190,3 @@ class PlaudClient:
             segments = body.get("trans_result")
             return segments if isinstance(segments, list) else []
         return []
-
-    def _format_transcript_from_segments(self, segments: list[dict[str, Any]]) -> str:
-        parts: list[str] = []
-        for segment in segments:
-            speaker = segment.get("speaker") or segment.get("original_speaker") or ""
-            content = segment.get("content") or ""
-            parts.append(f"{speaker}: {content}" if speaker else content)
-        return "\n\n".join(parts)

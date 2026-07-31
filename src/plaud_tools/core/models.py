@@ -40,7 +40,18 @@ class RecordingDetail:
     is_summary: bool = False
     scene: int | None = None
     transcript: str = ""
+    # The individual utterances behind ``transcript``, each a dict with
+    # speaker/content/timestamps as Plaud returns them. Kept alongside the
+    # formatted string so callers can paginate on utterance boundaries instead
+    # of slicing mid-word through the joined text.
+    transcript_segments: list[dict[str, Any]] = field(default_factory=list)
     speakers: list[str] = field(default_factory=list)
+    # Which transcript blocks Plaud has finished generating for this recording,
+    # in TRANSCRIPT_BLOCKS order. Populated only when a transcript was
+    # requested. Lets a caller that asked for an unavailable block (e.g.
+    # "transaction_polish" on a recording Plaud never polished) report what it
+    # *could* have asked for instead of an unexplained empty transcript.
+    transcript_blocks_available: list[str] = field(default_factory=list)
     ai_content: str | None = None
     extra_data: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
