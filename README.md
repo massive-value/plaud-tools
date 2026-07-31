@@ -85,6 +85,41 @@ PlaudTools gives your AI assistant a set of tools for working with your Plaud ac
 | Transcribe and summarize | *"Transcribe and summarize yesterday's recording."* |
 | List and manage folders | *"Create a 'Client Calls' folder"* / *"What folders do I have in Plaud?"* |
 | Merge recordings | *"Merge these three call segments into one recording."* |
+| Download the audio | *"Save the audio from yesterday's client call."* |
+
+## How this compares to Plaud's official MCP & CLI
+
+Plaud now ships its own MCP server and CLI (`@plaud-ai/mcp`, `@plaud-ai/cli`). They're solid, and if all you need is to *read* your recordings, they're the safer choice — official, supported, and OAuth-based. Install them with `npx -y @plaud-ai/mcp@latest install`.
+
+**They are read-only.** The official developer API behind them exposes three endpoints — list recordings, get one recording, get the current user. There are no write endpoints, so the official tools cannot change anything in your Plaud account. That's the difference between the two projects, and it isn't a gap that closes with their next release.
+
+PlaudTools drives Plaud's web API instead, which is how it can write. 7 of our 11 tools have no official equivalent:
+
+| | PlaudTools | Official |
+|---|---|---|
+| Browse, read transcripts, read summaries | ✅ | ✅ |
+| Rename recordings | ✅ | ❌ |
+| Trash / restore / permanently delete | ✅ | ❌ |
+| Folders — list, create, edit, delete, move into | ✅ | ❌ |
+| Name speakers in a transcript | ✅ | ❌ |
+| Fix transcript text (find-and-replace) | ✅ | ❌ |
+| Edit AI summaries | ✅ | ❌ |
+| Upload local audio (auto-transcoded) | ✅ | ❌ |
+| Download original audio | ✅ | ✅ |
+| Trigger transcription / summarization | ✅ | ❌ |
+| Merge recordings | ✅ | ❌ |
+| Browse trash | ✅ | ❌ |
+| Batch operations | ✅ | ❌ |
+| Search your whole library | ✅ | ⚠️ newest 500 recordings only |
+| Runs entirely on your machine | ✅ | ⚠️ HTTP mode routes recordings through Plaud's US server |
+| Usage telemetry | none | sent on every tool call |
+| Windows tray app, one-click install, auto-update | ✅ | ❌ npm only |
+
+The two can coexist — nothing stops you connecting both and letting your assistant use whichever fits the request.
+
+**The tradeoff:** because PlaudTools uses the private web API rather than the official one, it can break when Plaud changes that API, and it sits in a grey area of their Terms of Service (see the note at the bottom). The official tools don't have either problem. Pick accordingly.
+
+A detailed feature-by-feature audit lives in [docs/plans/2026-07-31-official-plaud-mcp-cli-competitive-audit.md](docs/plans/2026-07-31-official-plaud-mcp-cli-competitive-audit.md).
 
 ## Other ways to install
 

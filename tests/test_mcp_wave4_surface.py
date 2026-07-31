@@ -221,48 +221,234 @@ class TestProcessRecordingBoundedWait:
 # ---------------------------------------------------------------------------
 
 
-class TestGetRecordingTranscriptTruncation:
-    def _client_with_transcript(self, transcript: str) -> MagicMock:
+class TestGetRecordingTranscriptPagination:
+    """Transcripts page on utterance boundaries, never mid-word.
+
+    Replaced the old character-offset slicing in the v0.8.0 breaking batch: a
+    character window tore utterances in half and made the caller do offset
+    arithmetic to continue.
+    """
+
+    def _client_with_utterances(self, count: int) -> MagicMock:
         mock_client = MagicMock()
         mock_client.get_recording.return_value = RecordingDetail(
-            id="r1", filename="Meeting", is_trans=True, transcript=transcript
+            id="r1",
+            filename="Meeting",
+            is_trans=True,
+            transcript_segments=[{"speaker": f"S{i}", "content": f"line {i}"} for i in range(count)],
+            transcript_blocks_available=["transaction"],
         )
         return mock_client
 
-    def test_offset_and_max_chars_slice_and_flag_truncated(self):
-        handlers = build_handlers(lambda: self._client_with_transcript("0123456789"))
-        result = handlers["get_recording"](
-            "r1", include=["transcript"], transcript_offset=2, transcript_max_chars=3
-        )
-        payload = json.loads(result["content"][0]["text"])
-        assert payload["transcript"] == "234"
-        assert payload["transcript_truncated"] is True
-
-    def test_no_slicing_params_returns_full_untruncated_transcript(self):
-        handlers = build_handlers(lambda: self._client_with_transcript("0123456789"))
+    def test_short_transcript_returns_whole_thing_untruncated(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(3))
         result = handlers["get_recording"]("r1", include=["transcript"])
         payload = json.loads(result["content"][0]["text"])
-        assert payload["transcript"] == "0123456789"
+        assert payload["transcript"] == "S0: line 0\n\nS1: line 1\n\nS2: line 2"
         assert payload["transcript_truncated"] is False
+        assert payload["transcript_utterance_count"] == 3
+        assert "transcript_next_after" not in payload
 
-    def test_max_chars_exactly_covering_full_text_is_not_truncated(self):
-        handlers = build_handlers(lambda: self._client_with_transcript("0123456789"))
-        result = handlers["get_recording"]("r1", include=["transcript"], transcript_max_chars=10)
+    def test_limit_pages_on_utterance_boundaries(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(5))
+        result = handlers["get_recording"]("r1", include=["transcript"], transcript_limit=2)
         payload = json.loads(result["content"][0]["text"])
-        assert payload["transcript"] == "0123456789"
-        assert payload["transcript_truncated"] is False
+        # Whole utterances only — no partial "line 1" fragment.
+        assert payload["transcript"] == "S0: line 0\n\nS1: line 1"
+        assert payload["transcript_truncated"] is True
+        assert payload["transcript_next_after"] == 2
 
-    def test_negative_offset_returns_validation_error(self):
+    def test_next_after_resumes_exactly_where_the_page_ended(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(5))
+        result = handlers["get_recording"](
+            "r1", include=["transcript"], transcript_after=2, transcript_limit=2
+        )
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == "S2: line 2\n\nS3: line 3"
+        assert payload["transcript_next_after"] == 4
+
+    def test_final_page_reports_no_next_cursor(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(5))
+        result = handlers["get_recording"](
+            "r1", include=["transcript"], transcript_after=4, transcript_limit=2
+        )
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == "S4: line 4"
+        assert "transcript_next_after" not in payload
+        # Still flagged truncated: this page is not the start of the transcript.
+        assert payload["transcript_truncated"] is True
+
+    def test_after_past_the_end_is_empty_not_an_error(self):
+        """A stale cursor should mean "nothing more", not a failure."""
+        handlers = build_handlers(lambda: self._client_with_utterances(3))
+        result = handlers["get_recording"]("r1", include=["transcript"], transcript_after=99)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == ""
+        assert "transcript_next_after" not in payload
+
+    def test_default_limit_caps_a_long_transcript(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(500))
+        result = handlers["get_recording"]("r1", include=["transcript"])
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript_next_after"] == 200
+        assert payload["transcript_truncated"] is True
+        assert payload["transcript_utterance_count"] == 500
+
+    def test_negative_after_returns_validation_error(self):
         handlers = build_handlers(lambda: MagicMock())
-        result = handlers["get_recording"]("r1", transcript_offset=-1)
+        result = handlers["get_recording"]("r1", transcript_after=-1)
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
 
-    def test_zero_max_chars_returns_validation_error(self):
+    def test_zero_limit_returns_validation_error(self):
         handlers = build_handlers(lambda: MagicMock())
-        result = handlers["get_recording"]("r1", transcript_max_chars=0)
+        result = handlers["get_recording"]("r1", transcript_limit=0)
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
+
+    def test_limit_over_the_cap_returns_validation_error(self):
+        handlers = build_handlers(lambda: MagicMock())
+        result = handlers["get_recording"]("r1", transcript_limit=5000)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+
+
+# ---------------------------------------------------------------------------
+# get_recording — include=["audio_url"]
+# ---------------------------------------------------------------------------
+
+
+class TestGetRecordingAudioUrl:
+    def test_audio_url_included_with_expiry(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting")
+        mock_client.get_audio_url.return_value = "https://s3.fake/audiofiles/r1.mp3?sig=x"
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"]("r1", include=["audio_url"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["audio_url"] == "https://s3.fake/audiofiles/r1.mp3?sig=x"
+        # The URL expires in an hour; the caller needs to know not to store it.
+        assert payload["audio_url_expires_in_s"] == 3600
+
+    def test_missing_audio_explains_itself(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting")
+        mock_client.get_audio_url.return_value = None
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"]("r1", include=["audio_url"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["audio_url"] is None
+        assert "syncing" in payload["note"]
+
+    def test_audio_url_not_fetched_unless_requested(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting")
+        handlers = build_handlers(lambda: mock_client)
+
+        handlers["get_recording"]("r1")
+
+        mock_client.get_audio_url.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# get_recording — transcript_block selection + degraded-result notes
+# ---------------------------------------------------------------------------
+
+
+class TestGetRecordingTranscriptBlock:
+    def test_defaults_to_raw_transaction_block(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1",
+            filename="Meeting",
+            is_trans=True,
+            transcript_segments=[{"speaker": "S1", "content": "raw text"}],
+            transcript_blocks_available=["transaction"],
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"]("r1", include=["transcript"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript_block"] == "transaction"
+        assert "note" not in payload
+        assert mock_client.get_recording.call_args.kwargs["transcript_block"] == "transaction"
+
+    def test_polish_block_is_forwarded_to_the_client(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1",
+            filename="Meeting",
+            is_trans=True,
+            transcript_segments=[{"speaker": "S1", "content": "cleaned text"}],
+            transcript_blocks_available=["transaction", "transaction_polish"],
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"](
+            "r1", include=["transcript"], transcript_block="transaction_polish"
+        )
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == "S1: cleaned text"
+        assert payload["transcript_block"] == "transaction_polish"
+        assert mock_client.get_recording.call_args.kwargs["transcript_block"] == "transaction_polish"
+
+    def test_unknown_block_returns_validation_error(self):
+        handlers = build_handlers(lambda: MagicMock())
+        result = handlers["get_recording"]("r1", transcript_block="outline")
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["error_code"] == "validation"
+
+    def test_missing_requested_block_names_the_available_ones(self):
+        """An empty transcript must say *why* and what to ask for instead."""
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1",
+            filename="Meeting",
+            is_trans=True,
+            transcript="",
+            transcript_blocks_available=["transaction"],
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"](
+            "r1", include=["transcript"], transcript_block="transaction_polish"
+        )
+
+        payload = json.loads(result["content"][0]["text"])
+        assert "transaction_polish" in payload["note"]
+        assert "Available blocks: transaction" in payload["note"]
+
+    def test_untranscribed_recording_points_at_process_recording(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1", filename="Meeting", transcript="", transcript_blocks_available=[]
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"]("r1", include=["transcript"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert "process_recording" in payload["note"]
+
+    def test_unfetchable_summary_reports_null_plus_retry_hint(self):
+        """is_summary=True but no content is transient — say so instead of a bare placeholder."""
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1", filename="Meeting", is_summary=True, ai_content=None
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"]("r1", include=["summary"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["summary"] is None
+        assert "retry" in payload["note"].lower()
 
 
 # ---------------------------------------------------------------------------

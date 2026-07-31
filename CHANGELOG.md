@@ -7,8 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-31
+
+This is a **breaking** release for one MCP parameter pair — see *Changed*.
+Everything else is additive. The work comes from an audit of Plaud's own
+official MCP and CLI (shipped 2026-05-12); the full comparison, including what
+we deliberately did *not* copy, is in
+[docs/plans/2026-07-31-official-plaud-mcp-cli-competitive-audit.md](docs/plans/2026-07-31-official-plaud-mcp-cli-competitive-audit.md).
+
+### Added
+
+- **Audio download.** `GET /file/temp-url/{id}` returns a presigned mp3 URL,
+  reached via `get_recording(include=["audio_url"])` on the MCP and
+  `plaud-tools audio <id>` on the CLI (`-o PATH` saves the file instead of
+  printing the URL). The URL is valid for **one hour** — the response reports
+  `audio_url_expires_in_s` so callers know not to cache it. Nothing in
+  PlaudTools could retrieve original audio before this.
+- **A `plaud-tools` agent skill** at `skills/plaud-tools/SKILL.md`: a briefing
+  covering transcript pagination, `dry_run` before bulk text edits, the confirm
+  gates, and the structured error codes. Optional and manually installed for
+  now; see [docs/AI-CLIENTS.md](docs/AI-CLIENTS.md#optional-install-the-agent-skill).
+
+- **AI-polished transcripts.** Plaud generates a cleaned-up pass over the raw
+  transcript (filler words removed, punctuation repaired, speakers and
+  timestamps preserved) that PlaudTools previously ignored entirely — the
+  transcript fetch hardcoded the raw `transaction` block. Now selectable via
+  `get_recording(transcript_block="transaction_polish")` on the MCP and
+  `plaud-tools transcript <id> --polish` on the CLI. The raw block stays the
+  default, and the transcript-editing paths (`rename_speaker`,
+  `correct_transcript`) always read and write the raw block regardless.
+- **`annotations.title` on all 11 MCP tools.** A human-readable label
+  (`"Browse recordings"`, `"Merge recordings"`, …) that clients use in tool
+  UIs; the other annotation hints were already set.
+- **Actionable notes on degraded `get_recording` responses.** An empty
+  transcript now explains itself: never transcribed (pointing at
+  `process_recording`), or the requested block does not exist for that
+  recording (naming the blocks that do). A summary Plaud claims exists but
+  cannot be fetched now returns `null` plus a retry hint instead of a
+  parenthetical placeholder.
+
 ### Changed
 
+- **BREAKING (MCP): transcripts now paginate by utterance, not by character.**
+  `get_recording`'s `transcript_offset` and `transcript_max_chars` are
+  **removed** and replaced by `transcript_after` (utterance index) and
+  `transcript_limit` (utterance count, default 200, max 1000). A character
+  window cut mid-word — a paged read handed the model fragments like
+  `…and then Sar` — and forced it to do offset arithmetic to continue. The
+  response now carries `transcript_next_after` (feed it straight back as
+  `transcript_after`), `transcript_utterance_count`, and the existing
+  `transcript_truncated` flag.
+
+  Note the new default: a transcript longer than 200 utterances is now truncated
+  where it previously returned whole. `transcript_truncated: true` and
+  `transcript_next_after` both signal there is more to fetch. No CLI change —
+  `plaud-tools transcript` still prints the full transcript.
+- **CLI exit codes now distinguish failure kinds.** Previously every failure
+  returned `1`, so a script had to match stderr text to decide whether to
+  retry. Now: `2` authentication failed, `3` transient network/server error,
+  `4` timed out while a job is still running server-side, `1` everything else.
+  Full table in [docs/CLI.md](docs/CLI.md#exit-codes). Scripts that only check
+  `!= 0` are unaffected.
+- **Removed `PlaudClient.fetch_transcript()`.** A one-line wrapper over
+  `get_recording(include_transcript=True)` with no remaining callers once the
+  CLI needed the block parameter. Internal API — not part of the CLI or MCP
+  surface.
+- **Moved transcript formatting to `core/query.py`** as `format_transcript()`.
+  It was a private `PlaudClient` method, but it is a pure function of the
+  segment list and both surfaces now need it (the MCP formats a single page).
+  Internal API.
 - **Internal: reorganized `src/plaud_tools/` by surface instead of a flat file list.**
   New packages `core/` (shared client/session/auth/transport/etc., used by all
   three surfaces), `cli/`, `mcp_pt/` (named to avoid shadowing the `mcp` SDK
@@ -1510,7 +1577,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/massive-value/plaud-tools/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/massive-value/plaud-tools/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/massive-value/plaud-tools/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/massive-value/plaud-tools/compare/v0.5.0...v0.6.0

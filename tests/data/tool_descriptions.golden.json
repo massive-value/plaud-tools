@@ -42,16 +42,17 @@
     "name": "browse_recordings"
   },
   {
-    "description": "Fetch full detail for one recording.",
+    "description": "Fetch full detail for one recording. Transcripts are returned a page of utterances at a time \u2014 check transcript_truncated and follow transcript_next_after to read the rest.",
     "inputSchema": {
       "properties": {
         "include": {
-          "description": "Large fields to include: transcript, speakers, summary",
+          "description": "Large or extra fields to include: transcript, speakers, summary, audio_url",
           "items": {
             "enum": [
               "transcript",
               "speakers",
-              "summary"
+              "summary",
+              "audio_url"
             ],
             "type": "string"
           },
@@ -60,15 +61,26 @@
         "recording_id": {
           "type": "string"
         },
-        "transcript_max_chars": {
-          "description": "Max transcript characters to return; sets transcript_truncated when cut off",
-          "minimum": 1,
+        "transcript_after": {
+          "default": 0,
+          "description": "Utterance index to start the transcript from; pass the transcript_next_after of a previous response to continue",
+          "minimum": 0,
           "type": "integer"
         },
-        "transcript_offset": {
-          "default": 0,
-          "description": "Character offset to start the transcript from (with include=[transcript])",
-          "minimum": 0,
+        "transcript_block": {
+          "default": "transaction",
+          "description": "Which transcript to return: 'transaction' (default; raw diarized transcript) or 'transaction_polish' (Plaud's AI-cleaned pass \u2014 filler words removed, punctuation repaired; same speakers and timestamps). Not every recording has a polished block; the response names what is available when the requested block is missing.",
+          "enum": [
+            "transaction",
+            "transaction_polish"
+          ],
+          "type": "string"
+        },
+        "transcript_limit": {
+          "default": 200,
+          "description": "Max utterances to return (default 200). When more remain, the response sets transcript_truncated=true and transcript_next_after.",
+          "maximum": 1000,
+          "minimum": 1,
           "type": "integer"
         }
       },

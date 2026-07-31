@@ -10,7 +10,12 @@ from typing import Any
 
 from .. import __version__
 from ..core.auth import PlaudAuth
-from ..core.client import PlaudClient, PlaudRecordingQuery
+from ..core.client import (
+    AUDIO_URL_TTL_S,
+    DEFAULT_TRANSCRIPT_BLOCK,
+    PlaudClient,
+    PlaudRecordingQuery,
+)
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError
 from ..core.query import (
     BROWSE_PAGE_SIZE,
@@ -56,9 +61,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     transcript_cmd = sub.add_parser("transcript")
     transcript_cmd.add_argument("recording_id")
+    transcript_cmd.add_argument(
+        "--polish",
+        action="store_true",
+        help=(
+            "Return Plaud's AI-cleaned transcript (filler words removed, punctuation "
+            "repaired) instead of the raw one. Errors if the recording has no polished block."
+        ),
+    )
 
     summary_cmd = sub.add_parser("summary")
     summary_cmd.add_argument("recording_id")
+
+    audio_cmd = sub.add_parser(
+        "audio", help="Get a temporary download URL for a recording's audio, or save the file."
+    )
+    audio_cmd.add_argument("recording_id")
+    audio_cmd.add_argument(
+        "-o",
+        "--output",
+        help=(
+            "Download the audio to this path instead of printing the URL. "
+            "Pass a directory to use '<recording-id>.mp3' inside it."
+        ),
+    )
 
     rename_cmd = sub.add_parser("rename")
     rename_cmd.add_argument("recording_id")
@@ -735,7 +761,48 @@ def _handle_dump(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_transcript(args: argparse.Namespace, client: PlaudClient) -> str:
-    return client.fetch_transcript(args.recording_id)
+    block = "transaction_polish" if args.polish else DEFAULT_TRANSCRIPT_BLOCK
+    detail = client.get_recording(args.recording_id, include_transcript=True, transcript_block=block)
+    if not detail.transcript and args.polish:
+        # Don't print an empty string and leave the user guessing whether the
+        # recording has no transcript or merely no *polished* one.
+        available = ", ".join(detail.transcript_blocks_available) or "none"
+        raise ValueError(
+            f"No AI-polished transcript for {args.recording_id} "
+            f"(available blocks: {available}). Retry without --polish."
+        )
+    return detail.transcript
+
+
+def _handle_audio(args: argparse.Namespace, client: PlaudClient) -> str:
+    if args.output:
+        destination = Path(args.output)
+        if destination.is_dir():
+            destination = destination / f"{args.recording_id}.mp3"
+        saved = client.download_audio(args.recording_id, destination)
+        return json.dumps(
+            {
+                "ok": True,
+                "recording_id": args.recording_id,
+                "path": str(saved),
+                "bytes": saved.stat().st_size,
+            },
+            indent=2,
+        )
+    url = client.get_audio_url(args.recording_id)
+    if url is None:
+        raise ValueError(
+            f"recording {args.recording_id} has no downloadable audio "
+            "(it may not have finished syncing from the device)"
+        )
+    return json.dumps(
+        {
+            "recording_id": args.recording_id,
+            "audio_url": url,
+            "expires_in_s": AUDIO_URL_TTL_S,
+        },
+        indent=2,
+    )
 
 
 def _handle_ping(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
@@ -775,6 +842,7 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "status": _handle_status,
     "dump": _handle_dump,
     "transcript": _handle_transcript,
+    "audio": _handle_audio,
     "ping": _handle_ping,
 }
 
@@ -843,6 +911,38 @@ def _with_session_expired_remedy(message: str) -> str:
     return f"{message} {_SESSION_EXPIRED_REMEDY}"
 
 
+# ---------------------------------------------------------------------------
+# Exit codes.  Every failure used to collapse to 1, so a script could not tell
+# "go sign in again" from "the network flaked" without matching on stderr text.
+# PlaudApiError.classify() already computes the distinction — this just stops
+# discarding it at the process boundary.
+#
+#   0  success
+#   1  invalid arguments, not-found, or an unclassified API/local error
+#   2  authentication failed — session expired or 401; run 'plaud-tools refresh'
+#   3  transient network or server error (429/5xx, connection failure) — retry
+#   4  timed out waiting on a job that is still running server-side — poll again
+#
+# argparse's own failures (bad flags, missing args) exit 2 inside parse_args,
+# which is argparse's convention and NOT our "auth failed" 2.  Left alone
+# deliberately: overriding it means subclassing ArgumentParser to reroute
+# every parser error, which is a lot of machinery to renumber one exit code
+# that only ever appears alongside a usage message on stderr.
+# ponytail: revisit only if a script is observed keying on exit 2 from a
+# malformed invocation — the usage text on stderr already disambiguates.
+# ---------------------------------------------------------------------------
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_AUTH = 2
+EXIT_NETWORK = 3
+EXIT_TIMEOUT = 4
+
+_EXIT_CODE_BY_ERROR_CODE = {
+    "session_expired": EXIT_AUTH,
+    "transient": EXIT_NETWORK,
+}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _reconfigure_stdout_utf8()
     args = list(argv) if argv is not None else sys.argv[1:]
@@ -850,16 +950,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = run_cli(args)
     except PlaudSessionExpiredError as exc:
         print(_with_session_expired_remedy(str(exc)), file=sys.stderr)
-        return 1
+        return EXIT_AUTH
     except PlaudApiError as exc:
         error_code, _retryable = exc.classify()
         message = str(exc)
         if error_code == "session_expired":
             message = _with_session_expired_remedy(message)
         print(message, file=sys.stderr)
-        return 1
+        # A soft-deadline timeout (#151) classifies as a plain "api_error"
+        # because it carries no HTTP status, but it is materially different
+        # from a hard failure: the transcription/merge/upload is still running
+        # on Plaud's side, so the caller should poll rather than treat the
+        # command as failed.  Check it before the classify() mapping.
+        if exc.is_soft_deadline_timeout():
+            return EXIT_TIMEOUT
+        return _EXIT_CODE_BY_ERROR_CODE.get(error_code, EXIT_ERROR)
     except (ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
-        return 1
+        return EXIT_ERROR
     print(output)
-    return 0
+    return EXIT_OK

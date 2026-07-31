@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaud-tools"
-version = "0.7.1"
+version = "0.8.0"
 description = "Python rewrite for Plaud CLI and MCP workflows."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -85,6 +85,14 @@ target-version = "py311"
 # while comfortably fitting the handful of intentionally long lines (string literals,
 # URL/description strings in argparse/MCP schemas) without reformatting churn.
 line-length = 110
+
+[tool.ruff.format]
+# Don't format Python code blocks inside Markdown. ruff 0.16 started doing this
+# by default, and our docs are full of *illustrative* fragments rather than
+# valid standalone modules — ADR 003 lists PyInstaller hiddenimports as bare
+# `'psutil',` lines, which ruff "fixed" into `("psutil",)` tuples, silently
+# changing what the doc says. Prose is not code; keep the formatter out of it.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 # E/W  — pycodestyle errors/warnings

@@ -11,6 +11,21 @@ from datetime import datetime
 from typing import Any
 
 
+def format_transcript(segments: list[dict[str, Any]]) -> str:
+    """Render utterance dicts as "Speaker: content" blocks.
+
+    A pure function of the segments, so it lives here rather than on
+    ``PlaudClient``: the client formats a whole transcript while the MCP facade
+    formats a single *page* of utterances, and neither needs a session to do it.
+    """
+    parts: list[str] = []
+    for segment in segments:
+        speaker = segment.get("speaker") or segment.get("original_speaker") or ""
+        content = segment.get("content") or ""
+        parts.append(f"{speaker}: {content}" if speaker else content)
+    return "\n\n".join(parts)
+
+
 def parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> int:
     """Parse an ISO 8601 date/datetime string (or 'Z'-suffixed variant) to ms epoch.
 

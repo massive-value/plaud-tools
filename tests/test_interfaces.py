@@ -91,23 +91,30 @@ class StubClient:
             raw={},
         )
 
-    def get_recording(self, recording_id, include_transcript=False, include_summary=False):
+    def get_recording(
+        self,
+        recording_id,
+        include_transcript=False,
+        include_summary=False,
+        transcript_block="transaction",
+    ):
         return RecordingDetail(
             id=recording_id,
             filename="meeting",
             is_trans=True,
             is_summary=True,
             transcript="hello world" if include_transcript else "",
+            # The MCP facade pages `transcript_segments`, so a stub that only
+            # sets the joined string would return an empty transcript.
+            transcript_segments=[{"content": "hello world"}] if include_transcript else [],
             speakers=["Speaker 1", "Alex"] if include_transcript else [],
+            transcript_blocks_available=["transaction"] if include_transcript else [],
             ai_content="# Summary",
             extra_data={
                 "aiContentHeader": {"headline": "Q4 review"},
                 "tranConfig": {"language": "en"},
             },
         )
-
-    def fetch_transcript(self, recording_id):
-        return "full transcript text"
 
     def rename_recording(self, recording_id, filename):
         # Parameter named to match PlaudClient.rename_recording's real
@@ -275,6 +282,99 @@ def test_cli_summary_returns_ai_content():
     payload = json.loads(output)
     assert payload["recording_id"] == "rec1"
     assert payload["summary"] == "# Summary"
+
+
+def test_cli_audio_prints_url_and_expiry():
+    class AudioStub(StubClient):
+        def get_audio_url(self, recording_id):
+            return "https://s3.fake/audiofiles/rec1.mp3?sig=x"
+
+    payload = json.loads(run_cli(["audio", "rec1"], AudioStub()))
+    assert payload["audio_url"] == "https://s3.fake/audiofiles/rec1.mp3?sig=x"
+    assert payload["expires_in_s"] == 3600
+
+
+def test_cli_audio_output_downloads_the_file(tmp_path: Path):
+    class AudioStub(StubClient):
+        def download_audio(self, recording_id, destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"mp3-bytes")
+            return destination
+
+    target = tmp_path / "saved.mp3"
+    payload = json.loads(run_cli(["audio", "rec1", "-o", str(target)], AudioStub()))
+    assert payload["path"] == str(target)
+    assert payload["bytes"] == 9
+    assert target.read_bytes() == b"mp3-bytes"
+
+
+def test_cli_audio_output_directory_names_the_file_by_id(tmp_path: Path):
+    class AudioStub(StubClient):
+        def download_audio(self, recording_id, destination):
+            destination.write_bytes(b"x")
+            return destination
+
+    payload = json.loads(run_cli(["audio", "rec1", "-o", str(tmp_path)], AudioStub()))
+    assert payload["path"] == str(tmp_path / "rec1.mp3")
+
+
+def test_cli_audio_without_audio_errors():
+    class NoAudioStub(StubClient):
+        def get_audio_url(self, recording_id):
+            return None
+
+    with pytest.raises(ValueError, match="no downloadable audio"):
+        run_cli(["audio", "rec1"], NoAudioStub())
+
+
+def test_cli_transcript_defaults_to_the_raw_block():
+    calls = {}
+
+    class BlockStub(StubClient):
+        def get_recording(self, recording_id, include_transcript=False, **kwargs):
+            calls["block"] = kwargs.get("transcript_block")
+            return RecordingDetail(
+                id=recording_id,
+                filename="meeting",
+                transcript="raw words",
+                transcript_blocks_available=["transaction"],
+            )
+
+    assert run_cli(["transcript", "rec1"], BlockStub()) == "raw words"
+    assert calls["block"] == "transaction"
+
+
+def test_cli_transcript_polish_requests_the_polished_block():
+    calls = {}
+
+    class PolishStub(StubClient):
+        def get_recording(self, recording_id, include_transcript=False, **kwargs):
+            calls["block"] = kwargs.get("transcript_block")
+            return RecordingDetail(
+                id=recording_id,
+                filename="meeting",
+                transcript="Cleaned words.",
+                transcript_blocks_available=["transaction", "transaction_polish"],
+            )
+
+    assert run_cli(["transcript", "rec1", "--polish"], PolishStub()) == "Cleaned words."
+    assert calls["block"] == "transaction_polish"
+
+
+def test_cli_transcript_polish_errors_when_unavailable():
+    """Printing an empty string would look like "this recording has no transcript"."""
+
+    class NoPolishStub(StubClient):
+        def get_recording(self, recording_id, include_transcript=False, **kwargs):
+            return RecordingDetail(
+                id=recording_id,
+                filename="meeting",
+                transcript="",
+                transcript_blocks_available=["transaction"],
+            )
+
+    with pytest.raises(ValueError, match="No AI-polished transcript"):
+        run_cli(["transcript", "rec1", "--polish"], NoPolishStub())
 
 
 def test_cli_list_filters_query_and_unfiled():
@@ -671,7 +771,8 @@ def test_cli_main_returns_nonzero_on_missing_session(capsys, monkeypatch, tmp_pa
         ),
     )
     code = main(["list"])
-    assert code == 1
+    # 2, not 1: a missing session is an auth failure (see main()'s exit-code map).
+    assert code == 2
     captured = capsys.readouterr()
     assert "No Plaud session available." in captured.err
 
@@ -703,7 +804,7 @@ def test_cli_main_session_expired_error_names_remedy(capsys, monkeypatch):
             raise PlaudSessionExpiredError("Plaud session expired or expiring soon.")
 
     code = _run_main_with_client(monkeypatch, ExpiredClient(), ["list"])
-    assert code == 1
+    assert code == 2
     captured = capsys.readouterr()
     assert "Plaud session expired or expiring soon." in captured.err
     assert "plaud-tools refresh" in captured.err
@@ -718,7 +819,7 @@ def test_cli_main_401_api_error_names_remedy(capsys, monkeypatch):
             raise PlaudApiError("Plaud API error: HTTP 401: unauthorized", http_status=401)
 
     code = _run_main_with_client(monkeypatch, UnauthorizedClient(), ["list"])
-    assert code == 1
+    assert code == 2
     captured = capsys.readouterr()
     assert "plaud-tools refresh" in captured.err
 
@@ -734,6 +835,52 @@ def test_cli_main_non_session_api_error_has_no_remedy_text(capsys, monkeypatch):
     assert code == 1
     captured = capsys.readouterr()
     assert "plaud-tools refresh" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Exit-code taxonomy: 2 = auth, 3 = transient/network, 4 = soft-deadline
+# timeout, 1 = everything else.  Every failure used to return 1, so a wrapper
+# script had to match stderr text to decide whether to retry.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_main_transient_server_error_exits_network(capsys, monkeypatch):
+    from plaud_tools.core.errors import PlaudApiError
+
+    class FlakyClient:
+        def list_recordings(self, query=None):
+            raise PlaudApiError("Plaud API error: HTTP 503: unavailable", http_status=503)
+
+    code = _run_main_with_client(monkeypatch, FlakyClient(), ["list"])
+    assert code == 3
+
+
+def test_cli_main_network_failure_exits_network(capsys, monkeypatch):
+    from plaud_tools.core.errors import PlaudApiError
+
+    class OfflineClient:
+        def list_recordings(self, query=None):
+            raise PlaudApiError("connection refused", network_error=True)
+
+    code = _run_main_with_client(monkeypatch, OfflineClient(), ["list"])
+    assert code == 3
+
+
+def test_cli_main_soft_deadline_timeout_exits_timeout(capsys, monkeypatch):
+    """A job still running server-side must be distinguishable from a failure.
+
+    #151's soft-deadline timeouts carry no http_status, so classify() calls
+    them a plain "api_error" — without the explicit check in main() they would
+    exit 1 and a polling wrapper could not tell them from a hard error.
+    """
+    from plaud_tools.core.errors import PlaudApiError
+
+    class SlowClient:
+        def list_recordings(self, query=None):
+            raise PlaudApiError("transcription timed out after 90s")
+
+    code = _run_main_with_client(monkeypatch, SlowClient(), ["list"])
+    assert code == 4
 
 
 # --- MCP tests ---
@@ -1728,8 +1875,14 @@ def test_main_transcript_non_ascii_survives_cp1252_stdout(monkeypatch, tmp_path)
     import plaud_tools.cli.cli as cli_module
 
     class TranscriptClient(StubClient):
-        def fetch_transcript(self, recording_id):
-            return "café — 日本語 — résumé"
+        def get_recording(self, recording_id, include_transcript=False, **kwargs):
+            return RecordingDetail(
+                id=recording_id,
+                filename="meeting",
+                is_trans=True,
+                transcript="café — 日本語 — résumé",
+                transcript_blocks_available=["transaction"],
+            )
 
     monkeypatch.setattr(cli_module, "_build_runtime_client", lambda store: TranscriptClient())
     monkeypatch.setattr(

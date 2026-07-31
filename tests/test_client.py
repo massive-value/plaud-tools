@@ -1708,6 +1708,199 @@ class TestNonJsonBodyOnSuccess:
         assert exc_info.value.http_status == 200
 
 
+class TestTranscriptBlockSelection:
+    """get_recording must fetch the requested transcript block, not always the raw one."""
+
+    def _detail_response(self) -> HttpResponse:
+        """A recording with both a raw and an AI-polished transcript block."""
+        return HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "status": 0,
+                    "data": {
+                        "file_id": "rec1",
+                        "file_name": "Test",
+                        "content_list": [
+                            {
+                                "data_type": "transaction",
+                                "task_status": 1,
+                                "data_link": "https://s3.fake/raw.json",
+                            },
+                            {
+                                "data_type": "transaction_polish",
+                                "task_status": 1,
+                                "data_link": "https://s3.fake/polish.json",
+                            },
+                        ],
+                    },
+                }
+            ).encode(),
+            {},
+        )
+
+    def _segments_response(self, content: str) -> HttpResponse:
+        return HttpResponse(200, json.dumps([{"speaker": "Speaker 1", "content": content}]).encode(), {})
+
+    def test_default_fetches_the_raw_transaction_block(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([self._detail_response(), self._segments_response("um, raw")])
+        client = PlaudClient(manager, transport=transport)
+
+        detail = client.get_recording("rec1", include_transcript=True)
+
+        assert "um, raw" in detail.transcript
+        # Second request must be the raw block's data_link, not the polished one.
+        assert transport.calls[1]["url"] == "https://s3.fake/raw.json"
+        assert detail.transcript_blocks_available == ["transaction", "transaction_polish"]
+
+    def test_polish_block_fetches_the_polished_data_link(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([self._detail_response(), self._segments_response("Raw.")])
+        client = PlaudClient(manager, transport=transport)
+
+        client.get_recording("rec1", include_transcript=True, transcript_block="transaction_polish")
+
+        assert transport.calls[1]["url"] == "https://s3.fake/polish.json"
+
+    def test_missing_block_yields_empty_transcript_but_still_lists_available(self, tmp_path):
+        """Asking for a block Plaud never generated must not look like "no transcript"."""
+        manager, _ = make_manager(tmp_path)
+        raw_only = HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "status": 0,
+                    "data": {
+                        "file_id": "rec1",
+                        "content_list": [
+                            {
+                                "data_type": "transaction",
+                                "task_status": 1,
+                                "data_link": "https://s3.fake/raw.json",
+                            }
+                        ],
+                    },
+                }
+            ).encode(),
+            {},
+        )
+        transport = StubTransport([raw_only])
+        client = PlaudClient(manager, transport=transport)
+
+        detail = client.get_recording("rec1", include_transcript=True, transcript_block="transaction_polish")
+
+        assert detail.transcript == ""
+        assert detail.transcript_blocks_available == ["transaction"]
+
+    def test_unknown_block_is_rejected_before_any_request(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([])
+        client = PlaudClient(manager, transport=transport)
+
+        with pytest.raises(ValueError, match="transcript_block"):
+            client.get_recording("rec1", include_transcript=True, transcript_block="outline")
+
+        assert transport.calls == []
+
+    def test_edit_paths_always_read_the_raw_block(self, tmp_path):
+        """rename_speaker PATCHes trans_result back, so it must read what it writes.
+
+        Reading the polished block here would write polished text over the raw
+        transcript.
+        """
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport(
+            [
+                self._detail_response(),
+                self._segments_response("hello"),
+                HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
+            ]
+        )
+        client = PlaudClient(manager, transport=transport)
+
+        client.rename_speaker("rec1", "Speaker 1", "Kadin")
+
+        assert transport.calls[1]["url"] == "https://s3.fake/raw.json"
+
+
+class TestAudioDownload:
+    """`GET /file/temp-url/{id}` → presigned mp3, valid ~1h."""
+
+    def _temp_url_response(self, url: str | None = "https://s3.fake/audiofiles/rec1.mp3?sig=x"):
+        return HttpResponse(
+            200,
+            json.dumps({"status": 0, "temp_url": url, "temp_url_opus": None}).encode(),
+            {},
+        )
+
+    def test_get_audio_url_returns_the_presigned_url(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([self._temp_url_response()])
+        client = PlaudClient(manager, transport=transport)
+
+        assert client.get_audio_url("rec1") == "https://s3.fake/audiofiles/rec1.mp3?sig=x"
+        assert "/file/temp-url/rec1" in transport.calls[0]["url"]
+
+    def test_get_audio_url_returns_none_when_no_audio(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([self._temp_url_response(url=None)])
+        client = PlaudClient(manager, transport=transport)
+
+        assert client.get_audio_url("rec1") is None
+
+    def test_get_audio_url_falls_back_to_opus(self, tmp_path):
+        """temp_url was null in every capture, but the field exists — prefer it over failing."""
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport(
+            [
+                HttpResponse(
+                    200,
+                    json.dumps(
+                        {"status": 0, "temp_url": None, "temp_url_opus": "https://s3.fake/a.opus"}
+                    ).encode(),
+                    {},
+                )
+            ]
+        )
+        client = PlaudClient(manager, transport=transport)
+
+        assert client.get_audio_url("rec1") == "https://s3.fake/a.opus"
+
+    def test_download_audio_writes_bytes_to_disk(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport(
+            [self._temp_url_response(), HttpResponse(200, b"ID3\x04fake-mp3-bytes", {})]
+        )
+        client = PlaudClient(manager, transport=transport)
+        destination = tmp_path / "out" / "rec1.mp3"
+
+        saved = client.download_audio("rec1", destination)
+
+        assert saved == destination
+        assert destination.read_bytes() == b"ID3\x04fake-mp3-bytes"
+        # The S3 GET must not carry a Plaud auth header — the signature is in
+        # the URL, and sending Authorization can make S3 reject the request.
+        assert "Authorization" not in transport.calls[1]["headers"]
+
+    def test_download_audio_without_audio_raises_value_error(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([self._temp_url_response(url=None)])
+        client = PlaudClient(manager, transport=transport)
+
+        with pytest.raises(ValueError, match="no downloadable audio"):
+            client.download_audio("rec1", tmp_path / "rec1.mp3")
+
+    def test_download_audio_propagates_s3_failure(self, tmp_path):
+        manager, _ = make_manager(tmp_path)
+        transport = StubTransport([self._temp_url_response(), HttpResponse(403, b"expired", {})])
+        client = PlaudClient(manager, transport=transport)
+
+        with pytest.raises(PlaudApiError) as exc_info:
+            client.download_audio("rec1", tmp_path / "rec1.mp3")
+        assert exc_info.value.http_status == 403
+
+
 class TestPollLoopSurvival:
     """Poll loops must survive transient errors and abort on non-transient ones."""
 
