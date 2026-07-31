@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-31
+
+Maintenance release. No functional or behavioral changes.
+
+### Changed
+
+- **Dependency and CI Action bumps.** Worked through the nine open Dependabot
+  PRs: `pydantic-settings` 2.14.1→2.14.2, `certifi` 2026.5.20→2026.6.17,
+  `librt` 0.11.0→0.13.0, `typing-extensions` 4.15.0→4.16.0, and the
+  `actions/setup-python`, `actions/checkout`, `actions/upload-artifact`,
+  `pypa/gh-action-pypi-publish`, and `softprops/action-gh-release` CI Action
+  pins.
+- **Declined the `mcp` v2.0.0 bump.** v2 is a breaking SDK release (`Server`
+  drops `list_tools`/`call_tool`, `CallToolResult.isError` renamed
+  `is_error`); merging it broke lint and every test job. `pyproject.toml`
+  already pins `mcp>=1.0,<2.0`, so it won't resurface until the migration in
+  #200 is done deliberately.
+
 ## [0.8.0] - 2026-07-31
 
 This is a **breaking** release for one MCP parameter pair — see *Changed*.
