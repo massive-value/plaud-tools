@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated to `mcp` SDK v2.0.0** (closes #200, previously declined in
+  0.8.1). `Server` registration moves from `@list_tools()`/`@call_tool()`
+  decorators to `on_list_tools=`/`on_call_tool=` constructor callables, and
+  every SDK type's camelCase fields (`isError`, `inputSchema`,
+  `destructiveHint`, etc.) are now snake_case. No behavior change — verified
+  against a live Plaud session (`list_folders` round-trip through the real
+  `plaud-mcp` subprocess).
+
 ## [0.8.1] - 2026-07-31
 
 Maintenance release. No functional or behavioral changes.
