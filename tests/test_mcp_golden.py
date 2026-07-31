@@ -58,7 +58,7 @@ def _serialize_tools() -> str:
         {
             "name": t.name,
             "description": t.description,
-            "inputSchema": t.inputSchema,
+            "inputSchema": t.input_schema,
         }
         for t in _TOOLS
     ]
@@ -121,7 +121,7 @@ def test_tool_descriptions_within_token_budget() -> None:
             {
                 "name": t.name,
                 "description": t.description,
-                "inputSchema": t.inputSchema,
+                "inputSchema": t.input_schema,
             }
             for t in _TOOLS
         ],

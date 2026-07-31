@@ -9,6 +9,7 @@ import sys
 import time
 
 import mcp.types as mcp_types
+from mcp.client.client import Client
 
 from plaud_tools.mcp_pt.server import _TOOLS, _make_server, _mcp_log_path, _setup_mcp_logging
 
@@ -34,7 +35,7 @@ def test_server_exposes_expected_tools():
 def test_every_tool_declares_an_annotation_title():
     """Clients use annotations.title as the human-readable tool label.
 
-    The golden fixture snapshots name/description/inputSchema only, so a tool
+    The golden fixture snapshots name/description/input_schema only, so a tool
     added without a title would otherwise ship unnoticed.
     """
     missing = [t.name for t in _TOOLS if not (t.annotations and t.annotations.title)]
@@ -43,57 +44,57 @@ def test_every_tool_declares_an_annotation_title():
 
 def test_server_get_recording_offers_both_transcript_blocks():
     tool = next(t for t in _TOOLS if t.name == "get_recording")
-    block = tool.inputSchema["properties"]["transcript_block"]
+    block = tool.input_schema["properties"]["transcript_block"]
     assert block["enum"] == ["transaction", "transaction_polish"]
     assert block["default"] == "transaction"
 
 
 def test_server_edit_summary_requires_recording_id_and_action():
     tool = next(t for t in _TOOLS if t.name == "edit_summary")
-    assert set(tool.inputSchema["required"]) == {"recording_id", "action"}
-    assert tool.inputSchema["properties"]["action"]["enum"] == ["correct", "replace"]
+    assert set(tool.input_schema["required"]) == {"recording_id", "action"}
+    assert tool.input_schema["properties"]["action"]["enum"] == ["correct", "replace"]
 
 
 def test_server_mutate_folder_requires_only_action():
     tool = next(t for t in _TOOLS if t.name == "mutate_folder")
-    assert tool.inputSchema["required"] == ["action"]
-    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"create", "edit", "delete"}
+    assert tool.input_schema["required"] == ["action"]
+    assert set(tool.input_schema["properties"]["action"]["enum"]) == {"create", "edit", "delete"}
 
 
 def test_server_mutate_folder_is_flagged_destructive():
     # The delete path is irreversible for the folder; the annotation warns clients.
     tool = next(t for t in _TOOLS if t.name == "mutate_folder")
-    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.destructive_hint is True
 
 
 def test_server_list_folders_has_no_required_fields():
     tool = next(t for t in _TOOLS if t.name == "list_folders")
-    assert "required" not in tool.inputSchema
+    assert "required" not in tool.input_schema
 
 
 def test_server_browse_recordings_has_no_required_fields():
     tool = next(t for t in _TOOLS if t.name == "browse_recordings")
-    assert "required" not in tool.inputSchema
+    assert "required" not in tool.input_schema
 
 
 def test_server_get_recording_requires_recording_id():
     tool = next(t for t in _TOOLS if t.name == "get_recording")
-    assert "recording_id" in tool.inputSchema["required"]
+    assert "recording_id" in tool.input_schema["required"]
 
 
 def test_server_mutate_recording_requires_only_action():
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    assert tool.inputSchema["required"] == ["action"]
+    assert tool.input_schema["required"] == ["action"]
 
 
 def test_server_mutate_recording_has_recording_ids_batch_param():
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    assert tool.inputSchema["properties"]["recording_ids"]["type"] == "array"
+    assert tool.input_schema["properties"]["recording_ids"]["type"] == "array"
 
 
 def test_server_mutate_recording_enum_excludes_delete_and_rename_speaker():
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    enum_values = tool.inputSchema["properties"]["action"]["enum"]
+    enum_values = tool.input_schema["properties"]["action"]["enum"]
     assert "delete" not in enum_values
     assert "rename_speaker" not in enum_values
     assert set(enum_values) == {"rename", "trash", "restore", "move"}
@@ -101,46 +102,46 @@ def test_server_mutate_recording_enum_excludes_delete_and_rename_speaker():
 
 def test_server_mutate_recording_has_clear_folder_param():
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    assert "clear_folder" in tool.inputSchema["properties"]
-    assert tool.inputSchema["properties"]["clear_folder"]["type"] == "boolean"
+    assert "clear_folder" in tool.input_schema["properties"]
+    assert tool.input_schema["properties"]["clear_folder"]["type"] == "boolean"
 
 
 def test_server_mutate_recording_has_no_original_label_param():
     """original_label is no longer a mutate_recording param — it moved to edit_transcript."""
     tool = next(t for t in _TOOLS if t.name == "mutate_recording")
-    assert "original_label" not in tool.inputSchema["properties"]
+    assert "original_label" not in tool.input_schema["properties"]
 
 
 def test_server_delete_recording_requires_recording_id():
     # D4: confirm is now a required field alongside recording_id.
     tool = next(t for t in _TOOLS if t.name == "delete_recording")
-    assert set(tool.inputSchema["required"]) == {"recording_id", "confirm"}
+    assert set(tool.input_schema["required"]) == {"recording_id", "confirm"}
 
 
 def test_server_edit_transcript_requires_recording_id_and_action():
     tool = next(t for t in _TOOLS if t.name == "edit_transcript")
-    assert set(tool.inputSchema["required"]) == {"recording_id", "action"}
-    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"rename_speaker", "correct"}
+    assert set(tool.input_schema["required"]) == {"recording_id", "action"}
+    assert set(tool.input_schema["properties"]["action"]["enum"]) == {"rename_speaker", "correct"}
 
 
 def test_server_edit_transcript_has_dry_run_param():
     tool = next(t for t in _TOOLS if t.name == "edit_transcript")
-    assert tool.inputSchema["properties"]["dry_run"]["type"] == "boolean"
+    assert tool.input_schema["properties"]["dry_run"]["type"] == "boolean"
 
 
 def test_server_upload_recording_requires_file_path():
     tool = next(t for t in _TOOLS if t.name == "upload_recording")
-    assert "file_path" in tool.inputSchema["required"]
+    assert "file_path" in tool.input_schema["required"]
 
 
 def test_server_process_recording_requires_recording_id():
     tool = next(t for t in _TOOLS if t.name == "process_recording")
-    assert "recording_id" in tool.inputSchema["required"]
+    assert "recording_id" in tool.input_schema["required"]
 
 
 def test_server_process_recording_wait_schema_defaults_to_transcript():
     tool = next(t for t in _TOOLS if t.name == "process_recording")
-    wait_schema = tool.inputSchema["properties"]["wait"]
+    wait_schema = tool.input_schema["properties"]["wait"]
     assert wait_schema["enum"] == ["none", "transcript", "summary"]
     assert wait_schema["default"] == "transcript"
 
@@ -152,24 +153,24 @@ def test_server_constructs_without_error():
 
 def test_server_browse_recordings_limit_has_minimum_one():
     tool = next(t for t in _TOOLS if t.name == "browse_recordings")
-    assert tool.inputSchema["properties"]["limit"]["minimum"] == 1
+    assert tool.input_schema["properties"]["limit"]["minimum"] == 1
 
 
 def test_server_browse_recordings_limit_default_is_twenty():
     # Lowered from 50 in the v0.7.0 breaking batch — a browse response an
     # agent skims doesn't need 50 rows by default; next_after covers the rest.
     tool = next(t for t in _TOOLS if t.name == "browse_recordings")
-    assert tool.inputSchema["properties"]["limit"]["default"] == 20
+    assert tool.input_schema["properties"]["limit"]["default"] == 20
 
 
 def test_server_browse_recordings_has_trash_param():
     tool = next(t for t in _TOOLS if t.name == "browse_recordings")
-    assert tool.inputSchema["properties"]["trash"]["type"] == "boolean"
+    assert tool.input_schema["properties"]["trash"]["type"] == "boolean"
 
 
 def test_server_get_recording_has_transcript_pagination_params():
     tool = next(t for t in _TOOLS if t.name == "get_recording")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
     assert props["transcript_after"]["minimum"] == 0
     assert props["transcript_limit"]["default"] == 200
     assert props["transcript_limit"]["maximum"] == 1000
@@ -180,7 +181,7 @@ def test_server_get_recording_has_transcript_pagination_params():
 
 def test_server_browse_recordings_after_has_minimum_zero():
     tool = next(t for t in _TOOLS if t.name == "browse_recordings")
-    assert tool.inputSchema["properties"]["after"]["minimum"] == 0
+    assert tool.input_schema["properties"]["after"]["minimum"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -206,26 +207,26 @@ class TestCallToolIsErrorPropagation:
     def _invoke_result(
         self, tool_name: str, arguments: dict, *, server: object | None = None
     ) -> mcp_types.CallToolResult:
-        """Build a CallToolRequest, run it through the SDK handler, and return the
-        full CallToolResult (not just the text) so isError can be asserted."""
+        """Call the tool through the SDK's in-memory Client (real handshake +
+        dispatch, no subprocess) and return the full CallToolResult (not just
+        the text) so is_error can be asserted."""
         srv = server or _make_server()
-        sdk_handler = srv.request_handlers[mcp_types.CallToolRequest]
-        req = mcp_types.CallToolRequest(
-            method="tools/call",
-            params=mcp_types.CallToolRequestParams(name=tool_name, arguments=arguments),
-        )
-        result = asyncio.run(sdk_handler(req))
-        return result.root
+
+        async def _call() -> mcp_types.CallToolResult:
+            async with Client(srv) as client:
+                return await client.call_tool(tool_name, arguments)
+
+        return asyncio.run(_call())
 
     def test_unknown_tool_returns_is_error_true(self):
         result = self._invoke_result("not_a_real_tool", {})
-        assert result.isError is True
+        assert result.is_error is True
         payload = json.loads(result.content[0].text)
         assert "Unknown tool" in payload["error"]
 
     def test_bogus_kwarg_type_error_returns_is_error_true(self):
         result = self._invoke_result("list_folders", {"bogus_kwarg": "unexpected"})
-        assert result.isError is True
+        assert result.is_error is True
 
     def test_handler_error_result_propagates_is_error_true(self, monkeypatch):
         """A structured handler error (e.g. session_expired, refused delete) must
@@ -242,7 +243,7 @@ class TestCallToolIsErrorPropagation:
         monkeypatch.setattr(srv_mod, "SessionStore", lambda: _NoSessionStore())
         server = srv_mod._make_server()
         result = self._invoke_result("browse_recordings", {}, server=server)
-        assert result.isError is True
+        assert result.is_error is True
         payload = json.loads(result.content[0].text)
         assert payload["error_code"] == "session_expired"
 
@@ -257,7 +258,7 @@ class TestCallToolIsErrorPropagation:
         result = self._invoke_result(
             "delete_recording", {"recording_id": "rec1", "confirm": False}, server=server
         )
-        assert result.isError is True
+        assert result.is_error is True
         payload = json.loads(result.content[0].text)
         assert payload["error_code"] == "validation"
 
@@ -385,22 +386,22 @@ class TestCallToolTypeErrorGuard:
     accept.  The error payload must match the project-standard shape used by
     _error_result() in mcp.py: {error, error_code, retryable}.
 
-    The test exercises the full call_tool path by invoking the handler registered
-    with the MCP SDK (via server.request_handlers[CallToolRequest]) so that the
-    exact same code path exercised by the live server is under test.
+    The test exercises the full call_tool path via the SDK's in-memory Client
+    (real handshake + dispatch, no subprocess) so that the exact same code
+    path exercised by the live server is under test.
     """
 
     def _invoke(self, tool_name: str, arguments: dict) -> str:
-        """Build a CallToolRequest, run it through the SDK handler, and return the
-        text of the first TextContent in the result."""
+        """Call the tool through the SDK Client and return the text of the
+        first TextContent in the result."""
         server = _make_server()
-        sdk_handler = server.request_handlers[mcp_types.CallToolRequest]
-        req = mcp_types.CallToolRequest(
-            method="tools/call",
-            params=mcp_types.CallToolRequestParams(name=tool_name, arguments=arguments),
-        )
-        result = asyncio.run(sdk_handler(req))
-        return result.root.content[0].text
+
+        async def _call() -> mcp_types.CallToolResult:
+            async with Client(server) as client:
+                return await client.call_tool(tool_name, arguments)
+
+        result = asyncio.run(_call())
+        return result.content[0].text
 
     def test_bogus_kwarg_returns_validation_error_code(self):
         """A kwarg unknown to the handler must produce error_code='validation'."""
@@ -474,8 +475,6 @@ class TestCallToolNonBlocking:
         """
         from mcp.server.lowlevel import Server
 
-        inner_server = Server("plaud-mcp-test")
-
         def slow_list_folders() -> dict:
             """Synchronous handler that blocks for SLOW_SLEEP_S."""
             time.sleep(TestCallToolNonBlocking.SLOW_SLEEP_S)
@@ -483,35 +482,39 @@ class TestCallToolNonBlocking:
 
         handlers = {"list_folders": slow_list_folders}
 
-        @inner_server.list_tools()
-        async def list_tools_handler() -> list[mcp_types.Tool]:
-            return _TOOLS
+        async def list_tools_handler(ctx, params) -> mcp_types.ListToolsResult:
+            return mcp_types.ListToolsResult(tools=_TOOLS)
 
-        @inner_server.call_tool()
-        async def call_tool_handler(name: str, arguments: dict) -> list[mcp_types.TextContent]:
-            handler = handlers.get(name)
+        async def call_tool_handler(ctx, params: mcp_types.CallToolRequestParams) -> mcp_types.CallToolResult:
+            handler = handlers.get(params.name)
             if handler is None:
-                return [
-                    mcp_types.TextContent(
-                        type="text",
-                        text=json.dumps({"error": f"Unknown tool: {name}"}),
-                    )
-                ]
+                payload = {"error": f"Unknown tool: {params.name}"}
+                return mcp_types.CallToolResult(
+                    content=[mcp_types.TextContent(type="text", text=json.dumps(payload))],
+                    isError=True,
+                )
             try:
                 # Production code path under test: asyncio.to_thread keeps the
                 # event loop unblocked while the handler does its work.
-                result = await asyncio.to_thread(handler, **arguments)
+                result = await asyncio.to_thread(handler, **(params.arguments or {}))
                 text = result["content"][0]["text"]
             except TypeError as exc:
                 payload = {
-                    "error": f"Invalid arguments for tool '{name}': {exc}",
+                    "error": f"Invalid arguments for tool '{params.name}': {exc}",
                     "error_code": "validation",
                     "retryable": False,
                 }
-                return [mcp_types.TextContent(type="text", text=json.dumps(payload, indent=2))]
-            return [mcp_types.TextContent(type="text", text=text)]
+                return mcp_types.CallToolResult(
+                    content=[mcp_types.TextContent(type="text", text=json.dumps(payload, indent=2))],
+                    isError=True,
+                )
+            return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text=text)])
 
-        return inner_server
+        return Server(
+            "plaud-mcp-test",
+            on_list_tools=list_tools_handler,
+            on_call_tool=call_tool_handler,
+        )
 
     def test_event_loop_stays_responsive_during_slow_handler(self):
         """list_tools() must return well before the slow handler finishes.
@@ -525,40 +528,33 @@ class TestCallToolNonBlocking:
 
         async def _run() -> None:
             server = self._build_server_with_slow_tool()
-            call_tool_sdk = server.request_handlers[mcp_types.CallToolRequest]
-            list_tools_sdk = server.request_handlers[mcp_types.ListToolsRequest]
+            async with Client(server) as client:
+                # Launch the slow call_tool in the background.
+                slow_task = asyncio.create_task(client.call_tool("list_folders", {}))
 
-            slow_req = mcp_types.CallToolRequest(
-                method="tools/call",
-                params=mcp_types.CallToolRequestParams(name="list_folders", arguments={}),
-            )
+                # Give the event loop one iteration so the task starts and the
+                # worker thread is actually running before we time the fast op.
+                await asyncio.sleep(0)
 
-            # Launch the slow call_tool in the background.
-            slow_task = asyncio.create_task(call_tool_sdk(slow_req))
+                # Measure how long list_tools takes while the slow task is in flight.
+                t0 = time.perf_counter()
+                fast_result = await asyncio.wait_for(
+                    client.list_tools(),
+                    timeout=TestCallToolNonBlocking.FAST_DEADLINE_S,
+                )
+                fast_elapsed = time.perf_counter() - t0
 
-            # Give the event loop one iteration so the task starts and the
-            # worker thread is actually running before we time the fast op.
-            await asyncio.sleep(0)
+                # The fast op must have completed well within the deadline.
+                assert fast_elapsed < TestCallToolNonBlocking.FAST_DEADLINE_S, (
+                    f"list_tools took {fast_elapsed:.3f}s — event loop was blocked "
+                    f"(deadline {TestCallToolNonBlocking.FAST_DEADLINE_S}s, "
+                    f"slow handler sleep {TestCallToolNonBlocking.SLOW_SLEEP_S}s)"
+                )
 
-            # Measure how long list_tools takes while the slow task is in flight.
-            t0 = time.perf_counter()
-            fast_result = await asyncio.wait_for(
-                list_tools_sdk(mcp_types.ListToolsRequest(method="tools/list", params=None)),
-                timeout=TestCallToolNonBlocking.FAST_DEADLINE_S,
-            )
-            fast_elapsed = time.perf_counter() - t0
+                # Sanity: the fast result actually contains tools.
+                assert fast_result.tools, "list_tools returned empty tool list"
 
-            # The fast op must have completed well within the deadline.
-            assert fast_elapsed < TestCallToolNonBlocking.FAST_DEADLINE_S, (
-                f"list_tools took {fast_elapsed:.3f}s — event loop was blocked "
-                f"(deadline {TestCallToolNonBlocking.FAST_DEADLINE_S}s, "
-                f"slow handler sleep {TestCallToolNonBlocking.SLOW_SLEEP_S}s)"
-            )
-
-            # Sanity: the fast result actually contains tools.
-            assert fast_result.root.tools, "list_tools returned empty tool list"
-
-            # Clean up: wait for the slow task to finish (it will, just slowly).
-            await slow_task
+                # Clean up: wait for the slow task to finish (it will, just slowly).
+                await slow_task
 
         asyncio.run(_run())

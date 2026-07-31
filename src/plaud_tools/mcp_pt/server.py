@@ -13,8 +13,7 @@ from typing import Any
 
 import mcp.server.stdio
 import mcp.types as types
-from mcp.server.lowlevel import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
+from mcp.server.lowlevel import Server
 
 from .. import __version__
 from ..core.appdata import mcp_log as _mcp_log_path
@@ -77,14 +76,14 @@ def _setup_mcp_logging() -> None:
 #      irreversible tool) so the LLM must explicitly pass the flag after the
 #      human confirms; the handler rejects the call if confirm is absent or false.
 #
-# openWorldHint=True is set on every tool: all calls interact with the external
+# open_world_hint=True is set on every tool: all calls interact with the external
 # Plaud service and may observe or affect state not visible in this conversation.
 # ---------------------------------------------------------------------------
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="browse_recordings",
         description="Page through Plaud recordings with optional filters.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "limit": {
@@ -123,18 +122,18 @@ _TOOLS: list[types.Tool] = [
             },
         },
         # Pure read — no writes, no side-effects.
-        # idempotentHint omitted: redundant when readOnlyHint=True (reads are
+        # idempotent_hint omitted: redundant when read_only_hint=True (reads are
         # inherently idempotent; stating it again adds noise without value).
         annotations=types.ToolAnnotations(
             title="Browse recordings",
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="get_recording",
         description="Fetch full detail for one recording. Transcripts are returned a page of utterances at a time — check transcript_truncated and follow transcript_next_after to read the rest.",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
@@ -171,14 +170,14 @@ _TOOLS: list[types.Tool] = [
         # Pure read — same rationale as browse_recordings.
         annotations=types.ToolAnnotations(
             title="Get recording",
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="mutate_recording",
         description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string", "description": "Single recording ID"},
@@ -207,19 +206,19 @@ _TOOLS: list[types.Tool] = [
             "required": ["action"],
         },
         # Reversible write (trash/restore are inverses; rename/move are
-        # undoable).  destructiveHint=False signals the client that no
-        # data is permanently lost.  idempotentHint omitted: repeated
+        # undoable).  destructive_hint=False signals the client that no
+        # data is permanently lost.  idempotent_hint omitted: repeated
         # renames with a different new_name have different outcomes.
         annotations=types.ToolAnnotations(
             title="Rename, move, or trash recordings",
-            destructiveHint=False,
-            openWorldHint=True,
+            destructive_hint=False,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="delete_recording",
         description="Permanently and irreversibly delete a recording.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
@@ -230,20 +229,20 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id", "confirm"],
         },
-        # Hard delete: irreversible.  destructiveHint=True + idempotentHint=False
+        # Hard delete: irreversible.  destructive_hint=True + idempotent_hint=False
         # because deleting an already-deleted ID will raise an error from Plaud
         # (not a no-op), so clients must not retry blindly.
         annotations=types.ToolAnnotations(
             title="Permanently delete recording",
-            destructiveHint=True,
-            idempotentHint=False,
-            openWorldHint=True,
+            destructive_hint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="edit_transcript",
         description="Edit a recording's transcript. action='rename_speaker' relabels a speaker across all segments; action='correct' does a literal find-and-replace on transcript text (dry_run=true previews the match count).",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
@@ -275,19 +274,19 @@ _TOOLS: list[types.Tool] = [
             "required": ["recording_id", "action"],
         },
         # Reversible content edit — rerun with swapped args to undo.
-        # idempotentHint omitted: the two actions have different idempotency
+        # idempotent_hint omitted: the two actions have different idempotency
         # (rename_speaker is a no-op on rerun; correct errors on a second
         # identical rerun since the text is already replaced).
         annotations=types.ToolAnnotations(
             title="Edit transcript",
-            destructiveHint=False,
-            openWorldHint=True,
+            destructive_hint=False,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="upload_recording",
         description="Upload a local audio file to Plaud.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {
@@ -314,32 +313,32 @@ _TOOLS: list[types.Tool] = [
             "required": ["file_path"],
         },
         # Additive — creates a new recording; does not modify existing data.
-        # idempotentHint omitted: uploading the same file twice creates two
+        # idempotent_hint omitted: uploading the same file twice creates two
         # separate recordings, so the operation is not idempotent.
         annotations=types.ToolAnnotations(
             title="Upload audio file",
-            destructiveHint=False,
-            openWorldHint=True,
+            destructive_hint=False,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="list_folders",
         description="List Plaud folders, returning id, name, color, and icon for each.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {},
         },
         # Pure read — same rationale as browse_recordings / get_recording.
         annotations=types.ToolAnnotations(
             title="List folders",
-            readOnlyHint=True,
-            openWorldHint=True,
+            read_only_hint=True,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="process_recording",
         description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
@@ -370,19 +369,19 @@ _TOOLS: list[types.Tool] = [
         },
         # Additive compute — triggers AI processing; does not delete or
         # overwrite existing user data (the transcript/summary are new artifacts).
-        # idempotentHint=True: re-triggering on an already-processed recording
+        # idempotent_hint=True: re-triggering on an already-processed recording
         # is a no-op on the Plaud side (the existing transcript is kept).
         annotations=types.ToolAnnotations(
             title="Transcribe and summarize",
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="merge_recordings",
         description="Merge two or more recordings into a single new recording, blocking until the merge job completes.",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_ids": {
@@ -398,19 +397,19 @@ _TOOLS: list[types.Tool] = [
             "required": ["recording_ids", "title"],
         },
         # Creates a new merged recording; the source recordings remain.
-        # destructiveHint=False: sources are not deleted by the merge itself.
-        # idempotentHint omitted: merging the same IDs twice creates two
+        # destructive_hint=False: sources are not deleted by the merge itself.
+        # idempotent_hint omitted: merging the same IDs twice creates two
         # separate merged recordings (not idempotent).
         annotations=types.ToolAnnotations(
             title="Merge recordings",
-            destructiveHint=False,
-            openWorldHint=True,
+            destructive_hint=False,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="edit_summary",
         description="Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
@@ -439,18 +438,18 @@ _TOOLS: list[types.Tool] = [
         },
         # Reversible content edit — a 'correct' can be undone by re-running with
         # swapped find/replace; a 'replace' overwrites, but the prior text can be
-        # re-supplied.  idempotentHint omitted: a second 'correct' with the same
+        # re-supplied.  idempotent_hint omitted: a second 'correct' with the same
         # find returns "no occurrences" (an error), so it is not a no-op.
         annotations=types.ToolAnnotations(
             title="Edit summary",
-            destructiveHint=False,
-            openWorldHint=True,
+            destructive_hint=False,
+            open_world_hint=True,
         ),
     ),
     types.Tool(
         name="mutate_folder",
         description="Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",  # noqa: E501
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "action": {
@@ -482,13 +481,13 @@ _TOOLS: list[types.Tool] = [
         },
         # create/edit are reversible; delete is irreversible for the folder
         # itself (recordings survive), so it is gated by a required confirm=true
-        # in the handler.  destructiveHint=True flags the delete path to clients;
-        # idempotentHint=False because deleting a missing folder errors, not no-ops.
+        # in the handler.  destructive_hint=True flags the delete path to clients;
+        # idempotent_hint=False because deleting a missing folder errors, not no-ops.
         annotations=types.ToolAnnotations(
             title="Create, edit, or delete folder",
-            destructiveHint=True,
-            idempotentHint=False,
-            openWorldHint=True,
+            destructive_hint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
         ),
     ),
 ]
@@ -512,27 +511,25 @@ def _make_server() -> Server:
         return PlaudClient(manager)
 
     handlers = build_handlers(get_client)
-    server = Server("plaud-mcp")
 
-    @server.list_tools()
-    async def list_tools() -> list[types.Tool]:
-        return _TOOLS
+    async def list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=_TOOLS)
 
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        # #139: the MCP SDK's call_tool decorator hard-codes isError=False
-        # whenever the registered handler returns a plain content list (see
-        # mcp.server.lowlevel.server.Server.call_tool) — only an explicit
-        # types.CallToolResult lets us control isError.  Every one of the 3
-        # return paths below must therefore build the CallToolResult itself so
-        # that refused deletes, session-expired, and other tool-level errors
-        # are delivered to clients as errors instead of silent "successes".
+    async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+        # #139 (and the mcp v2 migration, #200): the SDK never auto-wraps a
+        # bare return into a CallToolResult — a handler that doesn't build one
+        # explicitly fails validation outright. Every one of the 3 return
+        # paths below builds the CallToolResult itself so that refused
+        # deletes, session-expired, and other tool-level errors are delivered
+        # to clients as errors (is_error=True) instead of silent "successes".
+        name = params.name
+        arguments = params.arguments or {}
         handler = handlers.get(name)
         if handler is None:
             payload: dict[str, Any] = {"error": f"Unknown tool: {name}"}
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
-                isError=True,
+                is_error=True,
             )
         try:
             # Wave 2 / C2: run the synchronous handler in a worker thread so
@@ -561,31 +558,20 @@ def _make_server() -> Server:
             }
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
-                isError=True,
+                is_error=True,
             )
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=text)],
-            isError=is_error,
+            is_error=is_error,
         )
 
-    return server
+    return Server("plaud-mcp", version=__version__, on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 async def _run() -> None:
     server = _make_server()
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="plaud-mcp",
-                server_version=__version__,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+        await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 def main() -> None:
