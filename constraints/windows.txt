@@ -110,7 +110,7 @@ pydantic==2.13.4
     # via
     #   mcp
     #   mcp-types
-pydantic-core==2.46.4
+pydantic-core==2.48.0
     # via pydantic
 pygments==2.20.0
     # via
