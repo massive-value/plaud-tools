@@ -20,7 +20,7 @@ attrs==26.1.0
     #   referencing
 build==1.5.0
     # via plaud-tools (pyproject.toml)
-cffi==2.1.0
+cffi==2.1.1
     # via cryptography
 click==8.4.2
     # via uvicorn
