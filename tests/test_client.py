@@ -14,6 +14,7 @@ import pytest
 import plaud_tools.core.client as client_mod
 from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery
 from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
+from plaud_tools.core.models import region_for_api_domain
 from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
 from plaud_tools.core.transport import HttpResponse
 
@@ -2099,3 +2100,20 @@ def test_region_redirect_to_unlisted_plaud_host_uses_that_host(tmp_path):
     with pytest.raises(PlaudApiError, match="unrecognized API host"):
         client.list_recordings()
     assert store.load().region == "api-apse1.plaud.ai"
+
+
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("api-euc1.plaud.ai", "eu"),
+        ("https://api.plaud.ai/", "us"),
+        ("api-apse1.plaud.ai", "api-apse1.plaud.ai"),
+        (".plaud.ai", None),
+        ("a..plaud.ai", None),
+        ("apiа.plaud.ai", None),  # Cyrillic "a"
+        ("plaud.ai.evil.com", None),
+        ("", None),
+    ],
+)
+def test_region_for_api_domain_accepts_only_clean_plaud_hosts(domain, expected):
+    assert region_for_api_domain(domain) == expected

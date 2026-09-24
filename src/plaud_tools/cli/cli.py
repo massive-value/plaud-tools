@@ -16,6 +16,7 @@ from ..core.client import (
     DEFAULT_TRANSCRIPT_BLOCK,
     PlaudClient,
     PlaudRecordingQuery,
+    describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.query import (
@@ -817,15 +818,17 @@ def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
         llm=args.llm,
     )
     if not started:
-        # Plaud keeps the existing transcript/summary and ignores the options.
+        # Plaud started no new job; report what the recording actually has.
+        detail = client.get_recording(args.recording_id)
         return json.dumps(
             {
                 "accepted": False,
                 "recording_id": args.recording_id,
                 "already_processed": True,
-                "message": "Already processed; Plaud kept the existing transcript and summary "
-                "and did not apply --template/--language. Use 'set-summary' or "
-                "'correct-summary' to change the summary text.",
+                "is_trans": detail.is_trans,
+                "is_summary": detail.is_summary,
+                "message": describe_unstarted_process(detail)
+                + " Use 'set-summary' or 'correct-summary' to change the summary text.",
             },
             indent=2,
         )

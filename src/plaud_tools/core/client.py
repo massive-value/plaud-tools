@@ -133,6 +133,30 @@ class PlaudRecordingQuery:
     is_desc: bool | None = None
 
 
+def describe_unstarted_process(detail: RecordingDetail) -> str:
+    """Explain why a process request started no new job, from the real state.
+
+    Used by the MCP and CLI after ``transcribe_and_summarize`` returns False.
+    Plaud's status-1 reply was only observed on a fully processed recording,
+    so the wording comes from the recording's current state, not the reply.
+    """
+    if detail.is_trans and detail.is_summary:
+        return (
+            "This recording already has a transcript and summary. Plaud kept both and did "
+            "not start a new run, so the requested options were not applied."
+        )
+    if detail.is_trans:
+        return (
+            "This recording already has a transcript but no finished summary (it may still "
+            "be generating). Plaud did not start a new run, so the requested options were "
+            "not applied."
+        )
+    return (
+        "Plaud did not start a new run and no transcript is ready yet, so the recording is "
+        "probably still processing. Check it again in a minute instead of re-running."
+    )
+
+
 class PlaudClient:
     def __init__(self, session_manager: SessionManager, transport: Transport | None = None) -> None:
         self._session_manager = session_manager

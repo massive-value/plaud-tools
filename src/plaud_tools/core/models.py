@@ -49,7 +49,11 @@ def region_for_api_domain(domain: str) -> str | None:
 
 
 def _is_plaud_host(host: str) -> bool:
-    return host.endswith(".plaud.ai") and all(ch.isalnum() or ch in ".-" for ch in host)
+    """True for an ASCII hostname under plaud.ai with no empty labels."""
+    if not host.isascii() or not host.endswith(".plaud.ai"):
+        return False
+    labels = host.split(".")
+    return all(label and all(ch.isalnum() or ch == "-" for ch in label) for label in labels)
 
 
 BROWSER_USER_AGENT = (

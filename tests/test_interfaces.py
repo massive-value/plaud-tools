@@ -1822,15 +1822,28 @@ def test_mcp_process_recording_rejects_unknown_wait_mode():
     assert "wait must be one of" in payload["error"]
 
 
-def test_mcp_process_recording_reports_already_processed():
-    """Plaud ignores a re-run on a processed recording; say so plainly and skip the waits."""
+@pytest.mark.parametrize(
+    ("is_trans", "is_summary", "expected"),
+    [
+        (True, True, "already has a transcript and summary"),
+        (True, False, "no finished summary"),
+        (False, False, "probably still processing"),
+    ],
+)
+def test_mcp_process_recording_already_processed_reports_real_state(is_trans, is_summary, expected):
+    """When Plaud starts no new job, the message comes from the recording's
+    actual state, not from Plaud's status-1 reply alone."""
     client = MutateStub()
     client.transcribe_and_summarize = lambda recording_id, **kwargs: False
+    client.get_recording = lambda recording_id, **kwargs: RecordingDetail(
+        id=recording_id, filename="m", is_trans=is_trans, is_summary=is_summary
+    )
     handlers = build_handlers(lambda: client)
     result = handlers["process_recording"]("rec1", template_type="MEETING", wait="summary")
     payload = json.loads(result["content"][0]["text"])
     assert payload["already_processed"] is True
-    assert "did not apply" in payload["message"]
+    assert (payload["is_trans"], payload["is_summary"]) == (is_trans, is_summary)
+    assert expected in payload["message"]
     assert client.wait_call is None
 
 
