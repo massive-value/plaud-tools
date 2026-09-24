@@ -351,7 +351,7 @@ try {
     try {
         Move-DirWithRetry -From $liveDir -To $oldDir
     } catch {
-        $msg = "Could not move the current install aside (a file is probably still in use): $($_.Exception.Message). Nothing was changed."
+        $msg = "Could not move the current install aside (a file is probably still in use): $($_.Exception.Message.TrimEnd('.')). Nothing was changed."
         Write-Host "FAIL: $msg"
         Write-FailureSentinel -Reason $msg
         throw
@@ -362,7 +362,7 @@ try {
     try {
         Move-DirWithRetry -From $newRoot -To $liveDir
     } catch {
-        $msg = "Could not move the new version into place: $($_.Exception.Message). The previous version was restored."
+        $msg = "Could not move the new version into place: $($_.Exception.Message.TrimEnd('.')). The previous version was restored."
         Write-Host "FAIL: $msg"
         Write-FailureSentinel -Reason $msg
         throw
