@@ -17,7 +17,7 @@ from ..core.client import (
     PlaudClient,
     PlaudRecordingQuery,
 )
-from ..core.errors import PlaudApiError, PlaudSessionExpiredError
+from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
@@ -1116,6 +1116,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # on Plaud's side, so the caller should poll rather than treat the
         # command as failed.  Check it before the classify() mapping.
         if exc.is_soft_deadline_timeout():
+            if isinstance(exc, PlaudWaitTimeoutError) and exc.task_id:
+                # merge_recordings() only learns the new recording's id on
+                # success, so it isn't available here — but the combine
+                # task_id is, and it's enough to check on the job instead of
+                # re-running merge (which would duplicate it).
+                print(f"merge task_id={exc.task_id!r} is still running on Plaud", file=sys.stderr)
             return EXIT_TIMEOUT
         return _EXIT_CODE_BY_ERROR_CODE.get(error_code, EXIT_ERROR)
     except (ValueError, RuntimeError) as exc:

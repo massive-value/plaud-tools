@@ -1130,6 +1130,24 @@ def test_cli_main_soft_deadline_timeout_exits_timeout(capsys, monkeypatch):
     assert code == 4
 
 
+def test_cli_main_merge_timeout_prints_task_id(capsys, monkeypatch):
+    """A merge timeout must leave the combine task_id on stderr.
+
+    merge_recordings() only learns the new recording's id on success, so on
+    a timeout the combine task_id is the one handle the user has to check on
+    the job instead of re-running merge (which would duplicate it).
+    """
+    from plaud_tools.core.errors import PlaudWaitTimeoutError
+
+    class SlowMergeClient:
+        def merge_recordings(self, ids, filename, **kwargs):
+            raise PlaudWaitTimeoutError("merge timed out after 300s", task_id="combine-task-1")
+
+    code = _run_main_with_client(monkeypatch, SlowMergeClient(), ["merge", "r1", "r2", "--title", "Combined"])
+    assert code == 4
+    assert "combine-task-1" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # main() must handle KeyboardInterrupt / BrokenPipeError / OSError cleanly
 # instead of a raw traceback -- these aren't PlaudApiError/ValueError/
