@@ -31,6 +31,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
+    "jsonschema>=4.20.0",
     "keyring>=25",
     "mcp>=2.2,<3.0",
     "platformdirs>=4.0",
