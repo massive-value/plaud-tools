@@ -12,6 +12,10 @@ of the process's life.
 
 ``keyring`` triggers this: importing it runs ``platform.system()`` (via
 ``jaraco.context``), and the MCP server imports it on the first tool call.
+
+The bug lives in CPython 3.12's ``_wmi`` module. Our Windows bundles ship
+Python 3.14, which carries the upstream fix, so this guard's remaining job is
+protecting a ``pip install`` running under 3.12.
 """
 
 from __future__ import annotations
