@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -1153,6 +1154,71 @@ def test_cli_main_broken_pipe_exits_quietly(capsys, monkeypatch):
     code = _run_main_with_client(monkeypatch, PipeBreakClient(), ["list"])
     assert code == 0
     assert capsys.readouterr().err == ""
+
+
+def test_cli_main_broken_pipe_from_a_real_pipe_that_closes_early(tmp_path: Path):
+    """End-to-end: piping real, large output into a reader that closes early.
+
+    Regression: `print(output)` used to sit after main()'s whole try/except,
+    so a BrokenPipeError raised by *that* print call (not by run_cli()) --
+    e.g. `plaud-tools list --limit 20000 | head -c 256` -- was never caught.
+    It hit Python's default handler and printed a raw traceback with exit
+    code 1. This drives the real subprocess, not a mocked client, so it
+    exercises the actual OS pipe plumbing print() writes through.
+    """
+    import subprocess
+
+    # A subprocess doesn't get conftest.py's sys.path hack, and this repo's
+    # shared dev venv may have its editable-install pointer aimed at a
+    # different worktree (e.g. a sibling agent's) -- insert this worktree's
+    # own src/ explicitly so the child imports *this* branch's code.
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+
+    script = tmp_path / "run_big_list.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(src_dir)!r})\n"
+        "import plaud_tools.cli.cli as cli_module\n"
+        "from plaud_tools.cli.cli import main\n"
+        "from plaud_tools.core.models import Recording\n"
+        "\n"
+        "class BigClient:\n"
+        "    def list_recordings(self, query=None):\n"
+        "        return [\n"
+        "            Recording(id=f'r{i}', filename='x' * 2000, start_time=0,\n"
+        "                      duration=0, is_trans=False, filetag_id_list=[])\n"
+        "            for i in range(20000)\n"
+        "        ]\n"
+        "\n"
+        "_real_run_cli = cli_module.run_cli\n"
+        "cli_module.run_cli = lambda argv: _real_run_cli(argv, client=BigClient())\n"
+        "sys.exit(main(['list', '--limit', '20000']))\n",
+        encoding="utf-8",
+    )
+
+    # A `with` block, not a bare Popen(), so cleanup (waiting, closing any
+    # still-open std handles) happens deterministically here rather than
+    # whenever the garbage collector gets to it -- a GC-time close of a
+    # pipe this test deliberately broke can raise from a finalizer, which
+    # pytest reports as a separate unraisable-exception failure.
+    with subprocess.Popen(
+        [sys.executable, str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as proc:
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        # Read a small slice of the tens-of-MB response, then close our end
+        # -- simulates a reader like `head -c 256` that stops well before
+        # the writer is done, forcing a mid-write pipe error.
+        proc.stdout.read(256)
+        proc.stdout.close()
+        proc.wait(timeout=30)
+        stderr = proc.stderr.read()
+        proc.stderr.close()
+
+    assert proc.returncode == 0
+    assert stderr == b""
 
 
 def test_cli_main_oserror_exits_cleanly_with_message(capsys, monkeypatch):

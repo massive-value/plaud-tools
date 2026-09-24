@@ -1073,6 +1073,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
     try:
         output = run_cli(args)
+        # print()+flush must stay inside this try: for a large result piped
+        # into a reader that closes early (e.g. `plaud-tools list --all |
+        # head -1`), the BrokenPipeError happens on *this* write, not inside
+        # run_cli(). Previously this line sat after the whole try/except, so
+        # that BrokenPipeError was never caught here — it hit Python's
+        # default handler and printed a raw traceback with exit code 1.
+        print(output)
+        sys.stdout.flush()
+        return EXIT_OK
     except KeyboardInterrupt:
         # Ctrl+C mid-command (e.g. during a long upload/merge wait) used to
         # print a raw traceback. Exit with the conventional signal code
@@ -1119,5 +1128,3 @@ def main(argv: Sequence[str] | None = None) -> int:
         # no handler and printed a raw traceback.
         print(str(exc), file=sys.stderr)
         return EXIT_ERROR
-    print(output)
-    return EXIT_OK
