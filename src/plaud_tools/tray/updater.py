@@ -31,13 +31,19 @@ if TYPE_CHECKING:  # pragma: no cover
 GITHUB_REPO = "massive-value/plaud-tools"
 
 # Hosts from which update downloads are permitted.  Any other host is refused
-# before a network connection is made.
+# before a network connection is made, including on every redirect hop.
+# GitHub release assets redirect github.com -> release-assets.githubusercontent.com
+# (objects.githubusercontent.com on older releases).
 _ALLOWED_UPDATE_HOSTS: frozenset[str] = frozenset(
     {
         "github.com",
         "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
     }
 )
+
+# Name of the release asset whose line we read from SHA256SUMS.
+_ZIP_ASSET_NAME = "PlaudTools.zip"
 
 # How long the tray waits for update.ps1's heartbeat file before giving up and
 # reporting failure (instead of quitting into a half-applied update). The
@@ -93,6 +99,56 @@ def _check_download_host(url: str) -> None:
             f"Refusing to download update from untrusted host {host!r}. "
             f"Allowed hosts: {sorted(_ALLOWED_UPDATE_HOSTS)}"
         )
+
+
+class _AllowlistRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse any redirect hop whose target host is not on the allowlist.
+
+    Runs before the redirected request is sent, so an off-allowlist host is
+    never contacted.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _check_download_host(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_UPDATE_OPENER = urllib.request.build_opener(_AllowlistRedirectHandler())
+
+
+def _open_update_url(url: str, timeout: float):  # type: ignore[no-untyped-def]
+    """Open an update download URL with the host allowlist enforced end to end.
+
+    Checks the starting URL, every redirect hop (via the opener), and the
+    final URL the response actually came from.  Returns the open response,
+    to be used as a context manager.
+    """
+    _check_download_host(url)
+    req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    resp = _UPDATE_OPENER.open(req, timeout=timeout)
+    try:
+        _check_download_host(resp.geturl())
+    except ValueError:
+        resp.close()
+        raise
+    return resp
+
+
+def _expected_hash_from_sums(sums_text: str, file_name: str = _ZIP_ASSET_NAME) -> str | None:
+    """Return the lower-case hash listed for *file_name* in SHA256SUMS text, or None.
+
+    Standard ``sha256sum`` format: one ``<hex>  <name>`` (or ``<hex> *<name>``
+    for binary mode) per line.  Lines for other files are ignored, so the
+    order of entries in the file does not matter.
+    """
+    for line in sums_text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts
+        if name.strip().lstrip("*") == file_name and len(digest) == 64:
+            return digest.lower()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +216,9 @@ def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
 
         <lowercase-hex>  PlaudTools.zip
 
-    Only the first whitespace-separated token on the first non-empty line is
-    used, so the filename column is ignored.
+    The hash on the ``PlaudTools.zip`` line is used; a file that does not
+    list ``PlaudTools.zip`` is treated as a failure.  The SHA256SUMS URL is
+    held to the same host allowlist as the zip, redirects included.
 
     Parameters
     ----------
@@ -186,13 +243,16 @@ def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
             "https://github.com/massive-value/plaud-tools/issues"
         )
 
-    # Download the SHA256SUMS file.
-    req = urllib.request.Request(sums_url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    # Download the SHA256SUMS file (allowlisted host, every hop).
+    with _open_update_url(sums_url, timeout=10) as resp:
         sums_text = resp.read().decode("utf-8")
 
-    # Parse the expected hash: first whitespace-delimited token.
-    expected = sums_text.strip().split()[0].lower()
+    expected = _expected_hash_from_sums(sums_text)
+    if expected is None:
+        raise ChecksumMismatch(
+            f"SHA256SUMS does not list {_ZIP_ASSET_NAME}; the download's integrity "
+            "cannot be verified. Refusing to install."
+        )
 
     # Compute SHA-256 of the local zip.
     sha256 = hashlib.sha256()
@@ -216,6 +276,20 @@ def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+class UpdateCancelled(Exception):
+    """Raised inside the install worker when the user cancels before hand-off."""
+
+
+def _discard_download(zip_path: Path | None) -> None:
+    """Delete a partial or rejected ``plaud_update_*.zip`` from %TEMP% (best effort)."""
+    if zip_path is None:
+        return
+    try:
+        zip_path.unlink(missing_ok=True)
+    except OSError:
+        logging.warning("in-app update: could not delete %s", zip_path, exc_info=True)
+
+
 class UpdateDialog:
     """Dialog that shows an available update and allows in-app install (frozen only)."""
 
@@ -223,6 +297,25 @@ class UpdateDialog:
         self._root = root
         self._app = app
         self._win: tk.Toplevel | None = None
+        # Set from the moment an install starts until it fails, is cancelled,
+        # or hands off to update.ps1.  The tray owns exactly one UpdateDialog,
+        # so this is the app-wide guard against starting a second updater
+        # (e.g. by closing and reopening the dialog mid-download).
+        self._in_progress = threading.Event()
+        # Set by Cancel / closing the window; checked by the download loop.
+        # Ignored once the updater process has been launched.
+        self._cancel = threading.Event()
+
+    def _try_begin_install(self) -> bool:
+        """Claim the app-wide install slot; False if an install is already running.
+
+        Called on the Tk thread, so check-then-set cannot race another click.
+        """
+        if self._in_progress.is_set():
+            return False
+        self._in_progress.set()
+        self._cancel.clear()
+        return True
 
     def show(self) -> None:
         if self._win and self._win.winfo_exists():
@@ -261,6 +354,9 @@ class UpdateDialog:
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill="x", pady=(4, 0))
 
+        close_text = "Cancel" if frozen else "Close"
+        close_btn = ttk.Button(btn_frame, text=close_text)
+
         if not frozen:
             ttk.Label(
                 frame,
@@ -273,15 +369,22 @@ class UpdateDialog:
             install_btn.pack(side="left")
 
             def _start_install(zu: str, su: str | None) -> None:
+                if not self._try_begin_install():
+                    status_var.set("An update is already in progress.")
+                    return
                 install_btn.config(state="disabled")
                 status_var.set("Downloading…")
                 threading.Thread(
                     target=self._install_worker,
-                    args=(zu, su, status_var, install_btn),
+                    args=(zu, su, status_var, install_btn, close_btn),
                     daemon=True,
                 ).start()
 
-            if zip_url:
+            if self._in_progress.is_set():
+                # Reopened while an install from an earlier window is running.
+                install_btn.config(state="disabled")
+                status_var.set("An update is already in progress.")
+            elif zip_url:
                 _cmd = lambda zu=zip_url, su=sums_url: _start_install(zu, su)  # noqa: E731  # default-arg lambda; tkinter stubs cannot infer type  # type: ignore[misc]
                 install_btn.config(command=_cmd)
             else:
@@ -317,11 +420,15 @@ class UpdateDialog:
                 threading.Thread(target=_refetch, daemon=True).start()
 
         def _close() -> None:
+            # Cancels a download in progress; a no-op once update.ps1 has
+            # been launched (the worker stops checking after hand-off).
+            self._cancel.set()
             if win.winfo_exists():
                 win.destroy()
 
-        close_text = "Cancel" if frozen else "Close"
-        ttk.Button(btn_frame, text=close_text, command=_close).pack(side="left", padx=8)
+        close_btn.config(command=_close)
+        close_btn.pack(side="left", padx=8)
+        win.protocol("WM_DELETE_WINDOW", _close)
 
         win.lift()
         win.focus_force()
@@ -333,6 +440,7 @@ class UpdateDialog:
         sums_url: str | None,
         status_var: tk.StringVar,
         install_btn: ttk.Button,
+        close_btn: ttk.Button | None = None,
     ) -> None:
         """Download the zip, verify its checksum, write the PS1 helper, launch it, then quit the tray."""
         import time as _time
@@ -343,6 +451,7 @@ class UpdateDialog:
 
         def _on_error(err: Exception) -> None:
             logging.exception("in-app update download failed")
+            self._in_progress.clear()
 
             def _apply() -> None:
                 status_var.set(f"Download failed: {err}")
@@ -350,26 +459,31 @@ class UpdateDialog:
                 # UpdateDialog window (and install_btn with it) may have been
                 # closed in the meantime (#157).
                 _configure_if_alive(install_btn, state="normal")
+                _configure_if_alive(close_btn, state="normal")
 
             if self._root:
                 self._root.after(0, _apply)
 
-        try:
-            # Allowlist check — must happen before any network connection.
-            _check_download_host(zip_url)
+        def _check_cancelled() -> None:
+            if self._cancel.is_set():
+                raise UpdateCancelled()
 
-            req = urllib.request.Request(
-                zip_url,
-                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+        # --- Download + hash verification (cancellable) ---
+        # verify_zip_checksum is unconditionally fail-closed (#113): it raises
+        # on a hash mismatch AND when the SHA256SUMS asset is absent.  Any
+        # failure or cancel deletes the partial/rejected zip from %TEMP%.
+        zip_path: Path | None = None
+        try:
+            with _open_update_url(zip_url, timeout=60) as resp:
                 content_length = resp.headers.get("Content-Length")
                 total_mb: float | None = int(content_length) / (1024 * 1024) if content_length else None
                 tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix="plaud_update_")
+                zip_path = Path(tmp.name)
                 try:
                     downloaded = 0
                     chunk_size = 65536
                     while True:
+                        _check_cancelled()
                         chunk = resp.read(chunk_size)
                         if not chunk:
                             break
@@ -384,22 +498,23 @@ class UpdateDialog:
                 finally:
                     tmp.close()
 
-            zip_path = Path(tmp.name)
+            _check_cancelled()
+            _set_status("Verifying…")
+            verify_zip_checksum(zip_path, sums_url)
+            _check_cancelled()
+        except UpdateCancelled:
+            logging.info("in-app update: cancelled by user")
+            _discard_download(zip_path)
+            self._in_progress.clear()
+            return
         except Exception as exc:
+            _discard_download(zip_path)
             _on_error(exc)
             return
 
-        # --- Hash verification (MUST happen before writing dispatcher/sentinel) ---
-        # verify_zip_checksum is unconditionally fail-closed (#113): it raises on
-        # a hash mismatch AND when the SHA256SUMS asset is absent.
-        try:
-            _set_status("Verifying…")
-            verify_zip_checksum(zip_path, sums_url)
-        except Exception as exc:
-            # ChecksumMismatch or network error fetching SHA256SUMS — refuse to proceed.
-            zip_path.unlink(missing_ok=True)
-            _on_error(exc)
-            return
+        # --- Hand-off: from here on Cancel can no longer stop the update ---
+        if self._root:
+            self._root.after(0, lambda: _configure_if_alive(close_btn, state="disabled"))
 
         try:
             _set_status("Installing…")
@@ -418,7 +533,7 @@ class UpdateDialog:
 
             # NOTE: the success sentinel (plaud_just_updated.txt) is intentionally
             # NOT written here. update.ps1 writes it only AFTER a successful
-            # extraction. Pre-writing it meant a silently-failed update (e.g. the
+            # swap. Pre-writing it meant a silently-failed update (e.g. the
             # updater process being killed before it ran) still left the sentinel
             # behind, and the restarted old tray falsely announced success.
             ps_content = render_update_ps1(
@@ -467,6 +582,7 @@ class UpdateDialog:
                 if rc is not None:
                     # Updater exited before writing a heartbeat → it never ran.
                     self._record_launch_failure(fail_sentinel, ps_path, tray_pid, rc)
+                    _discard_download(zip_path)
                     _on_error(
                         RuntimeError(
                             f"The updater exited (code {rc}) before it could start. "
@@ -477,10 +593,19 @@ class UpdateDialog:
                 _time.sleep(0.2)
 
             # Timed out waiting for the heartbeat while the process is still
-            # alive — PowerShell is wedged or blocked. Do NOT quit the tray
-            # (the user would be stranded mid-update); surface a failure.
+            # alive — PowerShell is wedged or blocked. Kill it so it cannot
+            # wake up later and install behind the user's back after we have
+            # reported failure (and possibly after they retried), then report.
             logging.error("in-app update: no updater heartbeat after %ss", _UPDATER_HEARTBEAT_TIMEOUT_S)
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                logging.warning(
+                    "in-app update: could not kill wedged updater pid=%s", proc.pid, exc_info=True
+                )
             self._record_launch_failure(fail_sentinel, ps_path, tray_pid, None)
+            _discard_download(zip_path)
             _on_error(
                 RuntimeError(
                     "The updater did not start within the expected time. "
@@ -522,5 +647,6 @@ __all__ = [
     "_check_for_update",
     "ChecksumMismatch",
     "verify_zip_checksum",
+    "UpdateCancelled",
     "UpdateDialog",
 ]

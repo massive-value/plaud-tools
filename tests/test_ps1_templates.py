@@ -196,14 +196,13 @@ def test_uninstall_ps1_is_ascii_only():
     assert not offenders, f"non-ASCII bytes in uninstall.ps1 at offsets {offenders[:5]}"
 
 
-def test_update_ps1_prunes_stale_dist_info():
-    """Overlay extraction (Expand-Archive -Force) leaves the old version's
-    plaud_tools-*.dist-info behind, so importlib.metadata resolves the OLD
-    version. update.ps1 must prune the stale dist-info after extracting.
-    """
+def test_update_ps1_swaps_via_staging_dir_not_overlay():
+    """The update is extracted into a sibling staging dir and swapped in, so
+    it never overlays the live install (no rollback, stale files kept)."""
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
-    assert "Remove-StaleDistInfo" in content
-    assert "plaud_tools-*.dist-info" in content
+    assert '$stagingDir = "$liveDir.staging"' in content
+    assert "Expand-Archive -Path $ZipPath -DestinationPath $stagingDir" in content
+    assert "-DestinationPath $destination" not in content
 
 
 def test_update_ps1_writes_success_sentinel_on_success():
@@ -258,9 +257,9 @@ def test_uninstall_ps1_accepts_install_dir_param():
     assert "InstallDir" in content
 
 
-def test_uninstall_ps1_accepts_log_dirs_param():
+def test_uninstall_ps1_accepts_log_dir_param():
     content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
-    assert "LogDirs" in content
+    assert "[string]$LogDir" in content
 
 
 def test_uninstall_ps1_waits_for_tray_pid():
@@ -292,9 +291,25 @@ def test_uninstall_ps1_deletes_install_dir():
     assert "InstallDir" in content
 
 
-def test_uninstall_ps1_self_destructs():
+def test_uninstall_ps1_deletes_dispatcher_not_bundled_script():
+    """The %TEMP% dispatcher is what lingers; the bundled script goes away
+    with the install dir. Deleting $MyInvocation (the bundled copy) left the
+    dispatcher behind in %TEMP% on every uninstall."""
     content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
-    assert "Remove-Item $MyInvocation.MyCommand.Path" in content
+    assert "Remove-Item -LiteralPath $DispatcherPath" in content
+    assert "Remove-Item $MyInvocation.MyCommand.Path" not in content
+
+
+def test_uninstall_ps1_only_deletes_log_files_never_the_data_dir():
+    content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
+    assert "Remove-Item -Path $dir -Recurse" not in content
+    assert "Remove-PlaudLogFiles -Dir $LogDir" in content
+
+
+def test_uninstall_ps1_checks_for_plaudtools_exe_before_deleting():
+    content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
+    guard = content.index("Join-Path $InstallDir 'PlaudTools.exe'")
+    assert guard < content.index("Remove-Item -LiteralPath $InstallDir -Recurse")
 
 
 # ---------------------------------------------------------------------------
@@ -557,35 +572,21 @@ def test_render_uninstall_ps1_invokes_uninstall_script():
     assert "uninstall.ps1" in result
 
 
-def test_render_uninstall_ps1_no_log_dirs_omits_flag():
+def test_render_uninstall_ps1_no_log_dir_omits_flag():
+    result = render_uninstall_ps1(tray_pid=1, install_dir=r"C:\Programs\PlaudTools")
+    assert "-LogDir" not in result
+    assert "-DispatcherPath" not in result
+
+
+def test_render_uninstall_ps1_includes_log_dir_and_dispatcher_when_provided():
     result = render_uninstall_ps1(
         tray_pid=1,
         install_dir=r"C:\Programs\PlaudTools",
-        log_dirs=None,
+        log_dir=r"C:\Users\foo\AppData\Local\PlaudTools",
+        dispatcher_path=r"C:\Temp\plaud_uninstall_1.ps1",
     )
-    assert "-LogDirs" not in result
-
-
-def test_render_uninstall_ps1_includes_log_dirs_when_provided():
-    result = render_uninstall_ps1(
-        tray_pid=1,
-        install_dir=r"C:\Programs\PlaudTools",
-        log_dirs=[r"C:\Users\foo\AppData\Local\PlaudTools"],
-    )
-    assert "-LogDirs" in result
-    assert "PlaudTools" in result
-
-
-def test_render_uninstall_ps1_multiple_log_dirs_joined_by_semicolon():
-    result = render_uninstall_ps1(
-        tray_pid=1,
-        install_dir=r"C:\Programs\PlaudTools",
-        log_dirs=[
-            r"C:\Users\foo\AppData\Local\PlaudTools",
-            r"C:\Users\foo\AppData\Local\Plaud",
-        ],
-    )
-    assert "PlaudTools;C:" in result or "PlaudTools;" in result
+    assert r"-LogDir 'C:\Users\foo\AppData\Local\PlaudTools'" in result
+    assert r"-DispatcherPath 'C:\Temp\plaud_uninstall_1.ps1'" in result
 
 
 def test_render_uninstall_ps1_escapes_single_quotes():
@@ -720,3 +721,160 @@ def test_bom_dispatcher_parses_under_windows_powershell_51(tmp_path, render_fn, 
     )
     assert result.returncode == 0, f"powershell invocation failed:\n{result.stdout}\n{result.stderr}"
     assert result.stdout.strip() == "", f"PS 5.1 parse errors:\n{result.stdout}"
+
+
+# ---------------------------------------------------------------------------
+# update.ps1 staged swap — behavioral, real Windows PowerShell 5.1 (what the
+# tray launches). TEMP is redirected so sentinels never reach the real %TEMP%.
+# ---------------------------------------------------------------------------
+
+_BUNDLE_FILES = ("PlaudTools.exe", "mcp/plaud-mcp.exe", "cli/plaud-tools.exe")
+
+
+def _make_install(root, version: str, extra: tuple[str, ...] = ()) -> None:
+    for rel in (*_BUNDLE_FILES, *extra):
+        f = root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(version, encoding="ascii")
+
+
+def _make_update_zip(path, version: str, files: tuple[str, ...] = _BUNDLE_FILES) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as zf:
+        for rel in files:
+            zf.writestr(f"PlaudTools/{rel}", version)
+
+
+def _run_update_ps1(tmp_path, install, zip_path):  # type: ignore[no-untyped-def]
+    import os
+
+    temp = tmp_path / "temp"
+    temp.mkdir(exist_ok=True)
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait()  # its PID stands in for a tray that has already quit
+    env = {**os.environ, "TEMP": str(temp), "TMP": str(temp)}
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(scripts_dir() / "update.ps1"),
+            "-TrayPid",
+            str(exited.pid),
+            "-InstallDir",
+            str(install),
+            "-ZipPath",
+            str(zip_path),
+            "-ExtractDir",
+            str(install.parent),
+            "-NewVersion",
+            "2.0.0",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    return result, temp
+
+
+_needs_ps51 = pytest.mark.skipif(
+    sys.platform != "win32" or shutil.which("powershell") is None,
+    reason="Windows PowerShell 5.1 not available",
+)
+
+
+@_needs_ps51
+def test_update_ps1_swaps_in_new_tree_and_drops_removed_files(tmp_path):
+    install = tmp_path / "Programs" / "PlaudTools"
+    _make_install(install, "1.0.0", extra=("_internal/old_dependency.dll", ".autostart_disabled"))
+    zip_path = tmp_path / "plaud_update_1.zip"
+    _make_update_zip(zip_path, "2.0.0")
+
+    result, temp = _run_update_ps1(tmp_path, install, zip_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "PlaudTools.exe").read_text(encoding="ascii") == "2.0.0"
+    assert not (install / "_internal" / "old_dependency.dll").exists()
+    assert (install / ".autostart_disabled").exists(), "autostart opt-out must survive the update"
+    assert not (tmp_path / "Programs" / "PlaudTools.old").exists()
+    assert not (tmp_path / "Programs" / "PlaudTools.staging").exists()
+    assert (temp / "plaud_just_updated.txt").read_bytes() == b"2.0.0"
+    assert not (temp / "plaud_update_failed.txt").exists()
+
+
+@_needs_ps51
+def test_update_ps1_incomplete_package_leaves_live_install_untouched(tmp_path):
+    install = tmp_path / "Programs" / "PlaudTools"
+    _make_install(install, "1.0.0")
+    zip_path = tmp_path / "plaud_update_1.zip"
+    _make_update_zip(zip_path, "2.0.0", files=("PlaudTools.exe",))  # mcp/cli missing
+
+    _result, temp = _run_update_ps1(tmp_path, install, zip_path)
+
+    assert (install / "mcp" / "plaud-mcp.exe").read_text(encoding="ascii") == "1.0.0"
+    assert (install / "PlaudTools.exe").read_text(encoding="ascii") == "1.0.0"
+    assert not (tmp_path / "Programs" / "PlaudTools.staging").exists()
+    assert "incomplete" in (temp / "plaud_update_failed.txt").read_text(encoding="utf-8")
+    assert not (temp / "plaud_just_updated.txt").exists()
+
+
+def _run_uninstall_ps1(tmp_path, install, log_dir, dispatcher):  # type: ignore[no-untyped-def]
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait()
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(scripts_dir() / "uninstall.ps1"),
+            "-TrayPid",
+            str(exited.pid),
+            "-InstallDir",
+            str(install),
+            "-LogDir",
+            str(log_dir),
+            "-DispatcherPath",
+            str(dispatcher),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+@_needs_ps51
+def test_uninstall_ps1_deletes_install_and_logs_but_keeps_credentials(tmp_path):
+    install = tmp_path / "Programs" / "PlaudTools"
+    _make_install(install, "1.0.0")
+    data = tmp_path / "PlaudTools"
+    data.mkdir()
+    for name in ("tray.log", "tray.log.1", "mcp.log", "session.json", "session.dat"):
+        (data / name).write_text("x", encoding="ascii")
+    dispatcher = tmp_path / "plaud_uninstall_1.ps1"
+    dispatcher.write_text("# dispatcher", encoding="ascii")
+
+    result = _run_uninstall_ps1(tmp_path, install, data, dispatcher)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not install.exists()
+    assert sorted(p.name for p in data.iterdir()) == ["session.dat", "session.json"]
+    assert not dispatcher.exists()
+
+
+@_needs_ps51
+def test_uninstall_ps1_refuses_to_delete_a_folder_without_plaudtools_exe(tmp_path):
+    not_ours = tmp_path / "Downloads"
+    not_ours.mkdir()
+    (not_ours / "important.docx").write_text("x", encoding="ascii")
+
+    _run_uninstall_ps1(tmp_path, not_ours, tmp_path / "none", tmp_path / "none.ps1")
+
+    assert (not_ours / "important.docx").exists()

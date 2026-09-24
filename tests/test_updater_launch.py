@@ -134,3 +134,85 @@ class TestInstallWorkerOnErrorWidgetGuard:
         dialog._install_worker("https://evil.example/x.zip", None, status_var, install_btn)
 
         install_btn.configure.assert_called_once_with(state="normal")
+
+
+# ---------------------------------------------------------------------------
+# Install worker: cleanup, cancel, wedged-updater kill, single-install guard
+# ---------------------------------------------------------------------------
+
+ZIP_URL = "https://github.com/massive-value/plaud-tools/releases/download/v9.9.9/PlaudTools.zip"
+
+
+def _fake_download(monkeypatch, chunks):
+    """Serve *chunks* (bytes, or an exception to raise) from the zip download."""
+    resp = MagicMock()
+    resp.__enter__.return_value = resp
+    resp.headers.get.return_value = None
+    resp.read.side_effect = list(chunks)
+    monkeypatch.setattr(updater, "_open_update_url", lambda url, timeout: resp)
+
+
+@pytest.fixture()
+def worker_env(tmp_path, monkeypatch):
+    """Point every %TEMP% write at tmp_path (sentinels must never hit the real TEMP)."""
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    return tmp_path
+
+
+def _started_dialog() -> UpdateDialog:
+    dialog = _make_dialog()
+    assert dialog._try_begin_install()
+    return dialog
+
+
+def test_download_error_deletes_partial_zip(worker_env, monkeypatch):
+    _fake_download(monkeypatch, [b"partial", OSError("connection reset")])
+    dialog = _started_dialog()
+
+    dialog._install_worker(ZIP_URL, None, MagicMock(), MagicMock())
+
+    assert list(worker_env.glob("plaud_update_*.zip")) == []
+    assert not dialog._in_progress.is_set()
+
+
+def test_cancel_stops_download_and_never_launches_updater(worker_env, monkeypatch):
+    _fake_download(monkeypatch, [b"chunk", b"chunk", b""])
+    launch = MagicMock()
+    monkeypatch.setattr(updater, "_launch_updater", launch)
+    dialog = _started_dialog()
+    dialog._cancel.set()  # user clicked Cancel
+
+    dialog._install_worker(ZIP_URL, None, MagicMock(), MagicMock())
+
+    launch.assert_not_called()
+    assert list(worker_env.glob("plaud_update_*.zip")) == []
+    assert not dialog._in_progress.is_set()
+
+
+def test_heartbeat_timeout_kills_the_updater(worker_env, monkeypatch):
+    """A wedged PowerShell must be killed, or it can wake up and install
+    after the tray already reported failure (two updaters racing)."""
+    _fake_download(monkeypatch, [b"zipbytes", b""])
+    monkeypatch.setattr(updater, "verify_zip_checksum", lambda *a: None)
+    monkeypatch.setattr(updater, "render_update_ps1", lambda **kw: "# dispatcher\n")
+    monkeypatch.setattr(updater, "_UPDATER_HEARTBEAT_TIMEOUT_S", 0.3)
+    layout = MagicMock(install_root=worker_env / "PlaudTools")
+    monkeypatch.setattr(updater.InstallLayout, "detect", classmethod(lambda cls: layout))
+    proc = MagicMock(pid=999)
+    proc.poll.return_value = None  # alive, but never writes the heartbeat
+    monkeypatch.setattr(updater, "_launch_updater", lambda ps_path: proc)
+    dialog = _started_dialog()
+
+    dialog._install_worker(ZIP_URL, "unused", MagicMock(), MagicMock())
+
+    proc.kill.assert_called_once()
+    dialog._app._quit.assert_not_called()
+    assert (worker_env / "plaud_update_failed.txt").exists()
+    assert list(worker_env.glob("plaud_update_*.zip")) == []
+    assert not dialog._in_progress.is_set()
+
+
+def test_only_one_install_at_a_time():
+    dialog = _make_dialog()
+    assert dialog._try_begin_install() is True
+    assert dialog._try_begin_install() is False

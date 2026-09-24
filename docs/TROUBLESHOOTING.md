@@ -34,7 +34,9 @@ If the tray fails to start, files were quarantined by antivirus, or the install 
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1))) -Repair
 ```
 
-`-Repair` shuts down any running PlaudTools and `plaud-mcp` processes, wipes the existing install directory, and reinstalls from the latest release. Your saved sign-in is preserved.
+`-Repair` shuts down every process running from the install directory (the tray, `plaud-mcp`, ffmpeg, the CLI), retrying if Claude Desktop restarts `plaud-mcp`, wipes the existing install directory, and reinstalls from the latest release. It does not need to read the old version, so it also works when `PlaudTools.exe` is corrupt. Your saved sign-in is preserved.
+
+If it reports that a file is still in use, close Claude Desktop (and any other AI client that uses Plaud Tools) and run it again.
 
 `-Force` does the same thing but also bypasses the "already up to date" guard, useful when you want a clean reinstall of the current version:
 
@@ -89,10 +91,10 @@ Please retry; if the mismatch persists report it at https://github.com/massive-v
 
 ## In-app updater host-allowlist refusal
 
-The tray updater restricts downloads to `github.com` and `objects.githubusercontent.com`. If the GitHub releases API returns a download URL with a different hostname, the tray refuses the download and logs:
+The tray updater restricts downloads (the zip and `SHA256SUMS`) to `github.com`, `objects.githubusercontent.com` and `release-assets.githubusercontent.com`. Every redirect hop and the final download URL are checked. If any of them has a different hostname, the tray refuses the download and logs:
 
 ```
-Refusing to download update from untrusted host '<host>'. Allowed hosts: ['github.com', 'objects.githubusercontent.com']
+Refusing to download update from untrusted host '<host>'. Allowed hosts: ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com']
 ```
 
 The update is refused; the tray surfaces a **"PlaudTools — Update failed"** notification whose body carries this refusal reason, and the message is also logged to `tray.log`.
@@ -104,6 +106,28 @@ The update is refused; the tray surfaces a **"PlaudTools — Update failed"** no
    - Download `PlaudTools.zip` directly from the [releases page](https://github.com/massive-value/plaud-tools/releases).
    - Re-run the installer with `-Repair`: `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/massive-value/plaud-tools/main/scripts/install.ps1))) -Repair`
 3. File a bug with the URL from the log message if the host looks unexpected: <https://github.com/massive-value/plaud-tools/issues>
+
+---
+
+## In-app update failed or was interrupted
+
+The in-app updater extracts the new version next to your install (`PlaudTools.staging`), checks it, then swaps it in by renaming the old install to `PlaudTools.old`. If anything goes wrong before the swap finishes, the old install is put back and the tray restarts on the old version. The reason is shown on the next tray launch and written to `%TEMP%\plaud_update_<pid>.log`.
+
+- **"keeps respawning" or "a file is probably still in use"**: close Claude Desktop (and any other AI client that uses Plaud Tools) and run the update again.
+- **A leftover `PlaudTools.old` or `PlaudTools.staging` folder** next to your install: safe to delete. The next update also removes it.
+- **"could not be restored automatically"**: the previous version is in `PlaudTools.old`. Re-run the installer with `-Repair` (see [Broken or partial install](#broken-or-partial-install)).
+
+---
+
+## PowerShell tab-completion not working
+
+The tray adds this line to the profiles PowerShell really loads (found through the Windows Documents folder, which OneDrive may redirect):
+
+```powershell
+if (Test-Path '<install>\_internal\completions\plaud-tools.ps1') { . '<install>\_internal\completions\plaud-tools.ps1' }
+```
+
+Check with `Get-Content $PROFILE` in a new PowerShell window. If the line is missing, click **Repair setup** on the PlaudTools home window. Older versions wrote the line to `~\Documents` even when OneDrive redirected Documents, so completion never loaded there; current versions move it and remove the old line.
 
 ---
 

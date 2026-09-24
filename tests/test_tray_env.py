@@ -115,6 +115,24 @@ class TestStaleSourceRe:
         assert result is not None
         assert result.match(line.strip()) is None
 
+    def test_matches_pyinstaller6_internal_path(self, monkeypatch, tmp_path):
+        """The real bundle puts completions under _internal (PyInstaller 6);
+        before the fix uninstall never matched this line."""
+        completions = self._setup_frozen_env(monkeypatch, tmp_path)
+        real = completions.parent / "_internal" / "completions" / "plaud-tools.ps1"
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(self._make_line(str(real))) is not None
+
+    def test_matches_guarded_line_format(self, monkeypatch, tmp_path):
+        from plaud_tools.tray.setup import _guarded_source_line
+
+        completions = self._setup_frozen_env(monkeypatch, tmp_path)
+        real = completions.parent / "_internal" / "completions" / "plaud-tools.ps1"
+        result = _stale_sourcing_re()
+        assert result is not None
+        assert result.match(_guarded_source_line(real)) is not None
+
     def test_case_insensitive(self, monkeypatch, tmp_path):
         completions = self._setup_frozen_env(monkeypatch, tmp_path)
         line = self._make_line(str(completions / "plaud-tools.ps1").upper())
@@ -384,8 +402,34 @@ class TestCheckCliPath:
 
 
 # ---------------------------------------------------------------------------
-# _check_ps_completions — profile-level check
+# _check_ps_completions / _setup_ps_completions — OneDrive-redirected Documents
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def onedrive_profiles(tmp_path, monkeypatch):
+    """A machine whose Documents known folder is redirected into OneDrive.
+
+    Returns (ps1, real_docs, home_docs): the bundled completion script, the
+    Documents folder PowerShell really loads $PROFILE from, and the unused
+    ~/Documents folder older builds wrote to.
+    """
+    import plaud_tools.tray.setup as setup_mod
+
+    ps1 = tmp_path / "PlaudTools" / "_internal" / "completions" / "plaud-tools.ps1"
+    ps1.parent.mkdir(parents=True)
+    ps1.write_text("# completions\n", encoding="utf-8")
+    real_docs = tmp_path / "OneDrive - Contoso" / "Documents"
+    home_docs = tmp_path / "home" / "Documents"
+    monkeypatch.setattr(setup_mod, "_completions_dir", lambda: ps1.parent)
+    monkeypatch.setattr(setup_mod, "_known_documents_dir", lambda: real_docs)
+    monkeypatch.setattr(setup_mod, "_install_dir", lambda: tmp_path / "PlaudTools")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    return ps1, real_docs, home_docs
+
+
+def _profile(docs: Path, flavor: str = "WindowsPowerShell") -> Path:
+    return docs / flavor / "Microsoft.PowerShell_profile.ps1"
 
 
 class TestCheckPsCompletions:
@@ -393,55 +437,89 @@ class TestCheckPsCompletions:
         # _completions_dir() → None in dev mode
         assert _check_ps_completions() is True
 
-    def test_found_in_one_profile(self, tmp_path):
-        ps1 = tmp_path / "completions" / "plaud-tools.ps1"
-        ps1.parent.mkdir()
-        ps1.write_text("# completions\n")
-        source_line = f'. "{ps1}"'
-        profile = tmp_path / "profile.ps1"
-        profile.write_text(source_line + "\n", encoding="utf-8")
+    def test_found_in_real_profile(self, onedrive_profiles):
+        from plaud_tools.tray.setup import _guarded_source_line
 
-        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
-            with patch("plaud_tools.tray.setup.Path") as mock_path_cls:  # noqa: F841
-                # We only need to patch the home() call inside _check_ps_completions
-                # to point at our tmp tree; easier to patch at a higher level.
-                pass
-        # Direct test: patch the profile list
-        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
-            import plaud_tools.tray.setup as ta
+        ps1, real_docs, _ = onedrive_profiles
+        _profile(real_docs).parent.mkdir(parents=True)
+        _profile(real_docs).write_text(_guarded_source_line(ps1) + "\n", encoding="utf-8")
+        assert _check_ps_completions() is True
 
-            orig = ta._check_ps_completions  # noqa: F841  # captured for reference only
-            # Monkey-patch profiles list via Path.home()
-            with patch.object(Path, "home", return_value=tmp_path / "home"):
-                docs = tmp_path / "home" / "Documents"
-                docs.mkdir(parents=True, exist_ok=True)
-                prof_dir = docs / "PowerShell"
-                prof_dir.mkdir(parents=True, exist_ok=True)
-                actual_profile = prof_dir / "Microsoft.PowerShell_profile.ps1"
-                actual_profile.write_text(source_line + "\n", encoding="utf-8")
-                result = ta._check_ps_completions()
-            assert result is True
+    def test_line_only_in_unused_home_profile_is_missing(self, onedrive_profiles):
+        """The OneDrive bug: a line in ~/Documents is never loaded, so the
+        check must not report OK for it."""
+        from plaud_tools.tray.setup import _guarded_source_line
 
-    def test_not_found_in_profiles(self, tmp_path):
-        ps1 = tmp_path / "completions" / "plaud-tools.ps1"
-        ps1.parent.mkdir()
-        ps1.write_text("# completions\n")
-        with patch("plaud_tools.tray.setup._completions_dir", return_value=ps1.parent):
-            import plaud_tools.tray.setup as ta
+        ps1, _, home_docs = onedrive_profiles
+        _profile(home_docs).parent.mkdir(parents=True)
+        _profile(home_docs).write_text(_guarded_source_line(ps1) + "\n", encoding="utf-8")
+        assert _check_ps_completions() is False
 
-            with patch.object(Path, "home", return_value=tmp_path / "home"):
-                docs = tmp_path / "home" / "Documents"
-                docs.mkdir(parents=True, exist_ok=True)
-                (docs / "PowerShell").mkdir(parents=True, exist_ok=True)
-                (docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1").write_text(
-                    "# no sourcing here\n", encoding="utf-8"
-                )
-                (docs / "WindowsPowerShell").mkdir(parents=True, exist_ok=True)
-                (docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1").write_text(
-                    "# no sourcing here\n", encoding="utf-8"
-                )
-                result = ta._check_ps_completions()
-            assert result is False
+    def test_old_unguarded_line_reports_missing_so_it_gets_migrated(self, onedrive_profiles):
+        ps1, real_docs, _ = onedrive_profiles
+        _profile(real_docs).parent.mkdir(parents=True)
+        _profile(real_docs).write_text(f'. "{ps1}"\n', encoding="utf-8")
+        assert _check_ps_completions() is False
+
+
+class TestSetupPsCompletionsOneDrive:
+    def test_writes_guarded_line_to_real_profiles_and_scrubs_home(self, onedrive_profiles):
+        from plaud_tools.tray.setup import _guarded_source_line, _setup_ps_completions
+
+        ps1, real_docs, home_docs = onedrive_profiles
+        old_home = _profile(home_docs)
+        old_home.parent.mkdir(parents=True)
+        old_home.write_text(f'# mine\n. "{ps1}"\n', encoding="utf-8")
+
+        _setup_ps_completions()
+
+        line = _guarded_source_line(ps1)
+        for flavor in ("PowerShell", "WindowsPowerShell"):
+            assert _profile(real_docs, flavor).read_text(encoding="utf-8") == line + "\n"
+        assert old_home.read_text(encoding="utf-8") == "# mine\n"
+        assert _check_ps_completions() is True
+
+    def test_idempotent(self, onedrive_profiles):
+        from plaud_tools.tray.setup import _setup_ps_completions
+
+        _, real_docs, _ = onedrive_profiles
+        _setup_ps_completions()
+        first = _profile(real_docs).read_bytes()
+        _setup_ps_completions()
+        assert _profile(real_docs).read_bytes() == first
+
+    def test_removes_dangling_line_from_a_deleted_install(self, onedrive_profiles, tmp_path):
+        """Kadin's real leftover: a line pointing at a deleted test extraction."""
+        from plaud_tools.tray.setup import _setup_ps_completions
+
+        _, real_docs, _ = onedrive_profiles
+        gone = tmp_path / "plaud_v131_e2e" / "PlaudTools" / "_internal" / "completions" / "plaud-tools.ps1"
+        _profile(real_docs).parent.mkdir(parents=True)
+        _profile(real_docs).write_text(f'. "{gone}"\n', encoding="utf-8")
+
+        _setup_ps_completions()
+
+        assert str(gone) not in _profile(real_docs).read_text(encoding="utf-8")
+
+    def test_crlf_profile_keeps_crlf_line_endings(self, onedrive_profiles):
+        """Rewriting a CRLF profile used to produce CR CR LF on Windows."""
+        from plaud_tools.tray.setup import _guarded_source_line, _setup_ps_completions
+
+        ps1, real_docs, _ = onedrive_profiles
+        _profile(real_docs).parent.mkdir(parents=True)
+        _profile(real_docs).write_bytes(b"# mine\r\n")
+
+        _setup_ps_completions()
+
+        expected = f"# mine\r\n{_guarded_source_line(ps1)}\r\n".encode()
+        assert _profile(real_docs).read_bytes() == expected
+
+    def test_guarded_line_escapes_single_quotes(self):
+        from plaud_tools.tray.setup import _guarded_source_line
+
+        line = _guarded_source_line(Path("C:/Users/o'brien/plaud-tools.ps1"))
+        assert "o''brien" in line
+        assert line.startswith("if (Test-Path '")
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +555,7 @@ class TestInstallPs1:
         through to the -Force wipe branch (which would silently downgrade a
         dev/pre-release build to the older published release).
         """
-        assert "$installedVerNum -gt $latestVerNum -and -not $Force" in script_text
+        assert "-not $Force -and $installedVerNum -and $installedVerNum -gt $latestVerNum" in script_text
 
     def test_update_available_message_mentions_repair(self, script_text: str):
         """#159: stuck <=0.3.3 users (whose in-app updater predates the fix)
@@ -702,6 +780,16 @@ class TestProfileIoHelpers:
 
         raw = profile.read_bytes()
         assert not raw.startswith(b"\xef\xbb\xbf")
+
+    def test_write_adds_bom_for_non_ascii_content(self, tmp_path):
+        """PS 5.1 reads BOM-less files as ANSI, so a non-ASCII install path
+        (non-ASCII username) needs the BOM to load."""
+        from plaud_tools.tray.setup import _write_profile_text
+
+        profile = tmp_path / "profile.ps1"
+        _write_profile_text(profile, "if (Test-Path 'C:\\Users\\Jos\u00e9\\x.ps1') {}\n", had_bom=False)
+
+        assert profile.read_bytes().startswith(b"\xef\xbb\xbf")
 
     def test_round_trip_preserves_bom_through_setup_ps_completions(self, tmp_path, monkeypatch):
         """End-to-end: a BOM'd profile keeps its BOM after _setup_ps_completions

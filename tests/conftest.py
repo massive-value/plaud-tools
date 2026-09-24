@@ -107,3 +107,40 @@ def _fail_if_real_shadow_written():
             f"(mtime {before!r} -> {after!r}).  Tests must pin "
             f"dpapi_path under tmp_path or pass dpapi_path=None."
         )
+
+
+# Capture the real PowerShell profile paths once at import time, before the
+# redirect fixture below swaps out the Documents known-folder lookup.
+try:
+    from plaud_tools.tray.setup import _all_ps_profile_paths as _resolve_real_profiles
+
+    _REAL_PS_PROFILES = list(_resolve_real_profiles())
+except Exception:
+    _REAL_PS_PROFILES = []
+
+
+@pytest.fixture(autouse=True)
+def _block_real_ps_profiles(monkeypatch):
+    """Keep tests away from the user's real PowerShell profiles.
+
+    ``tray.setup._known_documents_dir()`` resolves the real (possibly
+    OneDrive-redirected) Documents folder via the Windows shell API, which
+    ``Path.home`` patches cannot redirect.  Returning None makes the profile
+    helpers fall back to ``Path.home() / "Documents"``, which tests pin under
+    ``tmp_path``.  The trip-wire below catches anything that slips through.
+    """
+    try:
+        import plaud_tools.tray.setup as tray_setup
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(tray_setup, "_known_documents_dir", lambda: None)
+    before = {p: p.stat().st_mtime if p.exists() else None for p in _REAL_PS_PROFILES}
+    yield
+    after = {p: p.stat().st_mtime if p.exists() else None for p in _REAL_PS_PROFILES}
+    changed = [str(p) for p in _REAL_PS_PROFILES if before[p] != after[p]]
+    if changed:
+        raise AssertionError(
+            f"A test modified the real PowerShell profile(s) {changed}. "
+            "Pin Path.home() under tmp_path (or patch _known_documents_dir)."
+        )

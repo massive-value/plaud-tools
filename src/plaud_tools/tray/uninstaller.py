@@ -18,13 +18,13 @@ from .process_launch import launch_hidden_powershell
 from .ps1_templates import render_uninstall_ps1
 from .setup import (
     APP_NAME,
+    _all_ps_profile_paths,
     _cli_dir,
-    _read_profile_text,
+    _scrub_profile,
     _set_app_icon,
     _set_autostart,
     _stale_sourcing_re,
     _unregister_com_activator,
-    _write_profile_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -77,34 +77,18 @@ def _remove_cli_path() -> None:
 def _remove_ps_completions() -> None:
     """Remove plaud-tools sourcing lines from the user's PowerShell profiles.
 
-    Only lines that point at the running PlaudTools install directory are removed;
-    unrelated user scripts in other completions folders are not touched.
-    When _stale_sourcing_re() returns None (pip/dev channel with no install_root),
-    no removal is performed.
+    Scrubs both the real (known-folder, possibly OneDrive) profiles and the
+    legacy ``~/Documents`` ones.  Removes lines that point at the running
+    install (old and guarded formats, with or without ``_internal``) plus
+    dangling plaud completion lines whose target file is gone.  Unrelated
+    user scripts are never touched.
     """
     stale_re = _stale_sourcing_re()
-    if stale_re is None:
-        return
-    user_docs = Path.home() / "Documents"
-    profiles = [
-        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ]
-    for profile in profiles:
+    for profile in _all_ps_profile_paths():
         if not profile.exists():
             continue
         try:
-            content, had_bom = _read_profile_text(profile)
-            if content is None:
-                logging.warning(
-                    "Could not decode PowerShell profile %s as UTF-8; leaving it untouched", profile
-                )
-                continue
-            lines = [line for line in content.splitlines(keepends=True) if not stale_re.match(line.strip())]
-            new_content = "".join(lines)
-            if new_content != content:
-                _write_profile_text(profile, new_content, had_bom)
-                logging.info("Removed plaud-tools completions from %s", profile)
+            _scrub_profile(profile, stale_re)
         except OSError:
             logging.warning("Could not update PowerShell profile %s during uninstall", profile, exc_info=True)
 
@@ -120,18 +104,26 @@ def _delete_session_files() -> None:
     logging.info("Deleted session/credentials")
 
 
+# The only files "Delete log files" may remove.  uninstall.ps1 deletes the
+# same patterns after the tray exits (the tray holds tray.log open while it
+# runs); tests keep the two lists in sync.  session.json / session.dat live
+# in the same folder and are only removed by "Delete session / credentials".
+_LOG_FILE_GLOBS: tuple[str, ...] = ("tray.log*", "mcp.log*")
+
+
 def _delete_log_files() -> None:
-    """Delete tray log files from the current data directory (and the legacy Plaud dir)."""
-    current_data_dir = _data_dir()
-    # Check the current data dir and the legacy path (Plaud) for any stragglers
-    candidate_dirs = [current_data_dir]
-    legacy = current_data_dir.parent / "Plaud"
-    if legacy != current_data_dir:
-        candidate_dirs.append(legacy)
-    for log_dir in candidate_dirs:
-        if not log_dir.exists():
-            continue
-        for log_file in log_dir.glob("tray.log*"):
+    """Delete tray.log* and mcp.log* from the data directory, and nothing else.
+
+    Files still locked (the running tray's own tray.log, or an mcp.log held by
+    a live plaud-mcp) are skipped with a warning; uninstall.ps1 retries them
+    after the processes exit.  ``%LOCALAPPDATA%\\Plaud`` belongs to the official
+    Plaud app and is never touched.
+    """
+    log_dir = _data_dir()
+    if not log_dir.exists():
+        return
+    for pattern in _LOG_FILE_GLOBS:
+        for log_file in log_dir.glob(pattern):
             try:
                 log_file.unlink(missing_ok=True)
                 logging.info("Deleted log file %s", log_file)
@@ -142,19 +134,13 @@ def _delete_log_files() -> None:
 def _launch_uninstall_helper(install_dir: Path, delete_logs: bool = False) -> None:
     """Write a hidden PS1 dispatcher to %TEMP% that invokes the bundled uninstall.ps1."""
     tray_pid = os.getpid()
-    log_dirs: list[str] = []
-    if delete_logs:
-        current_data_dir = _data_dir()
-        log_dirs.append(str(current_data_dir))
-        legacy = current_data_dir.parent / "Plaud"
-        if legacy != current_data_dir:
-            log_dirs.append(str(legacy))
+    ps_path = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.ps1"
     ps_content = render_uninstall_ps1(
         tray_pid=tray_pid,
         install_dir=str(install_dir),
-        log_dirs=log_dirs if log_dirs else None,
+        log_dir=str(_data_dir()) if delete_logs else None,
+        dispatcher_path=str(ps_path),
     )
-    ps_path = Path(tempfile.gettempdir()) / f"plaud_uninstall_{tray_pid}.ps1"
     # utf-8-sig (BOM): Windows PowerShell 5.1 treats a BOM-less file as the
     # system ANSI codepage, not UTF-8. A non-ASCII byte in a path embedded in
     # the dispatcher (e.g. %TEMP% under a non-ASCII Windows username) can then
@@ -360,6 +346,7 @@ __all__ = [
     "_remove_ps_completions",
     "_delete_session_files",
     "_delete_log_files",
+    "_LOG_FILE_GLOBS",
     "_launch_uninstall_helper",
     "UninstallDialog",
 ]

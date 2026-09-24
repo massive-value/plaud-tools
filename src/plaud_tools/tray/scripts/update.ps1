@@ -5,8 +5,18 @@
 .DESCRIPTION
     Waits for the tray process to exit, shuts down scoped plaud-mcp processes
     (retrying against external supervisors like Claude Desktop that respawn
-    them), extracts the update zip into the install directory, and restarts
-    the tray.
+    them), then installs the update with a staged swap:
+
+      1. extract the zip into a sibling staging dir (<InstallDir>.staging)
+      2. verify the staged tree has the expected executables
+      3. rename the live install to <InstallDir>.old
+      4. rename the staged tree to <InstallDir>
+      5. delete <InstallDir>.old
+
+    Any failure before step 4 completes rolls back to the untouched old
+    install. Because the new version lands in a fresh directory, files that
+    were removed from the bundle (old dependencies, stale dist-info) do not
+    survive the update.
 
     All output is captured to a transcript log at
     $env:TEMP\plaud_update_<TrayPid>.log so failed runs are diagnosable.
@@ -29,8 +39,8 @@
     Absolute path to the downloaded PlaudTools.zip update archive.
 
 .PARAMETER ExtractDir
-    Hint for the extraction directory. Overridden at runtime based on the zip
-    layout, but accepted as a backstop for callers that still pass it.
+    Legacy hint, accepted so older dispatchers still bind. Unused: the zip is
+    always extracted into the staging dir.
 
 .PARAMETER DispatcherPath
     Optional path to the %TEMP% dispatcher PS1 that invoked this script. Deleted
@@ -39,10 +49,12 @@
     it, which broke subsequent in-app updates.
 
 .PARAMETER NewVersion
-    The version being installed (e.g. "0.3.3"). Used to (a) prune stale
-    plaud_tools-*.dist-info directories left behind by the overlay extraction
-    so importlib.metadata resolves the NEW version, and (b) write the
-    plaud_just_updated.txt success sentinel only AFTER a successful extraction.
+    The version being installed (e.g. "0.3.3"). Written to the
+    plaud_just_updated.txt success sentinel only AFTER a successful swap.
+
+.PARAMETER TrayExitTimeoutSec
+    How long to wait for the tray to exit before giving up without installing
+    anything (default 60).
 #>
 param(
     [Parameter(Mandatory)]
@@ -61,7 +73,9 @@ param(
 
     [string]$SentinelPath = "",
 
-    [string]$NewVersion = ""
+    [string]$NewVersion = "",
+
+    [int]$TrayExitTimeoutSec = 60
 )
 
 Set-StrictMode -Off
@@ -127,64 +141,58 @@ function Write-FailureSentinel {
 }
 
 # ---------------------------------------------------------------------------
-# Probe the zip and return the correct extraction destination.
+# Find the install root inside the extracted staging dir.
 #
-#   A) Single top-level directory (PlaudTools\...): extract to parent of
-#      $InstallDir so files land at Programs\PlaudTools\ not
-#      Programs\PlaudTools\PlaudTools\.
-#   B) Flat layout (files at root of zip): extract directly to $InstallDir.
+#   A) Single top-level directory (PlaudTools\...): the root is that folder.
+#   B) Flat layout (files at the root of the zip): the root is the staging dir.
+#
+# Returns $null when neither shape contains PlaudTools.exe.
 # ---------------------------------------------------------------------------
 
-function Get-ZipExtractDestination {
-    param([string]$ZipPath, [string]$InstallDir)
+function Get-StagedInstallRoot {
+    param([string]$StagingDir)
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
-    try {
-        $topLevel = @{}
-        foreach ($entry in $zip.Entries) {
-            $name = $entry.FullName.TrimStart('/', '\')
-            if (-not $name) { continue }
-            $seg = ($name -split '[/\\]')[0]
-            if ($seg) { $topLevel[$seg] = 1 }
-        }
-        $roots = @($topLevel.Keys)
-        if ($roots.Count -eq 1) {
-            $prefix = $roots[0] + '/'
-            $hasChildren = $zip.Entries | Where-Object {
-                $_.FullName -ne $prefix -and $_.FullName.StartsWith($prefix)
-            }
-            if ($hasChildren) {
-                return (Split-Path $InstallDir -Parent)
-            }
-        }
-        return $InstallDir
-    } finally {
-        $zip.Dispose()
+    if (Test-Path -LiteralPath (Join-Path $StagingDir 'PlaudTools.exe')) {
+        return $StagingDir
     }
+    $children = @(Get-ChildItem -LiteralPath $StagingDir -Force -ErrorAction SilentlyContinue)
+    if ($children.Count -eq 1 -and $children[0].PSIsContainer) {
+        $candidate = $children[0].FullName
+        if (Test-Path -LiteralPath (Join-Path $candidate 'PlaudTools.exe')) {
+            return $candidate
+        }
+    }
+    return $null
 }
 
-# ---------------------------------------------------------------------------
-# Remove orphaned plaud_tools-*.dist-info directories left behind by the
-# overlay extraction (Expand-Archive -Force overwrites matching paths but never
-# deletes files absent from the zip). If a previous version's dist-info
-# survives next to the new one, importlib.metadata.version("plaud-tools")
-# resolves the OLD version and the tray keeps reporting the pre-update version
-# (and re-offering the same "update available"). Keep only $NewVersion's
-# dist-info. No-op when $NewVersion is empty (older callers).
-# ---------------------------------------------------------------------------
+# Remove a directory tree, retrying briefly for handles that are still closing.
+# Returns $true when the directory is gone.
+function Remove-DirWithRetry {
+    param([string]$Path, [int]$Attempts = 5)
 
-function Remove-StaleDistInfo {
-    param([string]$InstallDir, [string]$NewVersion)
+    for ($i = 1; $i -le $Attempts; $i++) {
+        if (-not (Test-Path -LiteralPath $Path)) { return $true }
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $Path)) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return (-not (Test-Path -LiteralPath $Path))
+}
 
-    if (-not $NewVersion) { return }
-    $keep = "plaud_tools-$NewVersion.dist-info"
-    $stale = Get-ChildItem -Path $InstallDir -Recurse -Directory `
-        -Filter 'plaud_tools-*.dist-info' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne $keep }
-    foreach ($d in $stale) {
-        Write-Host "Removing stale dist-info: $($d.FullName)"
-        Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+# Rename a directory, retrying briefly (antivirus scanners and just-killed
+# processes can hold handles for a moment). Throws on final failure.
+function Move-DirWithRetry {
+    param([string]$From, [string]$To, [int]$Attempts = 5)
+
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try {
+            Move-Item -LiteralPath $From -Destination $To -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $Attempts) { throw }
+            Write-Host "Rename $From -> $To failed (attempt $i): $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 500
+        }
     }
 }
 
@@ -197,7 +205,7 @@ function Remove-StaleDistInfo {
 # This is the bug the v0.2.0 -> 0.2.1 update path hit: when Claude Desktop
 # launches plaud-mcp, killing the process just causes Claude to relaunch it
 # almost immediately, and the respawned exe keeps mcp\_internal\*.dll locked,
-# causing Expand-Archive to throw and the script to bail.
+# causing the install to fail.
 #
 # Using path-based discovery (rather than name-based) also catches ffmpeg and
 # any other child processes that plaud-mcp may have spawned - Stop-Process on
@@ -250,42 +258,62 @@ function Stop-PlaudMcpScoped {
 # Main
 # ---------------------------------------------------------------------------
 
+$liveDir    = $InstallDir.TrimEnd('\').TrimEnd('/')
+$stagingDir = "$liveDir.staging"
+$oldDir     = "$liveDir.old"
+$restartTray = $true
+$movedLiveAway = $false
+$swapped = $false
+
 try {
     Write-Host "Plaud Tools updater starting at $(Get-Date -Format 'o')"
     Write-Host "  TrayPid        = $TrayPid"
-    Write-Host "  InstallDir     = $InstallDir"
+    Write-Host "  InstallDir     = $liveDir"
     Write-Host "  ZipPath        = $ZipPath"
-    Write-Host "  ExtractDir     = $ExtractDir (hint; may be overridden)"
+    Write-Host "  StagingDir     = $stagingDir"
     Write-Host "  DispatcherPath = $DispatcherPath"
 
-    # 1. Wait for the tray to exit.
+    # 1. Wait for the tray to exit, with a timeout. If it never exits, give up
+    #    WITHOUT installing: installing later, after the tray already told the
+    #    user the update failed, is how two updaters ended up racing.
+    $deadline = (Get-Date).AddSeconds($TrayExitTimeoutSec)
     while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
+        if ((Get-Date) -ge $deadline) {
+            # The tray is still running, so do not start a second copy.
+            $restartTray = $false
+            $msg = "The tray (PID $TrayPid) did not exit within $TrayExitTimeoutSec seconds, so the update was not installed. Please try again."
+            Write-Host "FAIL: $msg"
+            Write-FailureSentinel -Reason $msg
+            throw $msg
+        }
         Start-Sleep -Seconds 1
     }
     Write-Host "Tray PID $TrayPid has exited"
 
-    # 2. Make sure scoped plaud-mcp is dead AND stays dead long enough to
-    #    extract over its locked DLLs.
-    if (-not (Stop-PlaudMcpScoped -InstallDir $InstallDir)) {
-        $msg = "A process under $InstallDir keeps respawning (likely plaud-mcp being restarted by Claude Desktop). Close Claude Desktop (or any other MCP client that has Plaud Tools registered) and run the update again."
+    # 2. Make sure scoped plaud-mcp is dead AND stays dead long enough to swap
+    #    the install directory.
+    if (-not (Stop-PlaudMcpScoped -InstallDir $liveDir)) {
+        $msg = "A process under $liveDir keeps respawning (likely plaud-mcp being restarted by Claude Desktop). Close Claude Desktop (or any other MCP client that has Plaud Tools registered) and run the update again."
         Write-Host "FAIL: $msg"
         Write-FailureSentinel -Reason $msg
         throw $msg
     }
 
-    # 3. Probe the zip layout and pick the right destination. This overrides
-    #    the $ExtractDir hint from the caller so the in-app update path is as
-    #    robust as the install.ps1 path.
-    $destination = Get-ZipExtractDestination -ZipPath $ZipPath -InstallDir $InstallDir
-    Write-Host "Extracting to $destination"
-
-    if (-not (Test-Path $destination)) {
-        New-Item -ItemType Directory -Path $destination | Out-Null
+    # 3. Clear leftovers from an earlier interrupted run, then extract into
+    #    the staging dir. The live install is not touched yet.
+    foreach ($leftover in @($stagingDir, $oldDir)) {
+        if (-not (Remove-DirWithRetry -Path $leftover)) {
+            $msg = "Could not remove leftover folder $leftover from an earlier update. Delete it and try again."
+            Write-Host "FAIL: $msg"
+            Write-FailureSentinel -Reason $msg
+            throw $msg
+        }
     }
 
+    Write-Host "Extracting to $stagingDir"
     $ProgressPreference = 'SilentlyContinue'
     try {
-        Expand-Archive -Path $ZipPath -DestinationPath $destination -Force -ErrorAction Stop
+        Expand-Archive -Path $ZipPath -DestinationPath $stagingDir -Force -ErrorAction Stop
     } catch {
         $msg = "Could not extract update zip: $($_.Exception.Message)"
         Write-Host "FAIL: $msg"
@@ -294,20 +322,69 @@ try {
     }
     Write-Host "Extraction complete"
 
-    # 4. Cleanup: remove the zip and the %TEMP% dispatcher. The bundled
-    #    update.ps1 (this very script) is NOT deleted - earlier versions
-    #    self-deleted via $MyInvocation.MyCommand.Path, which broke subsequent
-    #    in-app updates because the script vanished after the first successful
-    #    upgrade.
+    # 4. Verify the staged tree before touching the live install.
+    $newRoot = Get-StagedInstallRoot -StagingDir $stagingDir
+    $missing = @()
+    if (-not $newRoot) {
+        $missing = @('PlaudTools.exe')
+    } else {
+        foreach ($rel in @('PlaudTools.exe', 'mcp\plaud-mcp.exe', 'cli\plaud-tools.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $newRoot $rel))) { $missing += $rel }
+        }
+    }
+    if ($missing.Count -gt 0) {
+        $msg = "The update package is incomplete (missing: $($missing -join ', ')). Nothing was changed."
+        Write-Host "FAIL: $msg"
+        Write-FailureSentinel -Reason $msg
+        throw $msg
+    }
+    Write-Host "Staged install verified at $newRoot"
+
+    # Carry the user's autostart opt-out across the update (the tray writes
+    # this marker into the install dir; the zip does not contain it).
+    $optOut = Join-Path $liveDir '.autostart_disabled'
+    if (Test-Path -LiteralPath $optOut) {
+        Copy-Item -LiteralPath $optOut -Destination (Join-Path $newRoot '.autostart_disabled') -Force
+    }
+
+    # 5. Swap: live -> .old, staged -> live. Roll back on any failure.
+    try {
+        Move-DirWithRetry -From $liveDir -To $oldDir
+    } catch {
+        $msg = "Could not move the current install aside (a file is probably still in use): $($_.Exception.Message). Nothing was changed."
+        Write-Host "FAIL: $msg"
+        Write-FailureSentinel -Reason $msg
+        throw
+    }
+    $movedLiveAway = $true
+    Write-Host "Moved live install to $oldDir"
+
+    try {
+        Move-DirWithRetry -From $newRoot -To $liveDir
+    } catch {
+        $msg = "Could not move the new version into place: $($_.Exception.Message). The previous version was restored."
+        Write-Host "FAIL: $msg"
+        Write-FailureSentinel -Reason $msg
+        throw
+    }
+    $swapped = $true
+    Write-Host "New version moved into $liveDir"
+
+    # 6. Cleanup: old install, staging remains, the zip and the %TEMP%
+    #    dispatcher. The bundled update.ps1 is never deleted directly (it
+    #    lives in the install tree; earlier versions self-deleted and broke
+    #    later updates). Failing to delete .old is harmless: the next update
+    #    clears it first.
+    if (-not (Remove-DirWithRetry -Path $oldDir)) {
+        Write-Host "Could not fully delete $oldDir; it will be removed by the next update"
+    }
+    Remove-DirWithRetry -Path $stagingDir | Out-Null
     Remove-Item $ZipPath -ErrorAction SilentlyContinue
     if ($DispatcherPath -and (Test-Path $DispatcherPath)) {
         Remove-Item $DispatcherPath -ErrorAction SilentlyContinue
     }
 
-    # 5. Prune stale dist-info so the restarted tray resolves the NEW version.
-    Remove-StaleDistInfo -InstallDir $InstallDir -NewVersion $NewVersion
-
-    # 6. Write the success sentinel ONLY now that extraction has actually
+    # 7. Write the success sentinel ONLY now that the swap has actually
     #    succeeded. (Earlier the tray pre-wrote this before launching the
     #    updater, so a silently-failed update - e.g. the updater process being
     #    killed before it ran - still left the sentinel behind and the old tray
@@ -321,28 +398,48 @@ try {
 }
 catch {
     Write-Host "Updater aborted: $_"
+
+    # Roll back: the live install was moved aside but the new one never made
+    # it into place. Put the old one back so the user keeps a working tray.
+    if ($movedLiveAway -and -not $swapped) {
+        try {
+            if (Test-Path -LiteralPath $liveDir) {
+                Remove-DirWithRetry -Path $liveDir | Out-Null
+            }
+            Move-DirWithRetry -From $oldDir -To $liveDir -Attempts 10
+            Write-Host "Rolled back: restored previous install from $oldDir"
+        } catch {
+            $msg = "The update failed and the previous version could not be restored automatically. It is saved at $oldDir. Reinstall Plaud Tools with the install script (-Repair)."
+            Write-Host "FAIL: $msg ($($_.Exception.Message))"
+            Write-FailureSentinel -Reason $msg
+        }
+    }
+    Remove-DirWithRetry -Path $stagingDir | Out-Null
+
     # Backstop: if the failure path that threw did not already write a
-    # sentinel (e.g. an unexpected exception from Get-ZipExtractDestination or
-    # the wait loop), record one here so the tray can still surface the
-    # failure on the next launch.
+    # sentinel (e.g. an unexpected exception), record one here so the tray can
+    # still surface the failure on the next launch.
     if (-not (Test-Path $failSentinel)) {
         Write-FailureSentinel -Reason "Updater aborted: $($_.Exception.Message)"
     }
 }
 finally {
-    # 5. Always restart the tray so the user is not stranded after a failed
-    #    update. If the new tray bundle is in place, we get the new version;
-    #    if extraction failed, we get the old one back - better than nothing.
-    $trayExe = Join-Path $InstallDir 'PlaudTools.exe'
-    if (Test-Path $trayExe) {
-        try {
-            Start-Process $trayExe -ErrorAction Stop
-            Write-Host "Tray restarted from $trayExe"
-        } catch {
-            Write-Host "Could not restart tray: $($_.Exception.Message)"
+    # Always restart the tray so the user is not stranded after a failed
+    # update. If the swap worked we get the new version; if it failed we get
+    # the old one back - better than nothing. Skipped only when the old tray
+    # never exited (it is still running).
+    if ($restartTray) {
+        $trayExe = Join-Path $liveDir 'PlaudTools.exe'
+        if (Test-Path $trayExe) {
+            try {
+                Start-Process $trayExe -ErrorAction Stop
+                Write-Host "Tray restarted from $trayExe"
+            } catch {
+                Write-Host "Could not restart tray: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Host "Tray exe missing at $trayExe - cannot restart"
         }
-    } else {
-        Write-Host "Tray exe missing at $trayExe - cannot restart"
     }
 
     try { Stop-Transcript | Out-Null } catch {}
