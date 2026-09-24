@@ -31,21 +31,20 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install ruff and mypy (pinned via the dev extra)
+        # ruff and mypy are pinned exact versions in pyproject.toml's [dev]
+        # extra so a new release of either can't silently change what CI
+        # lint enforces. Installs the project itself too (needed so mypy can
+        # resolve intra-package imports). mcp and platformdirs ship py.typed
+        # markers so their types resolve automatically; pystray/comtypes/winrt
+        # do not (ignore_missing_imports = true covers them).
+        run: pip install ".[dev]"
 
       - name: Lint (ruff check)
         run: python -m ruff check .
 
       - name: Format check (ruff format)
         run: python -m ruff format --check .
-
-      - name: Install mypy and package stubs
-        # Install mypy plus the project itself (needed so mypy can resolve
-        # intra-package imports).  mcp and platformdirs ship py.typed markers
-        # so their types resolve automatically; pystray/comtypes/winrt do not
-        # (ignore_missing_imports = true covers them).
-        run: pip install mypy ".[dev]"
 
       - name: Type check (mypy)
         # Run against the source tree rather than the installed package so
@@ -59,7 +58,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ['3.11', '3.12', '3.13']
+        python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,12 +101,34 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # Runs the real test suite against the exact pinned dependency set that
+  # release.yml ships (constraints/windows.txt), not just an editable
+  # install of whatever the floating bounds in pyproject.toml resolve to
+  # today. constraints-install (below) only proves the file is installable;
+  # this proves the shipped versions actually pass the tests.
+  test-windows-constraints:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install the pinned Windows dependency set
+        run: pip install -e ".[tray,dev]" -c constraints/windows.txt
+
+      - name: Run tests
+        run: pytest -q
+
   # PS 5.1 parse gate — both shipped updater regressions (v0.3.4, v0.4.1)
   # were Windows PowerShell 5.1 execution failures that a PowerShell-Core-only
   # check would not have caught.  `windows-latest` ships Windows PowerShell
   # 5.1 as `powershell.exe` (the `powershell` shell keyword below), distinct
-  # from PowerShell 7+ (`pwsh`).  This parses both scripts with the real 5.1
-  # parser and fails on any parse error.
+  # from PowerShell 7+ (`pwsh`).  This parses every shipped script with the
+  # real 5.1 parser and fails on any parse error.
   #
   # Scope: intentionally parse-only. This catches the exact regression class
   # that actually shipped (v0.3.4/v0.4.1 were PS 5.1 parse/exec failures). A
@@ -122,12 +143,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Parse update.ps1 / install.ps1 under Windows PowerShell 5.1
+      - name: Parse shipped scripts under Windows PowerShell 5.1
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $files = @(
             'src/plaud_tools/tray/scripts/update.ps1',
+            'src/plaud_tools/tray/scripts/uninstall.ps1',
+            'src/plaud_tools/tray/completions/plaud-tools.ps1',
             'scripts/install.ps1'
           )
           $failed = $false
@@ -145,6 +168,32 @@ jobs:
           }
           if ($failed) {
             Write-Error "One or more scripts fail to parse under Windows PowerShell 5.1."
+            exit 1
+          }
+
+      # v0.4.1 was a BOM-less em-dash under PS 5.1's ANSI-console default —
+      # a class of bug the parse check above can't see, since a non-ASCII
+      # byte still *parses* fine, it just executes wrong. Fail the build the
+      # moment a non-ASCII byte reaches any shipped .ps1 rather than waiting
+      # for it to reproduce on a real 5.1 console.
+      - name: Reject non-ASCII bytes in shipped PowerShell scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = Get-ChildItem -Path 'src', 'scripts' -Recurse -Filter '*.ps1'
+          $failed = $false
+          foreach ($script in $scripts) {
+            $bytes = [System.IO.File]::ReadAllBytes($script.FullName)
+            $offenders = $bytes | Where-Object { $_ -gt 127 }
+            if ($offenders.Count -gt 0) {
+              Write-Host "Non-ASCII bytes found in $($script.FullName) ($($offenders.Count) byte(s))"
+              $failed = $true
+            } else {
+              Write-Host "OK: $($script.FullName) is pure ASCII"
+            }
+          }
+          if ($failed) {
+            Write-Error "One or more shipped .ps1 files contain non-ASCII bytes."
             exit 1
           }
 

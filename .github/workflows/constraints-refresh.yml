@@ -1,0 +1,80 @@
+name: Refresh dependency constraints
+
+# constraints/*.txt (Wave 2 / C3) are hand-compiled with `uv pip compile` and
+# live outside the paths Dependabot's `pip` ecosystem understands (it reads
+# requirements.txt / pyproject.toml / setup.py, not our per-platform
+# uv-compiled files under constraints/). Without this workflow the pinned
+# set that release.yml ships would only ever be refreshed manually. Runs
+# weekly, opens a PR if anything changed, and lets ci.yml's
+# constraints-install and test-windows-constraints jobs validate the result
+# before a human merges it.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Regenerate constraints
+        # Resolution is metadata-based (uv reads wheel tags/markers without
+        # downloading binaries), so running this on ubuntu-latest still
+        # produces accurate windows/macos constraint files — see
+        # docs/agents/lockfiles.md.
+        run: |
+          uv pip compile --upgrade \
+              --python-platform windows --python-version 3.12 \
+              --extra tray --extra dev \
+              pyproject.toml -o constraints/windows.txt
+          uv pip compile --upgrade \
+              --python-platform macos --python-version 3.12 \
+              --extra dev \
+              pyproject.toml -o constraints/macos.txt
+          uv pip compile --upgrade \
+              --python-platform linux --python-version 3.12 \
+              --extra dev \
+              pyproject.toml -o constraints/linux.txt
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet -- constraints/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR with refreshed constraints
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="chore/constraints-refresh-$(date +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add constraints/
+          git commit -m "chore: refresh dependency constraints"
+          git push origin "$branch"
+          gh pr create \
+            --title "chore: refresh dependency constraints" \
+            --body "Automated weekly refresh of \`constraints/*.txt\` via \`uv pip compile --upgrade\`. CI's \`constraints-install\` and \`test-windows-constraints\` jobs validate this before merge; review the diff for anything unexpected before approving." \
+            --base main --head "$branch"
