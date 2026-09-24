@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned host instead of assuming "not EU means US".
 - The tray sign-in window shows the Google sign-in hint on Plaud's real
   wrong-password reply (HTTP 200, status -2), not only on an HTTP 401.
+- `plaud-mcp.exe` could burn about two CPU cores for its whole life when an
+  AI client started several servers at once. Python 3.12's WMI helper (used
+  by `platform.system()`) can close a random handle after a timeout, and it
+  sometimes hit the Windows thread pool's own handle. The MCP server now
+  keeps `platform` off WMI.
 
 ## [0.10.0] - 2026-09-24
 
