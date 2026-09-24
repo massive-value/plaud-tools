@@ -1,3 +1,4 @@
+import importlib
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -81,6 +82,79 @@ def _block_real_session_path(monkeypatch, tmp_path):
     fail safely (file simply won't exist) rather than corrupting real state.
     """
     monkeypatch.setattr("plaud_tools.core.appdata.session_path", lambda: tmp_path / "session.json")
+
+
+@pytest.fixture(autouse=True)
+def _fake_keyring_backend(monkeypatch):
+    """Never let a test touch the real OS credential store.
+
+    ``SessionStore`` lazily imports the ``keyring`` module and calls its
+    module-level ``get_password``/``set_password``/``delete_password``,
+    which delegate to whichever backend ``keyring.set_keyring()`` has
+    configured. Several tests construct a bare ``SessionStore()`` (defaults
+    to the production service name ``plaud-tools``) or a ``SessionStore``
+    with a synthetic service name but no keyring stub — either way, without
+    this fixture those calls hit the real Windows Credential Manager /
+    macOS Keychain / Linux Secret Service. Swapping in an in-memory backend
+    for the duration of every test makes that impossible by construction.
+
+    Tests that monkeypatch ``session.importlib.import_module`` to inject a
+    fake keyring module entirely bypass this backend and are unaffected.
+    """
+    import keyring
+    import keyring.errors
+
+    class _InMemoryKeyring(keyring.backend.KeyringBackend):
+        priority = 9999  # highest priority so it's always selected
+
+        def __init__(self):
+            super().__init__()
+            self._passwords: dict[tuple[str, str], str] = {}
+
+        def get_password(self, service, username):
+            return self._passwords.get((service, username))
+
+        def set_password(self, service, username, password):
+            self._passwords[(service, username)] = password
+
+        def delete_password(self, service, username):
+            try:
+                del self._passwords[(service, username)]
+            except KeyError:
+                raise keyring.errors.PasswordDeleteError("not found") from None
+
+    previous_backend = keyring.get_keyring()
+    keyring.set_keyring(_InMemoryKeyring())
+
+    # Belt-and-braces trip-wire: fail loudly if anything reaches a real OS
+    # backend directly (bypassing keyring.get_keyring()), instead of quietly
+    # touching production credentials.
+    def _real_backend_forbidden(*_args, **_kwargs):
+        raise AssertionError(
+            "A test attempted to call a real OS keyring backend directly. "
+            "Route keyring access through the autouse in-memory fixture instead."
+        )
+
+    for module_name, class_name in (
+        ("keyring.backends.Windows", "WinVaultKeyring"),
+        ("keyring.backends.macOS", "Keyring"),
+        ("keyring.backends.SecretService", "Keyring"),
+        ("keyring.backends.kwallet", "DBusKeyring"),
+    ):
+        try:
+            backend_module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        backend_cls = getattr(backend_module, class_name, None)
+        if backend_cls is None:
+            continue
+        for method_name in ("get_password", "set_password", "delete_password"):
+            if hasattr(backend_cls, method_name):
+                monkeypatch.setattr(backend_cls, method_name, _real_backend_forbidden, raising=False)
+
+    yield
+
+    keyring.set_keyring(previous_backend)
 
 
 @pytest.fixture(autouse=True)
