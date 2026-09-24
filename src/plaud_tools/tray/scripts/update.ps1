@@ -179,19 +179,23 @@ function Remove-DirWithRetry {
     return (-not (Test-Path -LiteralPath $Path))
 }
 
-# Rename a directory, retrying briefly (antivirus scanners and just-killed
-# processes can hold handles for a moment). Throws on final failure.
+# Rename a directory, retrying for up to ~10 seconds (antivirus scanners and
+# just-killed processes can hold handles for a few seconds; seen on a real
+# install right after the tray exited). Throws on final failure.
 function Move-DirWithRetry {
-    param([string]$From, [string]$To, [int]$Attempts = 5)
+    param([string]$From, [string]$To, [int]$Attempts = 10)
 
     for ($i = 1; $i -le $Attempts; $i++) {
         try {
-            Move-Item -LiteralPath $From -Destination $To -ErrorAction Stop
+            # A pure rename that either happens completely or throws. Move-Item
+            # on a directory falls back to moving files one by one when any
+            # file inside is open, leaving a half-moved install behind.
+            [System.IO.Directory]::Move($From, $To)
             return
         } catch {
             if ($i -eq $Attempts) { throw }
-            Write-Host "Rename $From -> $To failed (attempt $i): $($_.Exception.Message)"
-            Start-Sleep -Milliseconds 500
+            Write-Host "Rename $From -> $To failed (attempt $i): $($_.Exception.GetBaseException().Message)"
+            Start-Sleep -Seconds 1
         }
     }
 }
@@ -351,7 +355,7 @@ try {
     try {
         Move-DirWithRetry -From $liveDir -To $oldDir
     } catch {
-        $msg = "Could not move the current install aside (a file is probably still in use): $($_.Exception.Message.TrimEnd('.')). Nothing was changed."
+        $msg = "Could not move the current install aside (a file is probably still in use): $($_.Exception.GetBaseException().Message.TrimEnd('.')). Nothing was changed."
         Write-Host "FAIL: $msg"
         Write-FailureSentinel -Reason $msg
         throw
@@ -362,7 +366,7 @@ try {
     try {
         Move-DirWithRetry -From $newRoot -To $liveDir
     } catch {
-        $msg = "Could not move the new version into place: $($_.Exception.Message.TrimEnd('.')). The previous version was restored."
+        $msg = "Could not move the new version into place: $($_.Exception.GetBaseException().Message.TrimEnd('.')). The previous version was restored."
         Write-Host "FAIL: $msg"
         Write-FailureSentinel -Reason $msg
         throw
@@ -406,7 +410,7 @@ catch {
             if (Test-Path -LiteralPath $liveDir) {
                 Remove-DirWithRetry -Path $liveDir | Out-Null
             }
-            Move-DirWithRetry -From $oldDir -To $liveDir -Attempts 10
+            Move-DirWithRetry -From $oldDir -To $liveDir -Attempts 20
             Write-Host "Rolled back: restored previous install from $oldDir"
         } catch {
             $msg = "The update failed and the previous version could not be restored automatically. It is saved at $oldDir. Reinstall Plaud Tools with the install script (-Repair)."

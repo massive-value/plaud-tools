@@ -551,6 +551,15 @@ class UpdateDialog:
             # See #153, same family as the v0.3.4 update.ps1/tray.log fix.
             ps_path.write_text(ps_content, encoding="utf-8-sig")
 
+            # Last chance to honour a Cancel clicked while we were writing the
+            # dispatcher; after _launch_updater the update can't be stopped.
+            if self._cancel.is_set():
+                logging.info("in-app update: cancelled by user before launch")
+                ps_path.unlink(missing_ok=True)
+                _discard_download(zip_path)
+                self._in_progress.clear()
+                return
+
             logging.info(
                 "in-app update: launching updater for v%s (tray_pid=%s zip=%s dispatcher=%s)",
                 new_version,

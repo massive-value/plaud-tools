@@ -878,3 +878,26 @@ def test_uninstall_ps1_refuses_to_delete_a_folder_without_plaudtools_exe(tmp_pat
     _run_uninstall_ps1(tmp_path, not_ours, tmp_path / "none", tmp_path / "none.ps1")
 
     assert (not_ours / "important.docx").exists()
+
+
+@_needs_ps51
+def test_update_ps1_open_file_in_live_install_leaves_it_untouched(tmp_path):
+    """A file held open inside the live install (Defender, Explorer, a shell's
+    cwd) must make the rename fail cleanly. Move-Item used to fall back to a
+    file-by-file move and leave a half-moved install with no tray."""
+    install = tmp_path / "Programs" / "PlaudTools"
+    _make_install(install, "1.0.0", extra=("_internal/held_open.dll",))
+    zip_path = tmp_path / "plaud_update_1.zip"
+    _make_update_zip(zip_path, "2.0.0")
+
+    with open(install / "_internal" / "held_open.dll", "rb"):
+        _result, temp = _run_update_ps1(tmp_path, install, zip_path)
+
+    for rel in _BUNDLE_FILES:
+        assert (install / rel).read_text(encoding="ascii") == "1.0.0"
+    assert (install / "_internal" / "held_open.dll").exists()
+    assert not (tmp_path / "Programs" / "PlaudTools.old").exists()
+    assert not (tmp_path / "Programs" / "PlaudTools.staging").exists()
+    reason = (temp / "plaud_update_failed.txt").read_text(encoding="utf-8")
+    assert "Could not move the current install aside" in reason
+    assert not (temp / "plaud_just_updated.txt").exists()
