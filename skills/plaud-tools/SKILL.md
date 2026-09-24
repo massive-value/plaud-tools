@@ -33,7 +33,7 @@ Need to cite where something was said? Add `"segments"` to `include` to get
 Plaud has no timing). `transcript_block="transaction"` (default) is the raw
 transcript; `"transaction_polish"` is Plaud's cleaned-up pass, and the two have
 different fingerprints. If the requested block doesn't exist, the response
-has `transcript_fingerprint: null` and a `note` naming the blocks that do.
+has `transcript_fingerprint: null` and an entry in `notes` naming the blocks that do.
 
 For a full export to disk, use the CLI instead of paging through MCP:
 `plaud-tools transcript <id> --segments > file.json` (see docs/CLI.md).
@@ -94,15 +94,18 @@ message:
 | `error_code` | Meaning |
 |---|---|
 | `session_expired` | Tell the user to open the PlaudTools tray and sign in. You cannot fix this yourself. |
-| `validation` | Your arguments were wrong. Read `error` and correct them; don't retry unchanged. |
+| `validation` / `invalid_arguments` | Your arguments were wrong. Read `error` and correct them; don't retry unchanged. |
 | `not_found` | Bad recording/folder ID. Don't retry. |
 | `transient` | `retryable: true` — retry once or twice with a pause. |
 | `io_error` | Local filesystem problem (usually `upload_recording`). |
+| `internal` | A bug in the server. Tell the user; details are in the plaud-mcp log. |
 
-A response with `status: "still_processing"` is not an error: a long job
-(transcribe, merge, upload) outlived the server-side wait and is still running.
-Poll `get_recording` rather than re-issuing the call — re-issuing starts a
-*second* job.
+A response with `status: "still_processing"` is not an error: a transcribe,
+summary, or merge job outlived the ~90s wait and is still running on Plaud. Its
+`job` says what is running and which tool reports on it (`poll_with`): poll that
+tool rather than re-issuing the call, because re-issuing starts a *second* job.
+`upload_recording` never returns this; it returns the new `recording_id` or an
+error.
 
 ## Dates
 

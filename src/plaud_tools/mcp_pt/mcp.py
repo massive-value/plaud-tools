@@ -16,7 +16,7 @@ from ..core.client import (
     PlaudClient,
     PlaudRecordingQuery,
 )
-from ..core.errors import PlaudApiError, PlaudSessionExpiredError
+from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
@@ -78,13 +78,17 @@ def _write_event(event_type: str, **kwargs: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _diagnose_session_state() -> dict[str, Any]:
+def _diagnose_session_state(manager: SessionManager | None = None) -> dict[str, Any]:
     """Best-effort snapshot of how the MCP currently sees the user session.
 
-    Thin wrapper: calls ``SessionManager(SessionStore()).diagnose()`` for the
-    session-y fields, then merges in MCP-process-local fields (PID, app version,
-    env-token-present flag).  This keeps all JWT introspection in session.py
-    while leaving only facade-local metadata here.  See ADR 004.
+    Thin wrapper: calls ``manager.diagnose()`` for the session-y fields, then
+    merges in MCP-process-local fields (PID, app version, env-token-present
+    flag).  This keeps all JWT introspection in session.py while leaving only
+    facade-local metadata here.  See ADR 004.
+
+    Pass the server's own *manager* when there is one: it reports the load
+    that just failed instead of reading Credential Manager again, which for a
+    signed-out user costs another ~3.6 s keyring retry cycle.
     """
     # Lazy import to avoid the circular import surfaced by
     # ``plaud_tools/__init__.py`` re-exporting ``build_handlers`` from this module.
@@ -95,15 +99,16 @@ def _diagnose_session_state() -> dict[str, Any]:
         "mcp_version": _app_version,
         "env_token_present": bool(os.getenv("PLAUD_ACCESS_TOKEN")),
     }
-    store = SessionStore()
-    manager = SessionManager(store)
-    diag.update(manager.diagnose())
+    if manager is None:
+        diag.update(SessionManager(SessionStore()).diagnose())
+    else:
+        diag.update(manager.diagnose(reuse_last_load=True))
     return diag
 
 
-def _emit_session_expired(reason: str) -> None:
+def _emit_session_expired(reason: str, manager: SessionManager | None = None) -> None:
     """Log + write a session_expired event with full diagnostic context."""
-    diag = _diagnose_session_state()
+    diag = _diagnose_session_state(manager)
     log.warning("MCP firing session_expired reason=%s diag=%s", reason, diag)
     _write_event("session_expired", reason=reason, **diag)
 
@@ -120,12 +125,19 @@ _SESSION_EXPIRED_HINT = "Tell the user to open the PlaudTools tray and sign in, 
 
 
 def _json_result(value: Any, is_error: bool = False) -> dict[str, Any]:
-    # Compact separators (no indent, no spaces after , / :) — every MCP
-    # response pays this cost once per tool call; the 20-35% whitespace tax
-    # from the previous `indent=2` compounds over a long agent session.
+    """Wrap a JSON-able payload as a tool result.
+
+    The payload goes out twice: as compact JSON text (what every client,
+    old or new, reads) and, for successful object payloads, as
+    ``structuredContent`` for clients that use a tool's ``outputSchema``.
+    Compact separators because every response pays the whitespace once per
+    call, and ``indent=2`` cost 20-35% more tokens.
+    """
     result: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(value, separators=(",", ":"))}]}
     if is_error:
         result["isError"] = True
+    elif isinstance(value, dict):
+        result["structuredContent"] = value
     return result
 
 
@@ -158,7 +170,7 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
     try:
         return fn(client)
     except PlaudSessionExpiredError as exc:
-        _emit_session_expired("token_expired")
+        _emit_session_expired("token_expired", client.session_manager)
         return _error_result(
             f"{exc} {_SESSION_EXPIRED_HINT}",
             error_code="session_expired",
@@ -174,7 +186,7 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
             # this generic branch silently skipped it (Wave 1 follow-up).
             # Fire it here too so a mid-session 401 still triggers the tray
             # toast / login window, not just a locally-detected expiry.
-            _emit_session_expired("http_401")
+            _emit_session_expired("http_401", client.session_manager)
             message = f"{message} {_SESSION_EXPIRED_HINT}"
         return _error_result(
             message,
@@ -189,10 +201,8 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
     except OSError as exc:
         # Local filesystem failures (permission denied, disk full, temp file
         # races, …) must not escape the structured-error contract — issue #150.
-        # Without this, an OSError propagates past call_tool's TypeError-only
-        # guard in server.py and the MCP SDK's generic catch-all reports it as
-        # an unstructured plain-text error instead of {error, error_code,
-        # retryable}.
+        # Without this it would reach call_tool's catch-all in server.py and
+        # be reported as a generic "internal" error.
         return _error_result(str(exc), error_code="io_error", retryable=False)
 
 
@@ -265,25 +275,11 @@ def _transcript_unavailable_note(detail: Any, requested_block: str) -> str | Non
     return None
 
 
-def _count_transcript_matches(client: PlaudClient, recording_id: str, find: str) -> int:
-    """Count literal occurrences of ``find`` in a recording's transcript, read-only.
-
-    Backs ``edit_transcript(action="correct", dry_run=True)``. Mirrors the
-    counting client.correct_transcript() does internally (client.py:684-698)
-    without mutating anything — it fetches the same formatted transcript text
-    `get_recording` already returns and counts on that.
-    """
-    detail = client.get_recording(recording_id, include_transcript=True)
-    if not detail.transcript:
-        raise ValueError(f"recording {recording_id} has no transcript yet")
-    return detail.transcript.count(find)
-
-
 def _count_summary_matches(client: PlaudClient, recording_id: str, find: str) -> int:
     """Count literal occurrences of ``find`` in a recording's AI summary, read-only.
 
-    Backs ``edit_summary(action="correct", dry_run=True)``; see
-    ``_count_transcript_matches`` for the same rationale applied to summaries.
+    Backs ``edit_summary(action="correct", dry_run=True)``.  The transcript
+    equivalent is ``PlaudClient.count_transcript_matches``.
     """
     detail = client.get_recording(recording_id, include_summary=True)
     if not detail.ai_content:
@@ -293,56 +289,36 @@ def _count_summary_matches(client: PlaudClient, recording_id: str, find: str) ->
 
 PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 
-# #151: client.wait_for_transcription/wait_for_summary poll for up to 600s
-# (10 min) each by default — a wait="summary" call can block a handler for
-# ~20 min total, long enough that a disconnected MCP client orphans the
-# process holding the exe lock the updater fights.  Most MCP clients time out
-# long before that (60-120s), so waiting any longer server-side is pointless
-# regardless of which tool is blocking — the caller already gave up.  Bounding
-# every long wait here to the same soft deadline and reporting
-# "still_processing" on timeout is the accepted resolution for #151 (settled
-# 2026-07-07).  Reused below for merge_recordings (client.py's poll-loop wait,
-# same shape as wait_for_transcription/summary) and upload_recording
-# (client.py's multipart S3 loop, bounded by wall-clock rather than a poll
-# interval).
-#
-# ponytail: true cancel-on-disconnect (a shutdown threading.Event threaded
-# through server.py's asyncio.to_thread and checked between poll iterations)
-# is intentionally NOT implemented — the soft deadline already caps the orphan
-# window at ~90s, which is below the exe-lock contention the updater cares
-# about.  Upgrade path if orphan telemetry ever shows 90s still matters: wire
-# that Event; until then it's YAGNI.
+# Largest browse page.  Matches the upstream page size, so one browse call is
+# at most one Plaud request plus a look-ahead item.
+MAX_BROWSE_LIMIT = 200
+
+# How long one tool call may block waiting on a Plaud job (#151).  Most MCP
+# clients give up on a call after 60-120 s, so waiting longer server-side only
+# orphans the handler.  process_recording spends this once across both of its
+# waits; merge_recordings spends it on the combine poll.  upload_recording is
+# not bounded: an upload is an active transfer, and stopping it midway leaves
+# nothing to check back on.  See ADR 007 for the job-handle response shape.
 _WAIT_TIMEOUT_S = 90.0
 
 
-def _is_soft_deadline_timeout(exc: PlaudApiError) -> bool:
-    """True if *exc* is one of client.py's soft-deadline timeouts (#151).
+def _still_processing(kind: str, job_id: str, poll_with: str, message: str, **fields: Any) -> dict[str, Any]:
+    """Result for a Plaud job that outlived this call's wait budget (ADR 007).
 
-    Those are raised with no ``http_status`` and a message ending
-    "timed out after Ns" — see ``wait_for_transcription``, ``wait_for_summary``,
-    ``merge_recordings``, and ``upload_recording``. Any other error (auth
-    failure, 404, non-retryable API error) is not a timeout and must propagate.
-
-    The predicate itself moved to ``PlaudApiError`` so the CLI can share it
-    (exit code 4); this stays as the local spelling for the call sites below.
+    The job keeps running on Plaud, so this is a success-shaped result, not an
+    error: ``job`` names what is running and which tool reports on it, and
+    ``retryable: false`` tells the agent that calling the same tool again would
+    start a duplicate rather than resume.
     """
-    return exc.is_soft_deadline_timeout()
-
-
-def _wait_or_still_processing(wait_fn: Callable[..., None], recording_id: str) -> bool:
-    """Call a client wait_for_* method bounded by ``_WAIT_TIMEOUT_S``.
-
-    Returns True if the wait completed normally, False if it hit the soft
-    deadline. Any other error propagates unchanged (see
-    ``_is_soft_deadline_timeout``).
-    """
-    try:
-        wait_fn(recording_id, timeout_s=_WAIT_TIMEOUT_S)
-    except PlaudApiError as exc:
-        if _is_soft_deadline_timeout(exc):
-            return False
-        raise
-    return True
+    return _json_result(
+        {
+            **fields,
+            "status": "still_processing",
+            "job": {"kind": kind, "id": job_id, "poll_with": poll_with},
+            "retryable": False,
+            "message": message,
+        }
+    )
 
 
 def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Callable[..., dict[str, Any]]]:
@@ -360,9 +336,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         # Guard here in addition to the schema minimums (server.py _TOOLS) so
         # direct handler callers (tests, non-validating MCP clients) are also
         # protected.
-        if limit <= 0:
+        if not 1 <= limit <= MAX_BROWSE_LIMIT:
             return _error_result(
-                "limit must be a positive integer (> 0)",
+                f"limit must be between 1 and {MAX_BROWSE_LIMIT}",
                 error_code="validation",
                 retryable=False,
             )
@@ -407,16 +383,19 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     limit=limit,
                 )
             else:
-                page = client.list_recordings(
+                # Ask for one extra item: a full page alone can't tell "more
+                # exist" from "the library is an exact multiple of limit".
+                fetched = client.list_recordings(
                     PlaudRecordingQuery(
                         skip=after if after else None,
-                        limit=limit,
+                        limit=limit + 1,
                         is_trash=is_trash_flag,
                         sort_by="start_time",
                         is_desc=True,
                     )
                 )
-                has_more = len(page) == limit
+                page = fetched[:limit]
+                has_more = len(fetched) > limit
             next_after = after + len(page) if has_more else None
             return _json_result(
                 {
@@ -464,13 +443,16 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 transcript_block=transcript_block,
             )
             output = _summarize_detail(detail)
+            # Every explanation for a missing piece goes here; several can
+            # apply at once (no audio *and* no transcript yet).
+            notes: list[str] = []
             if "speakers" in include_set:
                 output["speakers"] = detail.speakers
             if "audio_url" in include_set:
                 url = client.get_audio_url(recording_id)
                 output["audio_url"] = url
                 if url is None:
-                    output["note"] = (
+                    notes.append(
                         "No audio is available for this recording — it may not have finished "
                         "syncing from the device yet."
                     )
@@ -503,20 +485,22 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 )
                 note = _transcript_unavailable_note(detail, transcript_block)
                 if note is not None:
-                    output["note"] = note
+                    notes.append(note)
             if "summary" in include_set:
                 if detail.ai_content is None and detail.is_summary:
                     output["summary"] = None
                     # Don't dead-end the caller: Plaud says a summary exists but
                     # the data_link fetch came back empty, which is transient
                     # far more often than not.  Name the retry explicitly.
-                    output["note"] = (
+                    notes.append(
                         "Plaud reports a summary exists for this recording but its content could "
                         "not be fetched. This is usually transient — retry get_recording in a "
                         "few moments."
                     )
                 else:
                     output["summary"] = detail.ai_content
+            if notes:
+                output["notes"] = notes
             return _json_result(output)
 
         return _call(get_client, inner)
@@ -595,8 +579,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         retryable=False,
                     )
                 actual_folder_id = None if (clear_folder or folder_id in ("", "-")) else folder_id
-                for rid in ids:
-                    client.set_recording_folder(rid, actual_folder_id)
+                client.set_recording_folder(ids, actual_folder_id)
                 if is_batch:
                     return _json_result(
                         {
@@ -676,7 +659,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         retryable=False,
                     )
                 if dry_run:
-                    matches = _count_transcript_matches(client, recording_id, find)
+                    matches = client.count_transcript_matches(recording_id, find)
                     return _json_result(
                         {
                             "ok": True,
@@ -723,38 +706,18 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             elif isinstance(start_time, int):
                 start_ms = start_time
 
-            # ValueError (missing file / unsupported format) and RuntimeError
-            # (ffmpeg failure) are intentionally not caught here — they
-            # propagate to _call's except clauses, which already map them to
-            # the correct structured {error_code, retryable} shape (#150).
-            try:
-                outcome = upload_with_transcode(
-                    client,
-                    path,
-                    rec_title,
-                    start_time=start_ms,
-                    timezone_offset=timezone_offset,
-                    folder_id=folder_id,
-                    timeout_s=_WAIT_TIMEOUT_S,  # (#151) bound the S3 multipart wait too
-                )
-            except PlaudApiError as exc:
-                if _is_soft_deadline_timeout(exc):
-                    # Unlike merge/transcription/summary, there is no
-                    # server-side job to check back on — a timed-out upload
-                    # has to be retried, not polled.  We still use the
-                    # "still_processing"-shaped response (rather than an
-                    # error) so a disconnected client's already-abandoned
-                    # call doesn't matter, and a connected caller gets a
-                    # structured, retryable signal instead of a raw timeout.
-                    return _json_result(
-                        {
-                            "title": rec_title,
-                            "filename": path.name,
-                            "status": "still_processing",
-                            "retryable": True,
-                        }
-                    )
-                raise
+            # No wait budget here: the call returns as soon as Plaud confirms
+            # the upload, with the new recording_id.  A failure is a normal
+            # error (mapped by _call), never a "still processing" that would
+            # invite a duplicate upload.
+            outcome = upload_with_transcode(
+                client,
+                path,
+                rec_title,
+                start_time=start_ms,
+                timezone_offset=timezone_offset,
+                folder_id=folder_id,
+            )
             payload: dict[str, Any] = {
                 "ok": True,
                 "recording_id": outcome.recording.id,
@@ -799,12 +762,27 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         "accepted": True,
                     }
                 )
-            if not _wait_or_still_processing(client.wait_for_transcription, recording_id):
-                return _json_result({"recording_id": recording_id, "status": "still_processing"})
+            # One budget for the whole call: the summary wait gets whatever the
+            # transcription wait left, so wait="summary" is bounded by
+            # _WAIT_TIMEOUT_S in total, not per stage.
+            deadline = time.monotonic() + _WAIT_TIMEOUT_S
+            stages = [("transcription", client.wait_for_transcription)]
             if wait == "summary":
-                if not _wait_or_still_processing(client.wait_for_summary, recording_id):
-                    return _json_result(
-                        {"recording_id": recording_id, "status": "still_processing", "is_trans": True}
+                stages.append(("summary", client.wait_for_summary))
+            for kind, wait_fn in stages:
+                try:
+                    wait_fn(recording_id, timeout_s=max(0.0, deadline - time.monotonic()))
+                except PlaudApiError as exc:
+                    if not exc.is_soft_deadline_timeout():
+                        raise
+                    return _still_processing(
+                        kind,
+                        recording_id,
+                        "get_recording",
+                        f"Plaud is still working on the {kind}. Do not call process_recording "
+                        f"again; check get_recording in a minute.",
+                        recording_id=recording_id,
+                        is_trans=kind == "summary",
                     )
             detail = client.get_recording(recording_id)
             return _json_result(
@@ -821,7 +799,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     def list_folders() -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             tags = client.list_file_tags()
-            return _json_result([folder_dict(tag) for tag in tags])
+            return _json_result({"folders": [folder_dict(tag) for tag in tags]})
 
         return _call(get_client, inner)
 
@@ -831,20 +809,20 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             try:
-                # (#151) merge_recordings' own poll loop defaults to a 300s
-                # deadline (client.py) — bound it to _WAIT_TIMEOUT_S here for
-                # the same reason process_recording's waits are bounded.
                 detail = client.merge_recordings(recording_ids, title, timeout_s=_WAIT_TIMEOUT_S)
-            except PlaudApiError as exc:
-                if _is_soft_deadline_timeout(exc):
-                    # The merge task keeps running server-side (it's a
-                    # task_id-backed job, like transcription/summary) — no
-                    # merged recording_id exists yet, so report the source
-                    # ids/title so the caller knows what's still in flight.
-                    return _json_result(
-                        {"recording_ids": recording_ids, "title": title, "status": "still_processing"}
-                    )
-                raise
+            except PlaudWaitTimeoutError as exc:
+                # The combine task keeps running on Plaud and no merged
+                # recording id exists until it finishes.  Hand back the task id
+                # and say plainly not to re-run: a second call is a second merge.
+                return _still_processing(
+                    "merge",
+                    exc.task_id or "",
+                    "browse_recordings",
+                    f"Plaud is still merging. Do not call merge_recordings again; the new "
+                    f"recording titled {title!r} will appear in browse_recordings when done.",
+                    recording_ids=recording_ids,
+                    title=title,
+                )
             # Slim response: a fresh merge's detail dict is all nulls besides
             # id/filename (no transcript/summary yet), so the full
             # _summarize_detail() shape is dead weight.

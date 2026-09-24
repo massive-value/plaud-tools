@@ -380,11 +380,11 @@ def test_make_server_constructs_one_session_manager(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class TestCallToolTypeErrorGuard:
-    """call_tool must return a structured validation error — not raise — when the
-    MCP framework passes an argument name that the underlying handler does not
-    accept.  The error payload must match the project-standard shape used by
-    _error_result() in mcp.py: {error, error_code, retryable}.
+class TestCallToolArgumentValidation:
+    """call_tool checks arguments against the tool's inputSchema before running
+    the handler, and answers a bad call with a structured error — not a raise.
+    The payload matches the project-standard shape used by _error_result() in
+    mcp.py: {error, error_code, retryable}.
 
     The test exercises the full call_tool path via the SDK's in-memory Client
     (real handshake + dispatch, no subprocess) so that the exact same code
@@ -403,13 +403,22 @@ class TestCallToolTypeErrorGuard:
         result = asyncio.run(_call())
         return result.content[0].text
 
-    def test_bogus_kwarg_returns_validation_error_code(self):
-        """A kwarg unknown to the handler must produce error_code='validation'."""
-        text = self._invoke("list_folders", {"bogus_kwarg": "unexpected"})
-        payload = json.loads(text)
-        assert payload["error_code"] == "validation", (
-            f"Expected error_code='validation', got {payload.get('error_code')!r}. Full payload: {payload}"
-        )
+    def test_bogus_kwarg_returns_invalid_arguments(self):
+        """A kwarg the schema doesn't declare is rejected by name."""
+        payload = json.loads(self._invoke("list_folders", {"bogus_kwarg": "unexpected"}))
+        assert payload["error_code"] == "invalid_arguments"
+        assert "bogus_kwarg" in payload["error"]
+
+    def test_schema_violation_returns_invalid_arguments(self):
+        """Wrong types and out-of-range values never reach the handler."""
+        payload = json.loads(self._invoke("browse_recordings", {"limit": 5000}))
+        assert payload["error_code"] == "invalid_arguments"
+        assert "limit" in payload["error"]
+
+    def test_missing_required_argument_returns_invalid_arguments(self):
+        payload = json.loads(self._invoke("get_recording", {}))
+        assert payload["error_code"] == "invalid_arguments"
+        assert "recording_id" in payload["error"]
 
     def test_bogus_kwarg_retryable_is_false(self):
         """A validation error from a bad kwarg must not be marked as retryable."""
@@ -478,7 +487,10 @@ class TestCallToolNonBlocking:
         def slow_list_folders() -> dict:
             """Synchronous handler that blocks for SLOW_SLEEP_S."""
             time.sleep(TestCallToolNonBlocking.SLOW_SLEEP_S)
-            return {"content": [{"type": "text", "text": '{"ok": true}'}]}
+            return {
+                "content": [{"type": "text", "text": '{"folders":[]}'}],
+                "structuredContent": {"folders": []},
+            }
 
         handlers = {"list_folders": slow_list_folders}
 
@@ -508,7 +520,10 @@ class TestCallToolNonBlocking:
                     content=[mcp_types.TextContent(type="text", text=json.dumps(payload, indent=2))],
                     isError=True,
                 )
-            return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text=text)])
+            return mcp_types.CallToolResult(
+                content=[mcp_types.TextContent(type="text", text=text)],
+                structured_content=result.get("structuredContent"),
+            )
 
         return Server(
             "plaud-mcp-test",
@@ -558,3 +573,81 @@ class TestCallToolNonBlocking:
                 await slow_task
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Catch-all, structured output, protocol logging, cache hints
+# ---------------------------------------------------------------------------
+
+
+def _call_through_client(server, name: str, arguments: dict) -> mcp_types.CallToolResult:
+    async def _call() -> mcp_types.CallToolResult:
+        async with Client(server) as client:
+            return await client.call_tool(name, arguments)
+
+    return asyncio.run(_call())
+
+
+def test_unexpected_handler_exception_becomes_internal_error(monkeypatch, caplog):
+    """A bug in a handler reaches the model as our structured error, not the
+    SDK's generic "Error executing tool" text, and the traceback is logged."""
+    import plaud_tools.mcp_pt.server as server_mod
+
+    def exploding_build_handlers(get_client):
+        def list_folders():
+            raise KeyError("boom")
+
+        return {"list_folders": list_folders}
+
+    monkeypatch.setattr(server_mod, "build_handlers", exploding_build_handlers)
+    with caplog.at_level(logging.ERROR, logger="plaud_tools.mcp_pt.server"):
+        result = _call_through_client(server_mod._make_server(), "list_folders", {})
+
+    assert result.is_error is True
+    payload = json.loads(result.content[0].text)
+    assert payload["error_code"] == "internal"
+    assert "list_folders" in payload["error"]
+    assert "KeyError" in caplog.text
+
+
+def test_read_tool_structured_content_matches_output_schema(monkeypatch):
+    """structuredContent is sent alongside the text and satisfies outputSchema
+    (the SDK client rejects a result that doesn't)."""
+    import plaud_tools.mcp_pt.server as server_mod
+    from plaud_tools.core.models import FileTag
+
+    class FolderClient:
+        def list_file_tags(self):
+            return [FileTag(id="tag1", name="Work", color="#191919", icon="e627")]
+
+    monkeypatch.setattr(server_mod, "PlaudClient", lambda manager: FolderClient())
+    result = _call_through_client(server_mod._make_server(), "list_folders", {})
+
+    assert result.is_error is False
+    assert result.structured_content == {
+        "folders": [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]
+    }
+    assert json.loads(result.content[0].text) == result.structured_content
+
+
+def test_protocol_version_logged_once_per_version(caplog):
+    server = _make_server()
+
+    async def _run() -> None:
+        async with Client(server) as client:
+            await client.list_tools()
+            await client.list_tools()
+
+    with caplog.at_level(logging.INFO, logger="plaud_tools.mcp_pt.server"):
+        asyncio.run(_run())
+
+    lines = [r.getMessage() for r in caplog.records if "protocol_version=" in r.getMessage()]
+    assert len(lines) == 1
+    assert "era=" in lines[0]
+
+
+def test_tools_list_carries_a_cache_hint():
+    """SEP-2549: the static tool listing tells 2026-07-28 clients they may cache it."""
+    hint = _make_server().cache_hints["tools/list"]
+    assert hint.ttl_ms > 0
+    assert hint.scope == "public"
