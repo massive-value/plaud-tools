@@ -25,11 +25,16 @@ _plaud_tools() {
                 'show:Show recording summary'
                 'transcript:Fetch full transcript'
                 'summary:Fetch AI summary'
+                'audio:Get or download a recording audio file'
                 'rename:Rename a recording'
                 'folders:List folders'
+                'folder:Create, edit, or delete a folder'
                 'move-to-folder:Move recording to a folder'
                 'move:Move recording to a folder'
                 'rename-speaker:Rename a speaker in the transcript'
+                'correct-transcript:Find-and-replace text in a transcript'
+                'correct-summary:Find-and-replace text in a summary'
+                'set-summary:Replace a recording summary'
                 'transcribe:Trigger transcription and summarization'
                 'status:Show processing task status'
                 'trash:Trash a recording or list trash'
@@ -39,8 +44,12 @@ _plaud_tools() {
                 'trash-restore:Restore multiple recordings from trash'
                 'upload:Upload a local audio file'
                 'merge:Merge recordings'
+                'dump:Dump raw API response for debugging'
                 'login:Sign in to Plaud'
+                'refresh:Re-authenticate the stored session'
                 'session:Manage the stored session'
+                'update:Upgrade plaud-tools via pip'
+                'doctor:Print a self-diagnosis JSON document'
                 'ping:Test connectivity to Plaud'
             )
             _describe 'subcommand' subcommands
@@ -50,6 +59,7 @@ _plaud_tools() {
                 list)
                     _arguments \
                         '--limit[Max results to return]:limit' \
+                        '--all[Page through the whole library]' \
                         '--since[ISO 8601 start-date filter]:date' \
                         '--until[ISO 8601 end-date filter]:date' \
                         '--query[Title substring filter]:query' \
@@ -59,15 +69,80 @@ _plaud_tools() {
                 search)
                     _arguments \
                         '--limit[Max results to return]:limit' \
+                        '--all[Page through the whole library]' \
                         '--since[ISO 8601 start-date filter]:date' \
                         '--until[ISO 8601 end-date filter]:date' \
-                        '--folder-id[Folder ID filter]:folder_id'
+                        '--folder-id[Folder ID filter]:folder_id' \
+                        '--unfiled[Only unfiled recordings]'
                     ;;
                 detail)
                     _arguments '--include-transcript[Include full transcript text]'
                     ;;
+                transcript)
+                    _arguments \
+                        '--polish[Return the AI-polished transcript]' \
+                        '--segments[Print structured per-utterance JSON]'
+                    ;;
+                audio)
+                    _arguments '-o+[Download to this path instead of printing the URL]:output:_files' \
+                        '--output+[Download to this path instead of printing the URL]:output:_files'
+                    ;;
+                folder)
+                    local -a folder_cmds
+                    folder_cmds=(
+                        'create:Create a folder'
+                        'edit:Edit a folder'
+                        'delete:Delete a folder'
+                    )
+                    _arguments \
+                        '1: :->folder_subcmd' \
+                        '*:: :->folder_args'
+                    case $state in
+                        folder_subcmd)
+                            _describe 'folder subcommand' folder_cmds
+                            ;;
+                        folder_args)
+                            case $line[1] in
+                                create)
+                                    _arguments \
+                                        '--color[Hex color, e.g. "#4c8eff"]:color' \
+                                        '--icon[Icon glyph codepoint]:icon'
+                                    ;;
+                                edit)
+                                    _arguments \
+                                        '--name[New folder name]:name' \
+                                        '--color[Hex color, e.g. "#4c8eff"]:color' \
+                                        '--icon[Icon glyph codepoint]:icon'
+                                    ;;
+                                delete)
+                                    _arguments '--yes[Confirm deletion without prompt]'
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                rename-speaker)
+                    ;;
+                correct-transcript)
+                    ;;
+                correct-summary)
+                    ;;
+                set-summary)
+                    _arguments \
+                        '--content[New summary markdown]:content' \
+                        '--content-file[Path to a file containing the new summary markdown]:content_file:_files'
+                    ;;
                 transcribe)
-                    _arguments '--template[Summary template name]:template'
+                    _arguments \
+                        '--template[Summary template name]:template' \
+                        '--language[Language code, e.g. "en"]:language' \
+                        '--diarization[Enable speaker diarization]' \
+                        '--no-diarization[Disable speaker diarization]' \
+                        '--llm[LLM to use for summarization]:llm' \
+                        '--wait[Block until the given stage completes]:wait:(none transcript summary)'
+                    ;;
+                trash)
+                    _arguments '--list[List recordings currently in trash]'
                     ;;
                 delete)
                     _arguments '--yes[Confirm permanent deletion without prompt]'
@@ -76,7 +151,10 @@ _plaud_tools() {
                     _arguments \
                         '--title[Recording title (defaults to file stem)]:title' \
                         '--folder-id[Folder to assign after upload]:folder_id' \
-                        '--detach[Return immediately without waiting for transcription]'
+                        '--detach[Return immediately without waiting for transcription]' \
+                        '--skip-summary[Wait for transcript only, not summary]' \
+                        '--start-time[Recording timestamp, ISO 8601 or epoch]:start_time' \
+                        '--timezone-offset[UTC offset in hours, e.g. -7.0]:timezone_offset'
                     ;;
                 merge)
                     _arguments '--title[Title for the merged recording]:title'
@@ -86,6 +164,12 @@ _plaud_tools() {
                         '--email[Plaud account email]:email' \
                         '--password[Plaud account password]:password' \
                         '--region[API region]:region:(us eu)'
+                    ;;
+                refresh)
+                    _arguments \
+                        '--email[Override the stored email]:email' \
+                        '--password[Plaud account password]:password' \
+                        '--region[Override the stored region]:region:(us eu)'
                     ;;
                 session)
                     local -a session_cmds

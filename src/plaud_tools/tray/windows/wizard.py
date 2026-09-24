@@ -14,6 +14,7 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
     "not-connected": ("Not connected", "#1d4ed8"),
     "connected": ("✓ Connected", "#15803d"),
     "stale": ("⚠ Path outdated", "#b45309"),
+    "invalid-config": ("⚠ Config file broken", "#b91c1c"),
 }
 
 

@@ -62,8 +62,10 @@ def _mcp_exe_path() -> Path | None:
         return layout.install_root / "mcp" / "plaud-mcp.exe"
     # Dev fallback: PyInstaller onedir output next to repo root.
     # Only append .exe on Windows; POSIX bundles use no suffix.
+    # __file__ is src/plaud_tools/cli/doctor.py, so four `.parent`s reach the
+    # repo root (previously three, which landed on `src/` instead).
     exe_name = "plaud-mcp.exe" if sys.platform == "win32" else "plaud-mcp"
-    return Path(__file__).parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / exe_name
+    return Path(__file__).parent.parent.parent.parent / "out" / "plaud-mcp" / "plaud-mcp" / exe_name
 
 
 def _ffmpeg_path() -> Path:
@@ -135,32 +137,6 @@ def _session_section(store: SessionStore) -> dict[str, Any]:
     }
 
 
-def _get_mcp_command_from_config(client_id: str) -> str | None:
-    """Read the raw mcp_command string stored in the AI client config, or None.
-
-    Calls through ``_ai_clients_mod`` so tests can monkeypatch
-    ``plaud_tools.ai_clients._client_paths`` and have it take effect here.
-    """
-    paths = _ai_clients_mod._client_paths()
-    config_path = paths.get(client_id)
-    if config_path is None or not config_path.exists():
-        return None
-    try:
-        if config_path.suffix == ".toml":
-            config = _ai_clients_mod._read_toml(config_path)
-            entry = (config.get("mcp_servers") or {}).get("plaud")
-            if entry and isinstance(entry.get("command"), str):
-                return entry["command"]
-        else:
-            config = _ai_clients_mod._read_json(config_path)
-            entry = (config.get("mcpServers") or {}).get("plaud")
-            if entry and isinstance(entry.get("command"), str):
-                return entry["command"]
-    except Exception:
-        pass
-    return None
-
-
 def _ai_clients_section() -> dict[str, Any]:
     mcp_exe = str(_mcp_exe_path())
     result: dict[str, Any] = {}
@@ -169,7 +145,9 @@ def _ai_clients_section() -> dict[str, Any]:
         config_path = paths.get(client_id)
         detected = config_path is not None and config_path.exists()
         status = _ai_clients_mod.get_status(client_id, mcp_exe)
-        mcp_command = _get_mcp_command_from_config(client_id)
+        # get_status() already parsed the config to compute status; reuse
+        # that parsing instead of doing it a second time here.
+        mcp_command = _ai_clients_mod.get_mcp_command(client_id)
         entry: dict[str, Any] = {
             "detected": detected,
             "status": status,

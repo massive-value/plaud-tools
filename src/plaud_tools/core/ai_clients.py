@@ -12,7 +12,7 @@ from typing import Literal
 
 import tomlkit
 
-ClientStatus = Literal["not-detected", "not-connected", "connected", "stale"]
+ClientStatus = Literal["not-detected", "not-connected", "connected", "stale", "invalid-config"]
 
 CLIENTS: dict[str, str] = {
     "claude-desktop": "Claude Desktop",
@@ -42,8 +42,32 @@ def _resolve_claude_desktop(localappdata: Path, appdata: Path) -> Path:
     return appdata / "Claude" / "claude_desktop_config.json"
 
 
+def _is_bare_command(command: str) -> bool:
+    """True when *command* has no path component, e.g. a pip-installed ``plaud-mcp``."""
+    return os.sep not in command and (os.altsep is None or os.altsep not in command)
+
+
+def _resolve_command_path(command: str) -> Path:
+    """Resolve *command* to an absolute path the way a shell would launch it.
+
+    A bare command (no directory component) is a PATH lookup, not a path
+    relative to the current working directory -- resolving it with
+    ``Path.resolve()`` alone silently produces a path under cwd that can
+    never match the real executable, permanently misreporting a healthy pip
+    install (which stores the bare command "plaud-mcp") as "stale". Look it
+    up with ``shutil.which`` first, and only fall back to plain path
+    resolution when that fails (e.g. a stale entry pointing at a command no
+    longer on PATH).
+    """
+    if _is_bare_command(command):
+        found = shutil.which(command)
+        if found is not None:
+            return Path(found).resolve()
+    return Path(command).resolve()
+
+
 def _same_path(a: str, b: str) -> bool:
-    return Path(a).resolve().as_posix().lower() == Path(b).resolve().as_posix().lower()
+    return _resolve_command_path(a).as_posix().lower() == _resolve_command_path(b).as_posix().lower()
 
 
 def _backup_once(config_path: Path) -> None:
@@ -62,7 +86,11 @@ def _backup_once(config_path: Path) -> None:
 def _read_json(config_path: Path) -> dict:
     if not config_path.exists():
         return {}
-    text = config_path.read_text(encoding="utf-8").strip()
+    # utf-8-sig: some editors (and Windows tools in general) write
+    # claude_desktop_config.json / .claude.json with a leading BOM, which
+    # plain "utf-8" decoding leaves in the string and json.loads() then
+    # rejects as invalid.
+    text = config_path.read_text(encoding="utf-8-sig").strip()
     return json.loads(text) if text else {}
 
 
@@ -81,7 +109,7 @@ def _write_atomic_json(config_path: Path, data: dict) -> None:
 def _read_toml(config_path: Path) -> dict:
     if not config_path.exists():
         return {}
-    text = config_path.read_text(encoding="utf-8").strip()
+    text = config_path.read_text(encoding="utf-8-sig").strip()  # BOM-tolerant; see _read_json
     return tomllib.loads(text) if text else {}
 
 
@@ -102,7 +130,7 @@ def _write_toml_mcp(config_path: Path, command: str | None) -> None:
     boundary detection (the old regex ``[^\\[]*`` broke on inline arrays).
     """
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    text = config_path.read_text(encoding="utf-8-sig") if config_path.exists() else ""
 
     doc = tomlkit.loads(text)
 
@@ -142,28 +170,58 @@ def _write_toml_mcp(config_path: Path, command: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _load_mcp_entry(config_path: Path) -> dict | None:
+    """Parse *config_path* and return its ``[mcp_servers.plaud]``/``mcpServers.plaud`` entry.
+
+    Returns ``None`` when the config parses fine but has no (valid) plaud
+    entry. Raises whatever the underlying parser raises (``json.JSONDecodeError``,
+    ``tomllib.TOMLDecodeError``, ...) when the file itself is malformed --
+    callers that need to tell "broken file" apart from "valid file, nothing
+    configured" (``get_status``) catch that themselves.
+    """
+    if config_path.suffix == ".toml":
+        config = _read_toml(config_path)
+        entry = (config.get("mcp_servers") or {}).get("plaud")
+    else:
+        config = _read_json(config_path)
+        entry = (config.get("mcpServers") or {}).get("plaud")
+    if entry and isinstance(entry.get("command"), str):
+        return entry
+    return None
+
+
+def get_mcp_command(client_id: str) -> str | None:
+    """Return the raw mcp_command string stored in *client_id*'s config, or None.
+
+    Used by ``doctor`` to surface the configured command alongside the
+    connection status ``get_status`` computes -- shares ``_load_mcp_entry``
+    with it instead of re-parsing the config a second time.
+    """
+    paths = _client_paths()
+    config_path = paths.get(client_id)
+    if config_path is None or not config_path.exists():
+        return None
+    try:
+        entry = _load_mcp_entry(config_path)
+    except Exception:
+        return None
+    return entry["command"] if entry else None
+
+
 def get_status(client_id: str, mcp_exe: str) -> ClientStatus:
     paths = _client_paths()
     config_path = paths.get(client_id)
     if config_path is None or not config_path.exists():
         return "not-detected"
 
-    if config_path.suffix == ".toml":
-        try:
-            config = _read_toml(config_path)
-        except Exception:
-            return "not-connected"
-        entry = (config.get("mcp_servers") or {}).get("plaud")
-        if not entry or not isinstance(entry.get("command"), str):
-            return "not-connected"
-        return "connected" if _same_path(entry["command"], mcp_exe) else "stale"
-
     try:
-        config = _read_json(config_path)
+        entry = _load_mcp_entry(config_path)
     except Exception:
-        return "not-connected"
-    entry = (config.get("mcpServers") or {}).get("plaud")
-    if not entry or not isinstance(entry.get("command"), str):
+        # The file exists but couldn't be parsed (bad JSON/TOML) -- distinct
+        # from "not-connected" (parses fine, plaud just isn't set up) so a
+        # user isn't told to "connect" a client whose config is actually broken.
+        return "invalid-config"
+    if entry is None:
         return "not-connected"
     return "connected" if _same_path(entry["command"], mcp_exe) else "stale"
 
