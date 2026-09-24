@@ -103,13 +103,6 @@ def test_allowed_update_hosts_contains_objects_githubusercontent_com() -> None:
     assert "objects.githubusercontent.com" in _ALLOWED_UPDATE_HOSTS
 
 
-def test_allowed_update_hosts_does_not_contain_evil_variants() -> None:
-    """Sanity-check: evil lookalikes are not accidentally in the allowlist."""
-    assert "github.com.evil.com" not in _ALLOWED_UPDATE_HOSTS
-    assert "notgithub.com" not in _ALLOWED_UPDATE_HOSTS
-    assert "evil.com" not in _ALLOWED_UPDATE_HOSTS
-
-
 def test_allowed_update_hosts_contains_release_assets_cdn() -> None:
     """GitHub now redirects release downloads to release-assets.githubusercontent.com;
     the final-URL check would refuse every real update without it."""

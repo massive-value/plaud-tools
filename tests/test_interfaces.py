@@ -1904,7 +1904,7 @@ def test_extract_inline_summary_handles_dict_data_content():
     from plaud_tools.core.client import PlaudClient
     from plaud_tools.core.session import SessionManager, SessionStore
 
-    client = PlaudClient(SessionManager(SessionStore()))
+    client = PlaudClient(SessionManager(SessionStore(service_name="plaud-tools-test-extract-summary")))
     raw = {
         "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
         "pre_download_content_list": [
@@ -1919,7 +1919,7 @@ def test_extract_inline_summary_fallback_by_data_type():
     from plaud_tools.core.client import PlaudClient
     from plaud_tools.core.session import SessionManager, SessionStore
 
-    client = PlaudClient(SessionManager(SessionStore()))
+    client = PlaudClient(SessionManager(SessionStore(service_name="plaud-tools-test-extract-summary")))
     raw = {
         "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
         "pre_download_content_list": [
@@ -1944,7 +1944,10 @@ def test_fetch_summary_from_data_link_handles_plain_text():
         def request(self, method, url, headers, body=None, *, timeout=None):
             return HttpResponse(status_code=200, body=b"# My Summary\n\nContent here.", headers={})
 
-    client = PlaudClient(SessionManager(SessionStore()), transport=PlainTextTransport())
+    client = PlaudClient(
+        SessionManager(SessionStore(service_name="plaud-tools-test-extract-summary")),
+        transport=PlainTextTransport(),
+    )
     raw = {
         "content_list": [
             {

@@ -162,3 +162,17 @@ from `plaud_tools.mcp_lifecycle` in the src/ package-by-surface reorg), reports
 without starting the tkinter/pystray GUI (critical: CI runners have no display).
 The CI step asserts the output contains `enumerator=psutil`; any regression
 (e.g. a missing C-extension hiddenimport) causes a hard CI failure before merge.
+
+## Amendment — 2026-09-24 (psutil enumerator and `--diagnose-enum` removed)
+
+A CI/deps/test-suite audit found that `process_probe.py`, the `mcp_lifecycle`
+field in `doctor` output, the `[tray]` extra's `psutil` dependency, and the
+`--diagnose-enum` flag in `scripts/plaud_tray_entry.py` only kept each other
+alive: nothing in `src/` actually enumerates processes anymore (the update
+and uninstall flows described above went through `install.ps1`'s own inline
+PowerShell, not the Python enumerator). All four were deleted together, along
+with their dedicated tests and the `bundle-smoke` / release CI steps that
+built a tray bundle solely to exercise `--diagnose-enum`. The "who is allowed
+to kill `plaud-mcp`" and "path-scoped enumeration" decisions above are
+unaffected — this amendment only concerns the psutil-based enumerator that
+had no remaining caller.

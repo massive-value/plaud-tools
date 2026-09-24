@@ -17,6 +17,14 @@ macOS and Linux omit it until the bundle port lands (D2 roadmap).
 
 ## How to refresh (upgrade all pins)
 
+This is a manual step — Dependabot's `pip` ecosystem doesn't discover these
+hand-compiled per-platform files, and a scheduled GitHub Actions workflow
+can't substitute for a human here: this repo doesn't allow Actions to open
+PRs, and a PR opened with the default `GITHUB_TOKEN` wouldn't trigger CI
+even if it could. **Regenerating constraints is part of the pre-release
+checklist** (see "When to refresh" below) — run it before cutting a release
+if the last refresh is more than 4 weeks old.
+
 Requires: `uv` on PATH (`pip install uv`).  Run from repo root.  Network access required.
 
 ```sh
@@ -44,9 +52,15 @@ verify each file is installable on its native runner before merge.
 
 ## When to refresh
 
-- After any `pyproject.toml` dependency change (bounds or new deps).
-- On a regular cadence (e.g. monthly) to pick up security patches.
-- Before a new release if the last refresh was more than 4 weeks ago.
+- After any `pyproject.toml` dependency change (bounds or new deps) — refresh
+  by hand in the same PR.
+- **Pre-release checklist step:** before cutting a release, check the
+  `Provenance` date below (or `git log -1 -- constraints/`); if it's more
+  than 4 weeks old, run the refresh commands and open a PR with the updated
+  files first. The `constraints-install` and `test-windows-constraints` CI
+  jobs validate it before merge.
+- On a regular cadence otherwise (e.g. monthly) to pick up security patches,
+  even between releases.
 
 ## How the constraints are used
 
@@ -57,13 +71,18 @@ pip install --force-reinstall -c constraints/windows.txt ".[tray,dev]"
 `constraints/windows.txt` is also uploaded as a lightweight SBOM release asset
 alongside `PlaudTools.zip` and `SHA256SUMS`.
 
-**ci.yml** (`constraints-install` job):
-Each platform runner installs its matching constraint file to catch breakage
-before it reaches the release job.
+**ci.yml**:
+- `constraints-install` — each platform runner installs its matching
+  constraint file to catch a broken resolution before it reaches the release
+  job.
+- `test-windows-constraints` — runs the full test suite against the pinned
+  Windows set (not just an install check), so a version bump that resolves
+  fine but breaks a test fails here instead of at release.
 
 ## Provenance
 
-All three files were compiled by `uv pip compile` (uv 0.11.21) on 2026-06-12
-from a Windows host.  Cross-platform resolution is purely metadata-based (uv
-reads wheel tags and markers without downloading binaries), so the macOS and
-Linux files are accurate even though they were compiled on Windows.
+All three files were most recently refreshed by `uv pip compile --upgrade`
+(uv 0.11.8) on 2026-09-24 from a Windows host.  Cross-platform resolution is
+purely metadata-based (uv reads wheel tags and markers without downloading
+binaries), so the macOS and Linux files are accurate even though they were
+compiled on Windows.

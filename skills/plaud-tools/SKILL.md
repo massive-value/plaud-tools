@@ -5,7 +5,7 @@ description: Read this before using the PlaudTools MCP (browse_recordings, get_r
 
 # plaud-tools
 
-Eleven tools over a Plaud account. Four read, seven write. Auth lives in the
+Eleven tools over a Plaud account. Three read, eight write. Auth lives in the
 PlaudTools tray app, not here — there is no login tool, by design.
 
 ## The three things that go wrong most

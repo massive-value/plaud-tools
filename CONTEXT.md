@@ -140,7 +140,7 @@ must carry explicit evidence of consent through the call.
 
 ## Diagnostics — `doctor` output
 
-`plaud-tools doctor` returns a JSON document. The `mcp_lifecycle` section includes an `enumerator` field reporting which process enumerator is active: `psutil` (normal bundle), `wmic` (legacy Windows), `powershell` (modern Windows without psutil), or `none` (no enumerator available). The dev-fallback MCP path in the same section is platform-aware (no `.exe` suffix on POSIX).
+`plaud-tools doctor` returns a JSON document. The `executables` section's dev-fallback MCP path is platform-aware (no `.exe` suffix on POSIX).
 
 ## Tray updater security
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "plaud-tools"
 version = "0.9.0"
-description = "Python rewrite for Plaud CLI and MCP workflows."
+description = "CLI, MCP server, and Windows tray app for managing Plaud recordings."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "LGPL-3.0-or-later"
@@ -24,14 +24,16 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Sound/Audio",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Utilities",
 ]
 dependencies = [
-    "keyring>=25,<26",
-    "mcp>=2.0,<3.0",
+    "jsonschema>=4.20.0",
+    "keyring>=25",
+    "mcp>=2.2,<3.0",
     "platformdirs>=4.0",
     "tomlkit>=0.12",
 ]
@@ -40,7 +42,7 @@ dependencies = [
 Homepage = "https://github.com/massive-value/plaud-tools"
 Repository = "https://github.com/massive-value/plaud-tools"
 Issues = "https://github.com/massive-value/plaud-tools/issues"
-Changelog = "https://github.com/massive-value/plaud-tools/blob/master/CHANGELOG.md"
+Changelog = "https://github.com/massive-value/plaud-tools/blob/main/CHANGELOG.md"
 
 [project.scripts]
 plaud-tools = "plaud_tools.cli.cli:main"
@@ -62,8 +64,8 @@ include = ["plaud_tools*"]
 plaud_tools = ["py.typed"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy>=1.10", "mcp[cli]>=2.0,<3.0"]
-tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4", "psutil>=5.9"]
+dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy==2.1.0", "ruff==0.16.8"]
+tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -79,7 +81,7 @@ markers = [
 filterwarnings = ["error"]
 
 [tool.ruff]
-# Target the project's minimum supported Python version (3.11–3.13).
+# Target the project's minimum supported Python version (3.11–3.14).
 target-version = "py311"
 # 110 chosen to match the 99th-percentile line length in the codebase (~98 chars)
 # while comfortably fitting the handful of intentionally long lines (string literals,

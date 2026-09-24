@@ -313,7 +313,6 @@ class TestRunDoctor:
         assert "session" in result
         assert "ai_clients" in result
         assert "log_path" in result
-        assert "mcp_lifecycle" in result
 
     def test_version_is_string(self, monkeypatch, tmp_path):
         self._stub_env(monkeypatch, tmp_path)
@@ -404,76 +403,6 @@ class TestDoctorCli:
         assert "executables" in parsed
         assert "session" in parsed
         assert "ai_clients" in parsed
-
-
-# ---------------------------------------------------------------------------
-# mcp_lifecycle field
-# ---------------------------------------------------------------------------
-
-_VALID_ENUMERATORS = {"psutil", "wmic", "powershell", "none"}
-
-
-class TestMcpLifecycleField:
-    def _stub_env(self, monkeypatch, tmp_path):
-        fake_exe = tmp_path / "plaud-tools.exe"
-        fake_mcp = tmp_path / "plaud-mcp.exe"
-        fake_ffmpeg = tmp_path / "ffmpeg.exe"
-        for p in (fake_exe, fake_mcp, fake_ffmpeg):
-            p.touch()
-        monkeypatch.setattr(_doctor_mod, "_install_dir", lambda: tmp_path)
-        monkeypatch.setattr(_doctor_mod, "_cli_exe_path", lambda: fake_exe)
-        monkeypatch.setattr(_doctor_mod, "_mcp_exe_path", lambda: fake_mcp)
-        monkeypatch.setattr(_doctor_mod, "_ffmpeg_path", lambda: fake_ffmpeg)
-        monkeypatch.setattr(_doctor_mod, "_log_path", lambda: tmp_path / "tray.log")
-        fake_client_paths = {
-            "claude-desktop": tmp_path / "nonexistent.json",
-            "claude-code": tmp_path / "nonexistent2.json",
-            "codex": tmp_path / "nonexistent.toml",
-        }
-        monkeypatch.setattr("plaud_tools.core.ai_clients._client_paths", lambda: fake_client_paths)
-
-    def test_mcp_lifecycle_field_present(self, monkeypatch, tmp_path):
-        self._stub_env(monkeypatch, tmp_path)
-        store = _MemoryStore(session=None, source="missing")
-        result = run_doctor(store)  # type: ignore[arg-type]
-        assert "mcp_lifecycle" in result
-        lifecycle = result["mcp_lifecycle"]
-        assert isinstance(lifecycle, dict)
-        assert "enumerator" in lifecycle
-
-    def test_mcp_lifecycle_enumerator_is_valid(self, monkeypatch, tmp_path):
-        self._stub_env(monkeypatch, tmp_path)
-        store = _MemoryStore(session=None, source="missing")
-        result = run_doctor(store)  # type: ignore[arg-type]
-        enumerator = result["mcp_lifecycle"]["enumerator"]
-        assert enumerator in _VALID_ENUMERATORS, f"unexpected enumerator value: {enumerator!r}"
-
-    def test_mcp_lifecycle_psutil_when_available(self, monkeypatch, tmp_path):
-        """When psutil can be imported, enumerator must be 'psutil'."""
-        import types
-
-        self._stub_env(monkeypatch, tmp_path)
-        # Inject a fake psutil so the ImportError branch is skipped.
-        fake_psutil = types.ModuleType("psutil")
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-        import plaud_tools.cli.process_probe as _lc
-
-        monkeypatch.setattr(_lc, "active_enumerator_name", lambda: "psutil")
-        monkeypatch.setattr(_doctor_mod, "active_enumerator_name", lambda: "psutil")
-
-        store = _MemoryStore(session=None, source="missing")
-        result = run_doctor(store)  # type: ignore[arg-type]
-        assert result["mcp_lifecycle"]["enumerator"] == "psutil"
-
-    def test_mcp_lifecycle_none_when_no_psutil_posix(self, monkeypatch, tmp_path):
-        """On non-Windows without psutil, enumerator must be 'none'."""
-        self._stub_env(monkeypatch, tmp_path)
-        monkeypatch.setattr(_doctor_mod, "active_enumerator_name", lambda: "none")
-
-        store = _MemoryStore(session=None, source="missing")
-        result = run_doctor(store)  # type: ignore[arg-type]
-        assert result["mcp_lifecycle"]["enumerator"] == "none"
 
 
 # ---------------------------------------------------------------------------
