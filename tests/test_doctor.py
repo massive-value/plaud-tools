@@ -509,3 +509,14 @@ class TestMcpExeDevFallback:
         result = _mcp_exe_path()
         assert result is not None
         assert result.suffix == ".exe", f"Expected .exe suffix on Windows, got: {result}"
+
+    def test_dev_fallback_anchored_at_repo_root(self, monkeypatch):
+        """The dev-fallback candidate lives under <repo root>/out, not <repo root>/src/out."""
+        self._clear_frozen(monkeypatch)
+        monkeypatch.setattr("shutil.which", lambda _name: None)
+
+        result = _mcp_exe_path()
+        assert result is not None
+        # doctor.py lives at <repo_root>/src/plaud_tools/cli/doctor.py
+        repo_root = Path(_doctor_mod.__file__).parents[3]
+        assert result == repo_root / "out" / "plaud-mcp" / "plaud-mcp" / result.name

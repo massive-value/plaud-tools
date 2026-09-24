@@ -31,6 +31,11 @@ One wrinkle: a malformed command line exits `2` as well, because that is
 argparse's own convention for a usage error. A usage message on stderr
 distinguishes it from an auth failure.
 
+Two more outside the `0`-`4` taxonomy: Ctrl+C mid-command exits `130`, the
+conventional shell code for SIGINT. Piping into something that closes early
+(`plaud-tools list | head`) exits `0` — the command did its job; the reader
+just stopped listening — instead of a broken-pipe traceback.
+
 ---
 
 ## Sign-in and session
@@ -41,7 +46,7 @@ distinguishes it from an auth failure.
 plaud-tools login --email you@example.com --region us
 ```
 
-Prompts for your Plaud password and stores the resulting access token in your OS keyring (with a file-store fallback at `~/.config/plaud-tools/session.json`). `--region` is `us` or `eu`; if you pick the wrong one, the client auto-detects and switches on the first API call.
+Prompts for your Plaud password and stores the resulting access token in your OS keyring. On Windows, a DPAPI-encrypted shadow copy is also written to `%LOCALAPPDATA%\PlaudTools\session.dat` so the token can still be read if the Credential Manager is having a bad day; a plaintext file at `%LOCALAPPDATA%\PlaudTools\session.json` (macOS/Linux: your platform's per-user data directory) is the last-resort fallback, used only when both the keyring and DPAPI are unavailable. `--region` is `us` or `eu`; if you pick the wrong one, the client auto-detects and switches on the first API call.
 
 If you signed up for Plaud with Google, use "Forgot password" on [web.plaud.ai](https://web.plaud.ai) first to set a password — `plaud-tools login` is password-based.
 
@@ -62,7 +67,18 @@ Re-authenticates using the email/region already saved in the stored session (no 
 plaud-tools session show
 ```
 
-Prints the stored email, region, masked token, source (`env` / `keyring` / `file` / `missing`), and days until expiry. Use this to debug session-loading issues. Pass `--show-token` to print the full token (handle with care).
+Prints the stored email, region, masked token, source, and days until expiry. Use this to debug session-loading issues. Pass `--show-token` to print the full token (handle with care).
+
+`source` is one of:
+
+| Source | Meaning |
+|---|---|
+| `env` | `PLAUD_ACCESS_TOKEN` (see below) — never persisted |
+| `keyring` | OS credential store (Windows Credential Manager, macOS Keychain, ...) |
+| `legacy_keyring` | Found under the predecessor tool's keyring entry and migrated on the spot |
+| `dpapi_file` | Windows DPAPI-encrypted shadow file, used when the keyring read failed |
+| `file` | Plaintext fallback file, used when both the keyring and DPAPI are unavailable |
+| `missing` | No session found anywhere |
 
 ### `session set`
 
@@ -70,7 +86,7 @@ Prints the stored email, region, masked token, source (`env` / `keyring` / `file
 plaud-tools session set --token <token> --region us --email you@example.com
 ```
 
-Write a session entry without going through `login`. Useful for CI or for transferring a session between machines.
+Write a session entry without going through `login`. Useful for CI or for transferring a session between machines. Like `login`, this goes through the keyring/DPAPI/file fallback chain above; the output's `source` field says where it actually landed, and `path` is only included when that source has one (`dpapi_file` or `file` — `keyring` has none to report).
 
 ### `session clear`
 
@@ -78,7 +94,7 @@ Write a session entry without going through `login`. Useful for CI or for transf
 plaud-tools session clear
 ```
 
-Removes the stored session from both the keyring and the file store.
+Removes the stored session from the keyring, the DPAPI shadow file, and the plaintext file store — wherever it might be.
 
 ### Environment variable injection
 
@@ -123,7 +139,7 @@ plaud-tools list --folder-id <folder-id>
 plaud-tools list --unfiled
 ```
 
-Defaults to 20 most recent recordings. `--since` and `--until` accept dates (`2025-01-01`), datetimes (`2025-01-01T09:30`), or relative offsets. `--query` is case-insensitive substring matching against titles.
+Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles.
 
 `--all` returns every matching recording instead of one page. It fetches the library 200 recordings per request and stops when Plaud returns a short page, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
 

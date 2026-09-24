@@ -9,7 +9,7 @@ import pytest
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
 from plaud_tools.core.models import FileTag, Recording, RecordingDetail
-from plaud_tools.core.session import SessionStore
+from plaud_tools.core.session import PlaudSession, SessionStore
 from plaud_tools.mcp_pt.mcp import build_handlers
 
 
@@ -318,6 +318,27 @@ def test_cli_audio_output_directory_names_the_file_by_id(tmp_path: Path):
     assert payload["path"] == str(tmp_path / "rec1.mp3")
 
 
+def test_cli_audio_output_trailing_slash_is_treated_as_a_not_yet_created_dir(tmp_path: Path):
+    """`-o downloads/` on a directory that doesn't exist yet must not write a file named "downloads".
+
+    `Path.is_dir()` is False until the directory exists, so without checking
+    the raw string for a trailing separator this used to write the audio to
+    a plain file literally named "downloads" (#audit finding 5).
+    """
+
+    class AudioStub(StubClient):
+        def download_audio(self, recording_id, destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"x")
+            return destination
+
+    target_dir = tmp_path / "downloads"
+    assert not target_dir.exists()
+
+    payload = json.loads(run_cli(["audio", "rec1", "-o", str(target_dir) + "/"], AudioStub()))
+    assert payload["path"] == str(target_dir / "rec1.mp3")
+
+
 def test_cli_audio_without_audio_errors():
     class NoAudioStub(StubClient):
         def get_audio_url(self, recording_id):
@@ -530,6 +551,12 @@ def test_cli_list_default_limit_is_unchanged():
 def test_cli_list_all_and_limit_are_mutually_exclusive():
     with pytest.raises(SystemExit):
         run_cli(["list", "--all", "--limit", "5"], LibraryStub(1))
+
+
+@pytest.mark.parametrize("bad_limit", ["0", "-5"])
+def test_cli_list_rejects_non_positive_limit(bad_limit):
+    with pytest.raises(SystemExit):
+        run_cli(["list", "--limit", bad_limit], LibraryStub(1))
 
 
 def test_cli_list_filters_query_and_unfiled():
@@ -853,6 +880,50 @@ def test_cli_session_show_returns_none_when_missing(tmp_path: Path):
     assert payload["session"] is None
 
 
+class _FakeSessionStore:
+    """SessionStore stand-in whose `save()` lands wherever the test wants.
+
+    Used to exercise `session set`'s reporting of *where* `store.save()`
+    actually stored the session, independent of the real keyring/DPAPI
+    availability in whatever environment the suite runs in.
+    """
+
+    def __init__(self, source: str, file_path: Path):
+        self._source = source
+        self.file_store = type("_FS", (), {"path": file_path})()
+        self.dpapi_path = file_path.with_suffix(".dat")
+        self.saved = None
+
+    def save(self, session):
+        self.saved = session
+
+    def load_with_source(self):
+        return (None, self._source)
+
+    def load(self):
+        return None
+
+    def clear(self):
+        pass
+
+
+def test_cli_session_set_reports_keyring_source_without_a_path(tmp_path: Path):
+    """`session set` must not always claim the file-store path (#audit finding 8)."""
+    store = _FakeSessionStore("keyring", tmp_path / "session.json")
+    output = run_cli(["session", "set", "--token", "t", "--region", "us"], session_store=store)
+    payload = json.loads(output)
+    assert payload["source"] == "keyring"
+    assert "path" not in payload
+
+
+def test_cli_session_set_reports_file_path_when_saved_to_file(tmp_path: Path):
+    store = _FakeSessionStore("file", tmp_path / "session.json")
+    output = run_cli(["session", "set", "--token", "t", "--region", "us"], session_store=store)
+    payload = json.loads(output)
+    assert payload["source"] == "file"
+    assert payload["path"] == str(store.file_store.path)
+
+
 class StubAuth:
     def __init__(self):
         self.calls = []
@@ -892,6 +963,26 @@ def test_cli_login_uses_auth_and_returns_stored_shape(tmp_path: Path):
         "email": "user@example.com",
         "region": "eu",
         "status": "stored",
+    }
+
+
+def test_cli_refresh_uses_stored_email_and_region(tmp_path: Path):
+    """`refresh` reuses the already-stored email/region instead of requiring them again."""
+    store = SessionStore(
+        tmp_path / "session.json", service_name="plaud-tools-test-refresh", account_name="session"
+    )
+    store.save(PlaudSession(access_token="old-token", region="eu", email="stored@example.com"))
+    auth = StubAuth()
+
+    output = run_cli(["refresh", "--password", "pw"], session_store=store, auth=auth)
+    payload = json.loads(output)
+
+    assert auth.calls == [("stored@example.com", "pw", "eu")]
+    assert payload == {
+        "ok": True,
+        "email": "stored@example.com",
+        "region": "eu",
+        "status": "refreshed",
     }
 
 
@@ -1036,6 +1127,44 @@ def test_cli_main_soft_deadline_timeout_exits_timeout(capsys, monkeypatch):
 
     code = _run_main_with_client(monkeypatch, SlowClient(), ["list"])
     assert code == 4
+
+
+# ---------------------------------------------------------------------------
+# main() must handle KeyboardInterrupt / BrokenPipeError / OSError cleanly
+# instead of a raw traceback -- these aren't PlaudApiError/ValueError/
+# RuntimeError, so they previously fell through every except clause.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_main_keyboard_interrupt_exits_with_sigint_code(monkeypatch):
+    class InterruptingClient:
+        def list_recordings(self, query=None):
+            raise KeyboardInterrupt()
+
+    code = _run_main_with_client(monkeypatch, InterruptingClient(), ["list"])
+    assert code == 130
+
+
+def test_cli_main_broken_pipe_exits_quietly(capsys, monkeypatch):
+    class PipeBreakClient:
+        def list_recordings(self, query=None):
+            raise BrokenPipeError()
+
+    code = _run_main_with_client(monkeypatch, PipeBreakClient(), ["list"])
+    assert code == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_main_oserror_exits_cleanly_with_message(capsys, monkeypatch):
+    """e.g. `set-summary --content-file <a directory>` or `audio -o` to an unwritable path."""
+
+    class DiskFullClient:
+        def list_recordings(self, query=None):
+            raise OSError("disk full")
+
+    code = _run_main_with_client(monkeypatch, DiskFullClient(), ["list"])
+    assert code == 1
+    assert "disk full" in capsys.readouterr().err
 
 
 # --- MCP tests ---
@@ -1422,6 +1551,54 @@ def test_cli_merge_calls_merge_and_returns_result(tmp_path):
     assert client.merge_call == (["r1", "r2", "r3"], "Combined")
 
 
+class _WaitFailsUploadStubClient(UploadStubClient):
+    """Upload succeeds, but the post-upload transcription wait blows up."""
+
+    def wait_for_transcription(self, recording_id, **kwargs):
+        raise RuntimeError("transcription poll failed")
+
+
+def test_cli_upload_prints_recording_id_before_the_wait(capsys, tmp_path):
+    """If the transcribe/wait step fails, the id must already be on stderr (#audit finding 1).
+
+    Otherwise a timeout/5xx/Ctrl+C during that wait leaves the user with no
+    id at all, and re-running `upload` duplicates the recording.
+    """
+    mp3_file = tmp_path / "test.mp3"
+    mp3_file.write_bytes(b"fake mp3 data")
+    client = _WaitFailsUploadStubClient()
+
+    with pytest.raises(RuntimeError, match="transcription poll failed"):
+        run_cli(["upload", str(mp3_file)], client)
+
+    assert "new-rec" in capsys.readouterr().err
+
+
+class _MergeFailsUploadStubClient(UploadStubClient):
+    """The merge job is submitted, but the poll for completion blows up."""
+
+    def merge_recordings(self, ids, filename, **kwargs):
+        raise RuntimeError("merge poll failed")
+
+
+def test_cli_merge_prints_source_ids_before_the_wait(capsys):
+    """If the merge poll fails, the submitted ids must already be on stderr (#audit finding 1).
+
+    merge_recordings() submits and polls the combine job in one call, so its
+    new id is never known if that call raises -- the source ids are the only
+    thing the CLI has to show for what was attempted.
+    """
+    client = _MergeFailsUploadStubClient()
+
+    with pytest.raises(RuntimeError, match="merge poll failed"):
+        run_cli(["merge", "r1", "r2", "--title", "Combined"], client)
+
+    err = capsys.readouterr().err
+    assert "r1" in err
+    assert "r2" in err
+    assert "Combined" in err
+
+
 # --- MCP upload_recording / process_recording tests ---
 
 
@@ -1599,6 +1776,37 @@ def test_cli_upload_start_time_as_epoch_int(tmp_path):
     mp3_file.write_bytes(b"fake mp3 data")
     run_cli(["upload", str(mp3_file), "--start-time", "1735732800000"], EpochCapturingClient())
     assert captured["start_time"] == 1735732800000
+
+
+# ---------------------------------------------------------------------------
+# _parse_start_time: ISO parsed first, falling back to an epoch int -- a
+# 10-digit seconds epoch (e.g. `date +%s`) or an ISO-basic date without
+# dashes ("20250115") used to be misread as a millisecond epoch and land in
+# 1970 (#audit finding 7).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_start_time_scales_up_a_seconds_epoch():
+    from plaud_tools.cli.cli import _parse_start_time
+
+    # 1736899200 (seconds) == 2025-01-15T00:00:00Z; misread as milliseconds
+    # this used to land in January 1970.
+    assert _parse_start_time("1736899200") == 1736899200000
+
+
+def test_parse_start_time_accepts_iso_basic_date():
+    from plaud_tools.cli.cli import _parse_start_time
+
+    # No dashes or "T" -- the old "-"/"T" sniff routed this to the int
+    # branch, where it was misread as an implausibly small ms epoch.
+    assert _parse_start_time("20250115") == _parse_start_time("2025-01-15")
+
+
+def test_parse_start_time_rejects_garbage():
+    from plaud_tools.cli.cli import _parse_start_time
+
+    with pytest.raises(ValueError, match="Invalid --start-time"):
+        _parse_start_time("not-a-date")
 
 
 def test_mcp_upload_recording_start_time_as_iso_string(tmp_path):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -206,7 +207,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-summary", action="store_true", help="Wait for transcript only, not summary"
     )
     upload_cmd.add_argument(
-        "--start-time", help="Recording timestamp as millisecond epoch integer or ISO 8601 string"
+        "--start-time",
+        help=(
+            "Recording timestamp: an ISO 8601 date/datetime string (e.g. "
+            "'2025-01-15' or '2025-01-15T09:30'), or an epoch integer -- a "
+            "10-digit value (seconds, e.g. from `date +%%s`) is scaled up "
+            "automatically; a 13-digit value is treated as milliseconds."
+        ),
     )
     upload_cmd.add_argument("--timezone-offset", type=float, help="UTC offset in hours (e.g. -7.0)")
 
@@ -275,10 +282,17 @@ def build_parser() -> argparse.ArgumentParser:
 DEFAULT_LIST_LIMIT = 20
 
 
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {raw!r}")
+    return value
+
+
 def _add_limit_or_all(cmd: argparse.ArgumentParser) -> None:
     """Add the mutually exclusive --limit N / --all pair shared by list and search."""
     group = cmd.add_mutually_exclusive_group()
-    group.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    group.add_argument("--limit", type=_positive_int, default=DEFAULT_LIST_LIMIT)
     group.add_argument(
         "--all",
         action="store_true",
@@ -339,18 +353,37 @@ def _handle_refresh(
     )
 
 
+def _session_storage_path(store: SessionStore, source: str) -> str | None:
+    """Return the on-disk path *source* actually landed in, or None for keyring.
+
+    ``keyring`` has no filesystem path of its own to report.
+    """
+    if source == "file":
+        return str(store.file_store.path)
+    if source == "dpapi_file" and store.dpapi_path is not None:
+        return str(store.dpapi_path)
+    return None
+
+
 def _handle_session(args: argparse.Namespace, store: SessionStore) -> str:
     if args.session_command == "set":
         store.save(PlaudSession(access_token=args.token, region=args.region, email=args.email))
-        return json.dumps(
-            {
-                "ok": True,
-                "path": str(store.file_store.path),
-                "region": args.region,
-                "email": args.email,
-            },
-            indent=2,
-        )
+        # store.save() tries the keyring first, then a DPAPI shadow file, and
+        # only falls back to the plaintext file store if both are
+        # unavailable -- report where it actually landed (via
+        # load_with_source(), the same lookup `session show` uses) instead of
+        # always claiming the file-store path.
+        _, source = store.load_with_source()
+        result: dict[str, Any] = {
+            "ok": True,
+            "source": source,
+            "region": args.region,
+            "email": args.email,
+        }
+        path = _session_storage_path(store, source)
+        if path is not None:
+            result["path"] = path
+        return json.dumps(result, indent=2)
     if args.session_command == "clear":
         store.clear()
         return json.dumps({"ok": True}, indent=2)
@@ -466,20 +499,14 @@ def _list_recordings_filtered(
     )
 
 
-def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
-    recordings = _list_recordings_filtered(
-        client,
-        limit=None if args.all else args.limit,
-        since=args.since,
-        until=args.until,
-        query=args.query,
-        folder_id=args.folder_id,
-        unfiled=args.unfiled,
-    )
-    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+def _handle_list_or_search(args: argparse.Namespace, client: PlaudClient) -> str:
+    """Shared handler for `list` and `search`.
 
-
-def _handle_search(args: argparse.Namespace, client: PlaudClient) -> str:
+    `search` is defined as `list --query QUERY` with the query as a
+    positional argument instead of a flag (see `_list_recordings_filtered`'s
+    docstring) — both subparsers land the query in ``args.query``, so
+    dispatch never needs to know which subcommand it was called for.
+    """
     recordings = _list_recordings_filtered(
         client,
         limit=None if args.all else args.limit,
@@ -681,6 +708,30 @@ def _handle_set_summary(args: argparse.Namespace, client: PlaudClient) -> str:
     )
 
 
+# A millisecond epoch below this threshold would land before 1973 -- not a
+# plausible recording date -- so an integer --start-time smaller than this is
+# assumed to be a *seconds* epoch (e.g. from `date +%s`, 10 digits) and scaled
+# up instead. Silently treating it as milliseconds used to produce a 1970
+# timestamp for both 10-digit seconds epochs and ISO basic dates like
+# "20250115" (parsed as an int, not a date).
+_MIN_PLAUSIBLE_START_TIME_MS = 100_000_000_000
+
+
+def _parse_start_time(raw: str) -> int:
+    """Parse --start-time as an ISO 8601 date/datetime first, then as an epoch int."""
+    try:
+        return parse_isoish(raw, "--start-time")
+    except ValueError:
+        pass
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid --start-time value: {raw}") from exc
+    if value < _MIN_PLAUSIBLE_START_TIME_MS:
+        return value * 1000
+    return value
+
+
 def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
     from ..core.transcode import upload_with_transcode
 
@@ -688,14 +739,7 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
     title = args.title or path.stem
     start_ms: int | None = None
     if args.start_time is not None:
-        raw_st = str(args.start_time)
-        if "-" in raw_st or "T" in raw_st:
-            start_ms = parse_isoish(raw_st, "--start-time")
-        else:
-            try:
-                start_ms = int(raw_st)
-            except ValueError as exc:
-                raise ValueError(f"Invalid --start-time value: {args.start_time}") from exc
+        start_ms = _parse_start_time(str(args.start_time))
 
     # ValueError (missing file / unsupported format) and RuntimeError (ffmpeg
     # failure) propagate to main()'s except clause, which already prints and
@@ -720,6 +764,16 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
         # recording id must still reach the caller so it isn't re-uploaded.
         upload_result["folder_error"] = outcome.folder_error
     if not args.detach:
+        # The recording already exists at this point; everything below is
+        # just waiting on it. Print the id now, before the wait, so a
+        # timeout/5xx/Ctrl+C during transcribe-and-wait still leaves the
+        # user with the id on stderr instead of nothing to go on but a
+        # stack trace and a strong temptation to re-upload (duplicating it).
+        print(
+            f"uploaded recording_id={recording.id!r} - waiting for transcription "
+            "(re-running upload on failure would duplicate this recording)",
+            file=sys.stderr,
+        )
         client.transcribe_and_summarize(recording.id)
         client.wait_for_transcription(recording.id)
         if not args.skip_summary:
@@ -731,6 +785,17 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
+    # merge_recordings() submits the combine job and polls it to completion
+    # in one call, so its new recording id isn't known until it returns — if
+    # the poll times out or fails partway, there is nothing to print after
+    # the fact. Print the inputs before the (potentially long) call so a
+    # failure still leaves the user with what was submitted, instead of
+    # nothing to go on but a stack trace.
+    print(
+        f"merging {args.recording_ids!r} into title={args.title!r} "
+        "(re-running on failure may duplicate the merge job)",
+        file=sys.stderr,
+    )
     detail = client.merge_recordings(args.recording_ids, args.title)
     return json.dumps(
         {
@@ -826,7 +891,14 @@ def _handle_transcript(args: argparse.Namespace, client: PlaudClient) -> str:
 def _handle_audio(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.output:
         destination = Path(args.output)
-        if destination.is_dir():
+        # `Path.is_dir()` is False for a directory that doesn't exist yet, so
+        # `-o ./downloads/` (not yet created) would otherwise write a file
+        # literally named "downloads". A trailing separator in the raw
+        # string is the user's way of saying "this is a directory" even
+        # before it exists, so check for that too — `download_audio()`
+        # creates the parent directory either way.
+        looks_like_dir = args.output.endswith(("/", "\\"))
+        if destination.is_dir() or looks_like_dir:
             destination = destination / f"{args.recording_id}.mp3"
         saved = client.download_audio(args.recording_id, destination)
         return json.dumps(
@@ -866,8 +938,8 @@ def _handle_ping(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa:
 # Commands that DO require a PlaudClient.
 # Signature: (args, client) -> str
 _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = {
-    "list": _handle_list,
-    "search": _handle_search,
+    "list": _handle_list_or_search,
+    "search": _handle_list_or_search,
     "detail": _handle_detail,
     "show": _handle_show,
     "summary": _handle_summary,
@@ -986,6 +1058,9 @@ EXIT_ERROR = 1
 EXIT_AUTH = 2
 EXIT_NETWORK = 3
 EXIT_TIMEOUT = 4
+# Conventional shell exit code for a process killed by SIGINT (128 + 2),
+# not part of the 0-4 taxonomy above since it's not something Plaud raised.
+EXIT_SIGINT = 130
 
 _EXIT_CODE_BY_ERROR_CODE = {
     "session_expired": EXIT_AUTH,
@@ -998,6 +1073,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
     try:
         output = run_cli(args)
+    except KeyboardInterrupt:
+        # Ctrl+C mid-command (e.g. during a long upload/merge wait) used to
+        # print a raw traceback. Exit with the conventional signal code
+        # instead — a script checking the exit code sees the same thing a
+        # shell pipeline would for any other Ctrl+C'd process.
+        return EXIT_SIGINT
+    except BrokenPipeError:
+        # A downstream reader closed early (e.g. `plaud-tools list | head`).
+        # This isn't a failure of the command itself, so exit quietly rather
+        # than dumping a traceback. Redirect stdout to devnull first so the
+        # interpreter's exit-time flush of the now-unreadable pipe doesn't
+        # print its own "Exception ignored" noise; guarded because a test
+        # harness's captured stdout may not back a real file descriptor.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        return EXIT_OK
     except PlaudSessionExpiredError as exc:
         print(_with_session_expired_remedy(str(exc)), file=sys.stderr)
         return EXIT_AUTH
@@ -1016,6 +1110,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_TIMEOUT
         return _EXIT_CODE_BY_ERROR_CODE.get(error_code, EXIT_ERROR)
     except (ValueError, RuntimeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        # A filesystem error, e.g. `set-summary --content-file <a directory>`
+        # or `audio -o` targeting an unwritable path (BrokenPipeError, a
+        # subclass of OSError, is already handled above). Previously this hit
+        # no handler and printed a raw traceback.
         print(str(exc), file=sys.stderr)
         return EXIT_ERROR
     print(output)

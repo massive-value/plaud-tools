@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -133,3 +134,139 @@ def test_connect_preserves_user_comments_and_unrelated_sections(tmp_path: Path, 
     assert parsed["model"]["provider"] == "openai"
     assert parsed["mcp_servers"]["other"]["command"] == "other-mcp"
     assert parsed["mcp_servers"]["plaud"]["command"] == mcp_exe
+
+
+# ---------------------------------------------------------------------------
+# JSON clients (Claude Desktop / Claude Code) -- previously untested.
+# All paths below are tmp_path-only; _client_paths is monkeypatched for
+# every client so a bug here can never touch a real ~/.claude.json.
+# ---------------------------------------------------------------------------
+
+
+def _json_paths(tmp_path: Path, **overrides: Path) -> dict[str, Path]:
+    paths = {
+        "claude-desktop": tmp_path / "claude_desktop_config.json",
+        "claude-code": tmp_path / "claude.json",
+        "codex": tmp_path / "config.toml",
+    }
+    paths.update(overrides)
+    return paths
+
+
+def test_claude_desktop_connect_writes_mcp_server(tmp_path: Path, monkeypatch):
+    paths = _json_paths(tmp_path)
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    mcp_exe = r"C:\Users\example\AppData\Local\Programs\PlaudTools\mcp\plaud-mcp.exe"
+    ai_clients.connect("claude-desktop", mcp_exe)
+
+    parsed = json.loads(paths["claude-desktop"].read_text(encoding="utf-8"))
+    assert parsed["mcpServers"]["plaud"]["command"] == mcp_exe
+    assert ai_clients.get_status("claude-desktop", mcp_exe) == "connected"
+
+
+def test_claude_code_connect_preserves_unrelated_keys(tmp_path: Path, monkeypatch):
+    config = tmp_path / "claude.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"other": {"command": "other-mcp"}}, "theme": "dark"}),
+        encoding="utf-8",
+    )
+    paths = _json_paths(tmp_path, **{"claude-code": config})
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    mcp_exe = r"C:\plaud-mcp.exe"
+    ai_clients.connect("claude-code", mcp_exe)
+
+    parsed = json.loads(config.read_text(encoding="utf-8"))
+    assert parsed["theme"] == "dark"
+    assert parsed["mcpServers"]["other"]["command"] == "other-mcp"
+    assert parsed["mcpServers"]["plaud"]["command"] == mcp_exe
+
+
+def test_claude_code_disconnect_removes_plaud_section_only(tmp_path: Path, monkeypatch):
+    config = tmp_path / "claude.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {"other": {"command": "other-mcp"}, "plaud": {"command": "/x/plaud-mcp"}},
+                "theme": "dark",
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths = _json_paths(tmp_path, **{"claude-code": config})
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    ai_clients.disconnect("claude-code")
+
+    parsed = json.loads(config.read_text(encoding="utf-8"))
+    assert "plaud" not in parsed["mcpServers"]
+    assert parsed["mcpServers"]["other"]["command"] == "other-mcp"
+    assert parsed["theme"] == "dark"
+
+
+# ---------------------------------------------------------------------------
+# BOM tolerance -- Windows tools commonly write JSON/TOML configs with a
+# leading UTF-8 BOM, which plain "utf-8" decoding used to leave in the string
+# and make json.loads()/tomllib.loads() reject as malformed.
+# ---------------------------------------------------------------------------
+
+
+def test_read_json_tolerates_leading_bom(tmp_path: Path, monkeypatch):
+    config = tmp_path / "claude_desktop_config.json"
+    config.write_bytes(b"\xef\xbb\xbf" + json.dumps({"mcpServers": {}}).encode("utf-8"))
+    paths = _json_paths(tmp_path, **{"claude-desktop": config})
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    assert ai_clients.get_status("claude-desktop", "/x/plaud-mcp") == "not-connected"
+
+
+def test_read_toml_tolerates_leading_bom(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_bytes(b"\xef\xbb\xbf[mcp_servers.plaud]\ncommand = '/x/plaud-mcp'\n")
+    paths = _json_paths(tmp_path, **{"codex": config})
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    assert ai_clients.get_status("codex", "/x/plaud-mcp") == "connected"
+
+
+# ---------------------------------------------------------------------------
+# invalid-config status -- distinct from "not-connected" (parses fine, plaud
+# just isn't configured) so a broken config isn't mistaken for a healthy one
+# that simply needs `connect`.
+# ---------------------------------------------------------------------------
+
+
+def test_get_status_invalid_config_for_malformed_json(tmp_path: Path, monkeypatch):
+    config = tmp_path / "claude_desktop_config.json"
+    config.write_text("{not valid json", encoding="utf-8")
+    paths = _json_paths(tmp_path, **{"claude-desktop": config})
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    assert ai_clients.get_status("claude-desktop", "/x/plaud-mcp") == "invalid-config"
+    assert ai_clients.get_mcp_command("claude-desktop") is None
+
+
+def test_get_status_invalid_config_for_malformed_toml(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_text("[mcp_servers.plaud\ncommand = broken", encoding="utf-8")
+    paths = _json_paths(tmp_path, **{"codex": config})
+    monkeypatch.setattr(ai_clients, "_client_paths", lambda: paths)
+
+    assert ai_clients.get_status("codex", "/x/plaud-mcp") == "invalid-config"
+
+
+# ---------------------------------------------------------------------------
+# Bare-command resolution -- pip installs store the bare "plaud-mcp" command
+# (found on PATH at run time) rather than a full path.
+# ---------------------------------------------------------------------------
+
+
+def test_same_path_resolves_bare_command_via_which(tmp_path: Path, monkeypatch):
+    real_exe = tmp_path / "plaud-mcp"
+    real_exe.touch()
+    monkeypatch.setattr(
+        ai_clients.shutil, "which", lambda name: str(real_exe) if name == "plaud-mcp" else None
+    )
+
+    assert ai_clients._same_path("plaud-mcp", str(real_exe)) is True
