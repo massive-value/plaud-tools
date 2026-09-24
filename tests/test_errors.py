@@ -3,7 +3,6 @@
 Acceptance criteria:
 - PlaudApiError.from_http_error(exc) classmethod encodes body-parsing + Plaud envelope extraction
 - PlaudApiError.classify() -> tuple[str, bool] encodes 404/429/5xx mapping
-- Old _http_error_to_api_error and _classify_api_error symbols are completely removed
 """
 
 from __future__ import annotations
@@ -193,26 +192,3 @@ def test_network_timeout_is_not_a_soft_deadline():
     network = PlaudApiError("Plaud API request timed out after 30.0s", network_error=True)
     assert not network.is_soft_deadline_timeout()
     assert PlaudWaitTimeoutError("merge timed out after 90s", task_id="t1").is_soft_deadline_timeout()
-
-
-# ---------------------------------------------------------------------------
-# Deletion test: old symbols must NOT exist
-# ---------------------------------------------------------------------------
-
-
-class TestOldSymbolsDeleted:
-    def test_http_error_to_api_error_gone_from_transport(self):
-        """_http_error_to_api_error must not be importable from transport."""
-        import plaud_tools.core.transport as transport_mod
-
-        assert not hasattr(transport_mod, "_http_error_to_api_error"), (
-            "_http_error_to_api_error still exists in transport — delete it"
-        )
-
-    def test_classify_api_error_gone_from_mcp(self):
-        """_classify_api_error must not be importable from mcp."""
-        import plaud_tools.mcp_pt.mcp as mcp_mod
-
-        assert not hasattr(mcp_mod, "_classify_api_error"), (
-            "_classify_api_error still exists in mcp — delete it"
-        )

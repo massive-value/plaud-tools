@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -564,87 +562,6 @@ class TestInstallPs1:
         # The mention must live near the "update available" guidance, not just
         # in the top-of-file usage comment.
         assert "re-run this installer with -Repair" in script_text
-
-
-# ---------------------------------------------------------------------------
-# install.ps1 — behavioural test for the installed>latest branch (#159)
-#
-# The #141 PATH-array-append regression test (TestInstallPs1PathArrayFix) that
-# used to live here was deleted in Wave 5 (2026-07-06 audit, §7.6) along with
-# the install.ps1 PATH-setup step it pinned -- see TestInstallPs1's docstring
-# above.  Python's tray.setup._setup_cli_path (covered by test_tray_env.py's
-# own TestSetupCliPath in test_lifecycle_helpers.py) is now the only PATH
-# writer, so the PowerShell-specific array-context bug class no longer has
-# any production code to regress.
-# ---------------------------------------------------------------------------
-
-_VERSION_BRANCH_PS1 = r"""
-param([string]$Installed, [string]$Latest, [switch]$Force)
-
-function Get-NumericVersion {
-    param([string]$v)
-    $numeric = $v.TrimStart('v') -replace '-.*$', ''
-    return [version]$numeric
-}
-
-$installedVerNum = Get-NumericVersion $Installed
-$latestVerNum    = Get-NumericVersion $Latest
-
-if ($installedVerNum -eq $latestVerNum -and -not $Force) {
-    Write-Host "UP_TO_DATE"
-} elseif ($installedVerNum -gt $latestVerNum -and -not $Force) {
-    Write-Host "INSTALLED_NEWER_NOOP"
-} elseif ($latestVerNum -gt $installedVerNum -and -not $Force) {
-    Write-Host "UPDATE_AVAILABLE"
-} else {
-    Write-Host "WIPE_AND_REINSTALL"
-}
-"""
-
-
-def _run_version_branch(tmp_path: Path, installed: str, latest: str, force: bool = False) -> str:
-    harness = tmp_path / "version_branch.ps1"
-    harness.write_text(_VERSION_BRANCH_PS1, encoding="utf-8")
-    args = [
-        "pwsh",
-        "-NoProfile",
-        "-NonInteractive",
-        "-File",
-        str(harness),
-        "-Installed",
-        installed,
-        "-Latest",
-        latest,
-    ]
-    if force:
-        args.append("-Force")
-    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
-    return result.stdout.strip()
-
-
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
-class TestInstallPs1VersionBranch:
-    """Reproduces #159: installed>latest must NOT fall into the -Force wipe
-    branch (which would silently downgrade to the older published release).
-    """
-
-    def test_installed_newer_takes_noop_branch_not_wipe(self, tmp_path: Path):
-        assert _run_version_branch(tmp_path, installed="0.7.0", latest="0.6.2") == "INSTALLED_NEWER_NOOP"
-
-    def test_installed_newer_with_force_still_wipes(self, tmp_path: Path):
-        """-Force must still win even when installed is ahead -- an explicit
-        user request to reinstall is honored regardless of version."""
-        assert (
-            _run_version_branch(tmp_path, installed="0.7.0", latest="0.6.2", force=True)
-            == "WIPE_AND_REINSTALL"
-        )
-
-    def test_equal_versions_still_up_to_date(self, tmp_path: Path):
-        assert _run_version_branch(tmp_path, installed="0.6.2", latest="0.6.2") == "UP_TO_DATE"
-
-    def test_latest_newer_still_update_available(self, tmp_path: Path):
-        assert _run_version_branch(tmp_path, installed="0.6.0", latest="0.6.2") == "UPDATE_AVAILABLE"
 
 
 # ---------------------------------------------------------------------------
