@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-24
+
+Audit remediation across the whole stack: core and MCP (#212), CLI (#213),
+tray/installer/updater (#214), and CI/dependencies/tests (#215), plus two
+routine CI Action bumps (#203, #209). One breaking section for MCP response
+shapes; everything else is a fix or internal cleanup.
+
+### Breaking (MCP)
+
+- **`get_recording`'s `note` field is now `notes`**, a list of strings.
+  Several notes can apply to one recording at once; before, a later one
+  silently overwrote an earlier one.
+- **`list_folders` returns `{"folders": [...]}`** instead of a bare list,
+  because `structuredContent` has to be an object.
+- **`upload_recording` no longer returns `{status: "still_processing",
+  retryable: true}`.** It waits until Plaud confirms the upload and returns
+  the recording id.
+- **`still_processing` results from `merge_recordings` and
+  `process_recording` gain `job` (kind, id, poll_with), `retryable: false`,
+  and `message`.** The old fields are kept alongside them.
+- **An undeclared argument now fails as `invalid_arguments`** instead of a
+  generic `validation` error.
+- **`edit_summary` and `edit_transcript` are now annotated
+  `destructiveHint: true`.**
+
+### Fixed
+
+- Upload and transcribe sent the wrong sign on the timezone offset (US
+  Central went out as +6 instead of -6). Both now send the same plain UTC
+  offset Plaud's own web app sends.
+- A network blip during a poll (a socket timeout, a dropped connection) was
+  reported as a hard failure: `still_processing` on the MCP, exit 4 on the
+  CLI. It's now a retryable transient, so the poll loop skips the bad
+  attempt instead of giving up.
+- `RemoteDisconnected`, `ConnectionResetError`, `IncompleteRead`, and SSL
+  errors from a dropped connection now come back as retryable transients
+  too, instead of aborting the request outright.
+- If a keyring save failed but DPAPI succeeded, the old keyring entry could
+  shadow the new login on the next start. It's now deleted when that
+  happens. A region redirect no longer overwrites a stored login with the
+  redirect's env token.
+- `upload` and `merge` print the recording id, or the ids being merged, to
+  stderr before the long wait. A timeout or Ctrl+C used to leave nothing to
+  go on but a guess and a re-run that would duplicate the job.
+- `main()` no longer leaks a raw traceback for Ctrl+C (exits 130), a broken
+  pipe like `plaud-tools list | head` (exits 0), or a filesystem error
+  (prints the message, exits 1).
+- The bash, PowerShell, and zsh completions were about 9 subcommands behind
+  the real CLI. They're regenerated, and a new test diffs each file against
+  the parser so they can't drift again silently.
+- `doctor` reported a healthy pip install as stale, because it resolved
+  bare commands like `plaud-mcp` against the current directory instead of
+  PATH, and it choked on BOM-prefixed config files. Both are fixed.
+- On OneDrive machines, the PowerShell completion line never loaded because
+  the tray wrote it to the wrong Documents folder. It now finds the real
+  one through the Windows known-folder API.
+- Uninstall's "delete log files" option could delete the saved Plaud
+  sign-in along with the logs. It now only removes `tray.log*` and
+  `mcp.log*`, and never touches the session files or Plaud's own app
+  folder.
+- The updater could overwrite a live install with no rollback and leave
+  behind files from removed dependencies. It now extracts to a staging
+  folder, renames the live install to `.old`, renames staging to live, and
+  puts `.old` back if anything fails before the swap finishes, with
+  per-file fallback if one file can't be moved.
+- `install.ps1 -Repair` crashed on the exact broken installs it exists to
+  fix. An exe whose version can't be read now counts as a broken install
+  and gets reinstalled instead of crashing.
+- SHA256SUMS parsing and the redirect host allowlist are both hardened,
+  including `release-assets.githubusercontent.com`, the host GitHub now
+  serves assets from.
+
+### Added
+
+- `outputSchema` and `structuredContent` on `browse_recordings`,
+  `get_recording`, and `list_folders`.
+- `call_tool` validates arguments against each tool's schema before running
+  it.
+- One INFO line in `mcp.log` per negotiated protocol version.
+- Python 3.14 support.
+- `mcp` 2.2, the SDK version this release is built and tested against.
+- Build provenance attestation for the release zip.
+
+### Removed
+
+- `cli/process_probe.py`, `doctor`'s `mcp_lifecycle` field, the `psutil`
+  tray dependency, and the `--diagnose-enum` flag. Nothing in production
+  still called any of them.
+
+If you're on 0.9.0 or earlier, the in-app updater should still get you to
+0.10.0. It extracts the new zip over the current install and only checks
+the host of the first download URL, not every redirect hop, so this
+release's new `release-assets.githubusercontent.com` allowlist entry (which
+only the *new* updater checks) doesn't affect it. Once you're on 0.10.0,
+the new staged, rollback-capable updater takes over for the next update.
+
 ## [0.9.0] - 2026-09-23
 
 Transcript export and paging you can script against (#210). Additive except
@@ -1654,7 +1750,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/massive-value/plaud-tools/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/massive-value/plaud-tools/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/massive-value/plaud-tools/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/massive-value/plaud-tools/compare/v0.8.0...v0.8.1
