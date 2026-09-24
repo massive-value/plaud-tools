@@ -49,7 +49,8 @@ a = Analysis(
         'pywintypes',
     ],
     hookspath=[],
-    runtime_hooks=[],
+    # Must run before pyi_rth_setuptools, which calls platform.system() at startup.
+    runtime_hooks=[str(Path(SPECPATH) / 'rth_disable_wmi.py')],
     excludes=[],
     cipher=block_cipher,
     noarchive=False,

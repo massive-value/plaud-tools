@@ -21,6 +21,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from .. import __version__
 from ..core.appdata import mcp_log as _mcp_log_path
 from ..core.client import DEFAULT_TRANSCRIPT_BLOCK, TRANSCRIPT_BLOCKS, PlaudClient
+from ..core.platform_guard import disable_wmi_queries
 from ..core.session import SessionManager, SessionStore
 from .mcp import (
     DEFAULT_TRANSCRIPT_UTTERANCES,
@@ -722,6 +723,7 @@ def main() -> None:
         version=f"%(prog)s {__version__}",
     )
     parser.parse_args()
+    disable_wmi_queries()
     _setup_mcp_logging()
     try:
         asyncio.run(_run())
