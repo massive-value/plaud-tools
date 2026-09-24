@@ -426,7 +426,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="process_recording",
-        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",  # noqa: E501
+        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript). A processed recording is left unchanged (returns already_processed=true).",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -459,7 +459,9 @@ _TOOLS: list[types.Tool] = [
         # Additive compute — triggers AI processing; does not delete or
         # overwrite existing user data (the transcript/summary are new artifacts).
         # idempotent_hint=True: re-triggering on an already-processed recording
-        # is a no-op on the Plaud side (the existing transcript is kept).
+        # is a no-op on the Plaud side (verified live: Plaud answers status 1
+        # with the existing transcript/summary and ignores the new template),
+        # and the handler reports it as already_processed=true.
         annotations=types.ToolAnnotations(
             title="Transcribe and summarize",
             destructive_hint=False,

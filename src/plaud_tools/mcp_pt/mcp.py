@@ -289,6 +289,14 @@ def _count_summary_matches(client: PlaudClient, recording_id: str, find: str) ->
 
 PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 
+# Returned when Plaud reports the recording was already transcribed: it keeps
+# the existing transcript and summary and ignores template/language options.
+ALREADY_PROCESSED_MESSAGE = (
+    "This recording was already processed, so Plaud kept the existing transcript and "
+    "summary and did not apply the requested options. Use get_recording to read them, "
+    "or edit_summary to change the summary text."
+)
+
 # Largest browse page.  Matches the upstream page size, so one browse call is
 # at most one Plaud request plus a look-ahead item.
 MAX_BROWSE_LIMIT = 200
@@ -748,13 +756,24 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     error_code="validation",
                     retryable=False,
                 )
-            client.transcribe_and_summarize(
+            started = client.transcribe_and_summarize(
                 recording_id,
                 template_type=template_type,
                 language=language,
                 diarization=diarization,
                 llm=llm,
             )
+            if not started:
+                # Plaud keeps the existing output and ignores the new options,
+                # so say so instead of implying a fresh run happened.
+                return _json_result(
+                    {
+                        "ok": True,
+                        "recording_id": recording_id,
+                        "already_processed": True,
+                        "message": ALREADY_PROCESSED_MESSAGE,
+                    }
+                )
             if wait == "none":
                 return _json_result(
                     {

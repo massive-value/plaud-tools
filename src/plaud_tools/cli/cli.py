@@ -809,13 +809,26 @@ def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
-    client.transcribe_and_summarize(
+    started = client.transcribe_and_summarize(
         args.recording_id,
         template_type=args.template,
         language=args.language,
         diarization=args.diarization,
         llm=args.llm,
     )
+    if not started:
+        # Plaud keeps the existing transcript/summary and ignores the options.
+        return json.dumps(
+            {
+                "accepted": False,
+                "recording_id": args.recording_id,
+                "already_processed": True,
+                "message": "Already processed; Plaud kept the existing transcript and summary "
+                "and did not apply --template/--language. Use 'set-summary' or "
+                "'correct-summary' to change the summary text.",
+            },
+            indent=2,
+        )
     result: dict[str, Any] = {
         "accepted": True,
         "recording_id": args.recording_id,

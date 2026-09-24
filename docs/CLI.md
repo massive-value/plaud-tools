@@ -400,6 +400,8 @@ plaud-tools transcribe <recording-id> --wait summary
 
 Triggers transcription + summarization on an existing recording. `--language` is a language code (default: auto-detect); `--diarization`/`--no-diarization` enables/disables speaker diarization (default: Plaud's default); `--llm` selects the summarization model (default: auto). `--wait` controls how long to block before returning: `none` (default — accept and return immediately), `transcript`, or `summary`.
 
+If the recording already has a transcript, Plaud keeps the existing transcript and summary and ignores `--template`/`--language`. The command then exits `0` with `"accepted": false, "already_processed": true`. To change the summary text, use `set-summary` or `correct-summary`.
+
 ### `status`
 
 ```

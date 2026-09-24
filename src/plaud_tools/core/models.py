@@ -8,6 +8,50 @@ BASE_URLS = {
     "eu": "https://api-euc1.plaud.ai",
 }
 
+
+def base_url(region: str) -> str:
+    """Return the API base URL for a stored region.
+
+    ``region`` is normally a ``BASE_URLS`` key. A region Plaud redirected us
+    to that we have no key for is stored as its bare API host (for example
+    ``api-apse1.plaud.ai``), so it maps straight back to ``https://<host>``.
+    Anything else falls back to US.
+    """
+    if region in BASE_URLS:
+        return BASE_URLS[region]
+    if _is_plaud_host(region):
+        return f"https://{region}"
+    return BASE_URLS["us"]
+
+
+def redirect_api_domain(payload: dict[str, Any]) -> str:
+    """Pull ``data.domains.api`` out of a Plaud ``status: -302`` payload."""
+    data = payload.get("data")
+    domains = data.get("domains") if isinstance(data, dict) else None
+    api = domains.get("api") if isinstance(domains, dict) else None
+    return api if isinstance(api, str) else ""
+
+
+def region_for_api_domain(domain: str) -> str | None:
+    """Map the API domain from a Plaud ``-302`` redirect to a region to store.
+
+    Plaud sends ``data.domains.api`` as a host such as ``api-euc1.plaud.ai``.
+    Known hosts map to their ``BASE_URLS`` key; any other ``*.plaud.ai`` host
+    is stored as-is (see :func:`base_url`). Returns None for anything that is
+    not a Plaud host, so a bad redirect never sends the token elsewhere.
+    """
+    host = domain.strip().lower()
+    host = host.split("://", 1)[-1].split("/", 1)[0]
+    for region, url in BASE_URLS.items():
+        if url.split("://", 1)[1] == host:
+            return region
+    return host if _is_plaud_host(host) else None
+
+
+def _is_plaud_host(host: str) -> bool:
+    return host.endswith(".plaud.ai") and all(ch.isalnum() or ch in ".-" for ch in host)
+
+
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "

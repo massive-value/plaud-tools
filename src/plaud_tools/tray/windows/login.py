@@ -13,13 +13,13 @@ from ...core.errors import PlaudApiError, PlaudSessionExpiredError
 from ...core.session import SessionStore
 from ..setup import APP_NAME, _set_app_icon, _widget_alive
 
-# Plaud's password-based login endpoint returns a bare HTTP 401 for Google-SSO
-# accounts (they have no password set at all) -- indistinguishable, on the
-# wire, from a plain wrong-password 401. Users stuck here have nowhere in the
-# product to learn that "Forgot password" on web.plaud.ai is the fix; that
-# guidance previously existed only in docs/TROUBLESHOOTING.md, not where the
-# stuck user actually is (§6.2). Surfacing it unconditionally on 401 is a
-# false positive for genuine typos, but a much better default than silence.
+# A wrong email or password comes back as HTTP 200 with Plaud status -2
+# ("wrong account or password", verified live 2026-09-24); older notes said a
+# bare HTTP 401, so both are treated as "the credentials did not work". A
+# Google-SSO account has no password at all, so it fails the same way, and the
+# stuck user has nowhere in the product to learn that "Forgot password" on
+# web.plaud.ai is the fix (§6.2). Showing the hint on every failed sign-in is
+# a false positive for genuine typos, but a much better default than silence.
 _GOOGLE_SSO_HINT = (
     'If you signed up for Plaud with Google, use "Forgot password" on '
     "web.plaud.ai to set a password first — PlaudTools sign-in requires a "
@@ -28,9 +28,9 @@ _GOOGLE_SSO_HINT = (
 
 
 def _error_message_with_hints(error: Exception) -> str:
-    """Return *error*'s message, appending the Google-SSO hint for a 401."""
+    """Return *error*'s message, adding the Google-SSO hint on bad credentials."""
     message = str(error)
-    if "401" in message:
+    if "401" in message or getattr(error, "plaud_code", None) == -2:
         return f"{message}\n\n{_GOOGLE_SSO_HINT}"
     return message
 

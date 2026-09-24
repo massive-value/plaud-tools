@@ -13,7 +13,16 @@ from typing import Any, TypeVar
 from urllib.parse import urlencode
 
 from .errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
-from .models import BASE_URLS, BROWSER_USER_AGENT, FileTag, Recording, RecordingDetail, TaskStatus
+from .models import (
+    BROWSER_USER_AGENT,
+    FileTag,
+    Recording,
+    RecordingDetail,
+    TaskStatus,
+    base_url,
+    redirect_api_domain,
+    region_for_api_domain,
+)
 from .query import format_transcript
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
@@ -636,7 +645,16 @@ class PlaudClient:
         language: str | None = None,
         diarization: bool | None = None,
         llm: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Start transcription + summary. Returns False if already processed.
+
+        Plaud answers ``is_reload=0`` on a recording that already has a
+        transcript with ``status: 1, msg: "success"`` and the EXISTING
+        transcript/summary: no new job starts and the template is ignored
+        (verified live 2026-09-24). ``is_reload=1`` would re-transcribe and
+        replace the summary, wiping speaker renames and edits, so it is not
+        exposed.
+        """
         if template_type and template_type.lower() == "default":
             template_type = "AUTO-SELECT"
         if language and "-" in language:
@@ -649,10 +667,10 @@ class PlaudClient:
                 "llm": llm or "auto",
             }
         )
-        self._request_json(
+        payload = self._request_json(
             "POST",
             f"/ai/transsumm/{recording_id}",
-            strict=True,
+            strict=False,
             body={
                 "is_reload": 0,
                 "summ_type": template_type or "AUTO-SELECT",
@@ -661,6 +679,12 @@ class PlaudClient:
                 "support_mul_summ": True,
             },
         )
+        status = payload.get("status")
+        if status == 1:
+            return False
+        if status != 0:
+            raise PlaudApiError(f"Plaud API error: {payload.get('msg') or f'status {status}'}")
+        return True
 
     def get_task_status(self, recording_id: str | None = None) -> list[TaskStatus]:
         data = self._request_json("GET", "/ai/file-task-status", strict=True)
@@ -879,7 +903,7 @@ class PlaudClient:
             self._session_manager.invalidate_cache()
             raise
 
-        url = f"{BASE_URLS.get(session.region, BASE_URLS['us'])}{path}"
+        url = f"{base_url(session.region)}{path}"
         headers = {
             "Authorization": f"Bearer {session.access_token}",
             "Content-Type": "application/json",
@@ -965,8 +989,9 @@ class PlaudClient:
                 # hits the correct base URL.
                 if _redirected:
                     raise PlaudApiError("region redirect loop")
-                domain = ((payload.get("data") or {}).get("domains") or {}).get("api", "")
-                next_region = "eu" if "euc1" in domain else "us"
+                next_region = region_for_api_domain(redirect_api_domain(payload))
+                if next_region is None:
+                    raise PlaudApiError("region redirect to an unrecognized API host")
                 self._session_manager.update_region(next_region)
                 return self._request_json(method, path, strict=strict, body=body, _redirected=True)
 

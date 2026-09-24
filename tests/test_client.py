@@ -1110,7 +1110,7 @@ def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
         [HttpResponse(200, json.dumps({"status": 0, "msg": "task processing"}).encode(), {})]
     )
     client = PlaudClient(manager, transport=transport)
-    client.transcribe_and_summarize("rec1")
+    assert client.transcribe_and_summarize("rec1") is True
     call = transport.calls[0]
     assert call["method"] == "POST"
     assert call["url"] == "https://api-euc1.plaud.ai/ai/transsumm/rec1"
@@ -1123,6 +1123,17 @@ def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
     assert info["language"] == "auto"
     assert info["diarization"] == 1
     assert info["llm"] == "auto"
+
+
+def test_transcribe_and_summarize_reports_already_processed(tmp_path):
+    """Live shape (2026-09-24): on a recording that already has a transcript,
+    Plaud answers is_reload=0 with status 1 "success" plus the EXISTING output
+    and starts no job. That must not raise "Plaud API error: success"."""
+    manager, _ = make_manager(tmp_path)
+    payload = {"status": 1, "msg": "success", "data_result": [{"content": "old"}]}
+    transport = StubTransport([HttpResponse(200, json.dumps(payload).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+    assert client.transcribe_and_summarize("rec1", template_type="MEETING") is False
 
 
 def test_transcribe_and_summarize_honors_overrides(tmp_path, monkeypatch):
@@ -2059,3 +2070,32 @@ class TestRedirectAndRetryComposition:
 
         # Still exactly 2 requests (original + 1 redirect retry).
         assert len(transport.calls) == 2
+
+
+def test_region_redirect_to_unlisted_plaud_host_uses_that_host(tmp_path):
+    """A -302 to a Plaud API host we have no region key for is followed as-is
+    instead of being treated as US; a non-Plaud host is refused."""
+    manager, store = make_manager(tmp_path, region="us")
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "api-apse1.plaud.ai"}}}).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "evil.example.com"}}}).encode(),
+                {},
+            ),
+        ]
+    )
+    client = PlaudClient(manager, transport=transport)
+    client.list_recordings()
+    assert store.load().region == "api-apse1.plaud.ai"
+    assert transport.calls[1]["url"].startswith("https://api-apse1.plaud.ai/")
+
+    with pytest.raises(PlaudApiError, match="unrecognized API host"):
+        client.list_recordings()
+    assert store.load().region == "api-apse1.plaud.ai"

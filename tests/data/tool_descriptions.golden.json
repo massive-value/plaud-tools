@@ -251,7 +251,7 @@
     "name": "list_folders"
   },
   {
-    "description": "Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",
+    "description": "Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript). A processed recording is left unchanged (returns already_processed=true).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
