@@ -14,7 +14,9 @@
       5. delete <InstallDir>.old
 
     Any failure before step 4 completes rolls back to the untouched old
-    install. Because the new version lands in a fresh directory, files that
+    install. If the install folder itself cannot be renamed (something holds
+    a handle on it), steps 3-4 are done per top-level entry instead, with the
+    same rollback. Because the new version lands in a fresh directory, files that
     were removed from the bundle (old dependencies, stale dist-info) do not
     survive the update.
 
@@ -55,6 +57,12 @@
 .PARAMETER TrayExitTimeoutSec
     How long to wait for the tray to exit before giving up without installing
     anything (default 60).
+
+.PARAMETER ItemSwap
+    Skip the whole-folder rename and use the item-by-item swap directly. The
+    script falls back to that swap by itself when the install folder cannot be
+    renamed (something holds a handle on the folder itself); this switch only
+    exists so tests can force that path.
 #>
 param(
     [Parameter(Mandatory)]
@@ -75,7 +83,11 @@ param(
 
     [string]$NewVersion = "",
 
-    [int]$TrayExitTimeoutSec = 60
+    [int]$TrayExitTimeoutSec = 60,
+
+    # Skip the whole-folder rename and go straight to the item-by-item swap.
+    # Test/diagnostic hook; normal runs only fall back to it on failure.
+    [switch]$ItemSwap
 )
 
 Set-StrictMode -Off
@@ -200,6 +212,68 @@ function Move-DirWithRetry {
     }
 }
 
+# Rename one file or directory (plain rename, all or nothing), retrying briefly.
+function Move-PathWithRetry {
+    param([string]$From, [string]$To, [int]$Attempts = 3)
+
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try {
+            if ([System.IO.Directory]::Exists($From)) {
+                [System.IO.Directory]::Move($From, $To)
+            } else {
+                [System.IO.File]::Move($From, $To)
+            }
+            return
+        } catch {
+            if ($i -eq $Attempts) { throw }
+            Write-Host "Move $From -> $To failed (attempt $i): $($_.Exception.GetBaseException().Message)"
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Fallback swap: move each top-level entry instead of renaming the install
+# folder itself. Needed when something holds a handle on the folder (seen on
+# a real machine: the folder could not be renamed, but every file and
+# subfolder inside it could). Moves live entries into $OldDir, then staged
+# entries into live. Every move is recorded; on any failure the moves are
+# undone in reverse order and the error is rethrown. Sets
+# $script:itemRollbackFailed when an undo step fails.
+# ---------------------------------------------------------------------------
+
+function Invoke-ItemSwap {
+    param([string]$LiveDir, [string]$NewRoot, [string]$OldDir)
+
+    $done = New-Object System.Collections.ArrayList
+    try {
+        New-Item -ItemType Directory -Path $OldDir -Force | Out-Null
+        foreach ($item in @(Get-ChildItem -LiteralPath $LiveDir -Force)) {
+            $to = Join-Path $OldDir $item.Name
+            Move-PathWithRetry -From $item.FullName -To $to
+            [void]$done.Add(@($item.FullName, $to))
+        }
+        foreach ($item in @(Get-ChildItem -LiteralPath $NewRoot -Force)) {
+            $to = Join-Path $LiveDir $item.Name
+            Move-PathWithRetry -From $item.FullName -To $to
+            [void]$done.Add(@($item.FullName, $to))
+        }
+    } catch {
+        $err = $_
+        Write-Host "Item swap failed: $($err.Exception.GetBaseException().Message.TrimEnd('.')). Undoing $($done.Count) move(s)."
+        for ($i = $done.Count - 1; $i -ge 0; $i--) {
+            $pair = $done[$i]
+            try {
+                Move-PathWithRetry -From $pair[1] -To $pair[0] -Attempts 10
+            } catch {
+                Write-Host "UNDO FAILED: $($pair[1]) -> $($pair[0]): $($_.Exception.GetBaseException().Message)"
+                $script:itemRollbackFailed = $true
+            }
+        }
+        throw $err
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Stop ALL processes whose Path is under $InstallDir (plaud-mcp, ffmpeg, any
 # other child processes), and confirm they stay dead. Returns $true when no
@@ -267,6 +341,8 @@ $stagingDir = "$liveDir.staging"
 $oldDir     = "$liveDir.old"
 $restartTray = $true
 $movedLiveAway = $false
+$usedItemSwap = $false
+$script:itemRollbackFailed = $false
 $swapped = $false
 
 try {
@@ -352,27 +428,45 @@ try {
     }
 
     # 5. Swap: live -> .old, staged -> live. Roll back on any failure.
-    try {
-        Move-DirWithRetry -From $liveDir -To $oldDir
-    } catch {
-        $msg = "Could not move the current install aside (a file is probably still in use): $($_.Exception.GetBaseException().Message.TrimEnd('.')). Nothing was changed."
-        Write-Host "FAIL: $msg"
-        Write-FailureSentinel -Reason $msg
-        throw
+    #    First try renaming the whole folder. If that keeps failing, fall back
+    #    to moving each entry inside it (see Invoke-ItemSwap).
+    if (-not $ItemSwap) {
+        try {
+            Move-DirWithRetry -From $liveDir -To $oldDir
+            $movedLiveAway = $true
+            Write-Host "Moved live install to $oldDir"
+        } catch {
+            Write-Host "Could not rename the install folder ($($_.Exception.GetBaseException().Message.TrimEnd('.'))); swapping item by item instead"
+        }
     }
-    $movedLiveAway = $true
-    Write-Host "Moved live install to $oldDir"
 
-    try {
-        Move-DirWithRetry -From $newRoot -To $liveDir
-    } catch {
-        $msg = "Could not move the new version into place: $($_.Exception.GetBaseException().Message.TrimEnd('.')). The previous version was restored."
-        Write-Host "FAIL: $msg"
-        Write-FailureSentinel -Reason $msg
-        throw
+    if ($movedLiveAway) {
+        try {
+            Move-DirWithRetry -From $newRoot -To $liveDir
+        } catch {
+            $msg = "Could not move the new version into place: $($_.Exception.GetBaseException().Message.TrimEnd('.')). The previous version was restored."
+            Write-Host "FAIL: $msg"
+            Write-FailureSentinel -Reason $msg
+            throw
+        }
+        Write-Host "New version moved into $liveDir"
+    } else {
+        $usedItemSwap = $true
+        try {
+            Invoke-ItemSwap -LiveDir $liveDir -NewRoot $newRoot -OldDir $oldDir
+        } catch {
+            if ($script:itemRollbackFailed) {
+                $msg = "The update failed and some of the previous files could not be put back. They are in $oldDir. Reinstall Plaud Tools with the install script (-Repair)."
+            } else {
+                $msg = "Could not replace the install (a file is probably still in use): $($_.Exception.GetBaseException().Message.TrimEnd('.')). Nothing was changed."
+            }
+            Write-Host "FAIL: $msg"
+            Write-FailureSentinel -Reason $msg
+            throw
+        }
+        Write-Host "New version swapped into $liveDir item by item"
     }
     $swapped = $true
-    Write-Host "New version moved into $liveDir"
 
     # 6. Cleanup: old install, staging remains, the zip and the %TEMP%
     #    dispatcher. The bundled update.ps1 is never deleted directly (it
@@ -416,6 +510,13 @@ catch {
             $msg = "The update failed and the previous version could not be restored automatically. It is saved at $oldDir. Reinstall Plaud Tools with the install script (-Repair)."
             Write-Host "FAIL: $msg ($($_.Exception.Message))"
             Write-FailureSentinel -Reason $msg
+        }
+    }
+    # A fully undone item swap leaves an empty .old folder; tidy it. If any
+    # undo step failed, .old holds the user's previous files, so keep it.
+    if ($usedItemSwap -and -not $script:itemRollbackFailed -and (Test-Path -LiteralPath $oldDir)) {
+        if (-not (Get-ChildItem -LiteralPath $oldDir -Force)) {
+            Remove-DirWithRetry -Path $oldDir | Out-Null
         }
     }
     Remove-DirWithRetry -Path $stagingDir | Out-Null

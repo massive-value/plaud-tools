@@ -746,7 +746,7 @@ def _make_update_zip(path, version: str, files: tuple[str, ...] = _BUNDLE_FILES)
             zf.writestr(f"PlaudTools/{rel}", version)
 
 
-def _run_update_ps1(tmp_path, install, zip_path):  # type: ignore[no-untyped-def]
+def _run_update_ps1(tmp_path, install, zip_path, *extra: str):  # type: ignore[no-untyped-def]
     import os
 
     temp = tmp_path / "temp"
@@ -773,10 +773,11 @@ def _run_update_ps1(tmp_path, install, zip_path):  # type: ignore[no-untyped-def
             str(install.parent),
             "-NewVersion",
             "2.0.0",
+            *extra,
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
         env=env,
     )
     return result, temp
@@ -882,9 +883,10 @@ def test_uninstall_ps1_refuses_to_delete_a_folder_without_plaudtools_exe(tmp_pat
 
 @_needs_ps51
 def test_update_ps1_open_file_in_live_install_leaves_it_untouched(tmp_path):
-    """A file held open inside the live install (Defender, Explorer, a shell's
-    cwd) must make the rename fail cleanly. Move-Item used to fall back to a
-    file-by-file move and leave a half-moved install with no tray."""
+    """A file held open inside the live install (Defender, Explorer) blocks the
+    folder rename AND the item-by-item fallback. Both must fail cleanly and the
+    fallback must undo the moves it already made. Move-Item used to leave a
+    half-moved install with no tray."""
     install = tmp_path / "Programs" / "PlaudTools"
     _make_install(install, "1.0.0", extra=("_internal/held_open.dll",))
     zip_path = tmp_path / "plaud_update_1.zip"
@@ -899,5 +901,78 @@ def test_update_ps1_open_file_in_live_install_leaves_it_untouched(tmp_path):
     assert not (tmp_path / "Programs" / "PlaudTools.old").exists()
     assert not (tmp_path / "Programs" / "PlaudTools.staging").exists()
     reason = (temp / "plaud_update_failed.txt").read_text(encoding="utf-8")
-    assert "Could not move the current install aside" in reason
+    assert "Nothing was changed" in reason
     assert not (temp / "plaud_just_updated.txt").exists()
+
+
+class _DirHandle:
+    """Hold an open handle on a directory without FILE_SHARE_DELETE.
+
+    That blocks renaming the directory itself but not the entries inside it,
+    the state seen on a real install where only item-by-item moves worked.
+    """
+
+    def __init__(self, path) -> None:  # type: ignore[no-untyped-def]
+        import ctypes
+        from ctypes import wintypes
+
+        self._k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._k32.CreateFileW.restype = wintypes.HANDLE
+        self._k32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        generic_read, share_read_write, open_existing, backup_semantics = 0x80000000, 0x3, 3, 0x02000000
+        self._h = self._k32.CreateFileW(
+            str(path), generic_read, share_read_write, None, open_existing, backup_semantics, None
+        )
+        assert self._h not in (None, wintypes.HANDLE(-1).value), ctypes.get_last_error()
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    def __exit__(self, *exc) -> None:  # type: ignore[no-untyped-def]
+        self._k32.CloseHandle(self._h)
+
+
+@_needs_ps51
+def test_update_ps1_falls_back_to_item_swap_when_folder_is_held(tmp_path):
+    """A handle on the install folder itself blocks the whole-folder rename;
+    the update must still land by moving each entry."""
+    install = tmp_path / "Programs" / "PlaudTools"
+    _make_install(install, "1.0.0", extra=("_internal/old_dependency.dll", ".autostart_disabled"))
+    zip_path = tmp_path / "plaud_update_1.zip"
+    _make_update_zip(zip_path, "2.0.0")
+
+    with _DirHandle(install):
+        result, temp = _run_update_ps1(tmp_path, install, zip_path)
+
+    assert "swapping item by item" in result.stdout
+    for rel in _BUNDLE_FILES:
+        assert (install / rel).read_text(encoding="ascii") == "2.0.0"
+    assert not (install / "_internal" / "old_dependency.dll").exists()
+    assert (install / ".autostart_disabled").exists()
+    assert not (tmp_path / "Programs" / "PlaudTools.old").exists()
+    assert not (tmp_path / "Programs" / "PlaudTools.staging").exists()
+    assert (temp / "plaud_just_updated.txt").read_bytes() == b"2.0.0"
+    assert not (temp / "plaud_update_failed.txt").exists()
+
+
+@_needs_ps51
+def test_update_ps1_forced_item_swap_succeeds(tmp_path):
+    """The -ItemSwap hook runs the fallback directly (no 10 s rename retry)."""
+    install = tmp_path / "Programs" / "PlaudTools"
+    _make_install(install, "1.0.0")
+    zip_path = tmp_path / "plaud_update_1.zip"
+    _make_update_zip(zip_path, "2.0.0")
+
+    result, temp = _run_update_ps1(tmp_path, install, zip_path, "-ItemSwap")
+
+    assert "item by item" in result.stdout
+    assert (install / "PlaudTools.exe").read_text(encoding="ascii") == "2.0.0"
+    assert (temp / "plaud_just_updated.txt").read_bytes() == b"2.0.0"
