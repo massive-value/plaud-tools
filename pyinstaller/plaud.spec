@@ -11,8 +11,12 @@
 # directory as resources/plaud-cli/ and calls it as:
 #   path.join(process.resourcesPath, 'plaud-cli', 'plaud', 'plaud.exe')
 
+import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import copy_metadata
+
+sys.path.insert(0, SPECPATH)
+from _bundle_common import DEV_ONLY_EXCLUDES, WMI_RUNTIME_HOOK  # noqa: E402
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
@@ -35,9 +39,9 @@ a = Analysis(
         'keyring.core',
     ],
     hookspath=[],
-    runtime_hooks=[],
+    runtime_hooks=[WMI_RUNTIME_HOOK],
     # mcp and its heavy async stack are not needed for the CLI
-    excludes=['mcp', 'anyio', 'starlette', 'pydantic', 'httpx2', 'httpcore2', 'uvicorn'],
+    excludes=[*DEV_ONLY_EXCLUDES, 'PIL', 'mcp', 'anyio', 'starlette', 'pydantic', 'httpx2', 'httpcore2', 'uvicorn'],
     cipher=block_cipher,
     noarchive=False,
 )

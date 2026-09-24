@@ -13,9 +13,13 @@
 # The tray app locates plaud-mcp.exe via:
 #   Path(sys.executable).parent / "mcp" / "plaud-mcp.exe"
 
+import sys
 import tomllib
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+
+sys.path.insert(0, SPECPATH)
+from _bundle_common import DEV_ONLY_EXCLUDES, WMI_RUNTIME_HOOK  # noqa: E402
 
 # --- Version from pyproject.toml (single source of truth) ---
 _repo = Path(SPECPATH).parent
@@ -111,8 +115,8 @@ a = Analysis(
         'comtypes.server.register',
     ],
     hookspath=[],
-    runtime_hooks=[],
-    excludes=['mcp', 'anyio', 'starlette', 'pydantic', 'httpx2', 'httpcore2', 'uvicorn'],
+    runtime_hooks=[WMI_RUNTIME_HOOK],
+    excludes=[*DEV_ONLY_EXCLUDES, 'mcp', 'anyio', 'starlette', 'pydantic', 'httpx2', 'httpcore2', 'uvicorn'],
     cipher=block_cipher,
     noarchive=False,
 )
