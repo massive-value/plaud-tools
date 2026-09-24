@@ -415,6 +415,33 @@ class TestCallToolArgumentValidation:
         assert payload["error_code"] == "invalid_arguments"
         assert "limit" in payload["error"]
 
+    def test_null_optional_arguments_are_treated_as_omitted(self, monkeypatch):
+        """LLM clients often send null for unused optional fields; that must pass validation."""
+        import plaud_tools.mcp_pt.server as server_mod
+
+        seen: dict = {}
+
+        def fake_build_handlers(get_client):
+            def get_recording(**kwargs):
+                seen.update(kwargs)
+                return {
+                    "content": [{"type": "text", "text": '{"id":"abc"}'}],
+                    "structuredContent": {"id": "abc"},
+                }
+
+            return {"get_recording": get_recording}
+
+        monkeypatch.setattr(server_mod, "build_handlers", fake_build_handlers)
+        server = server_mod._make_server()
+
+        async def _call() -> mcp_types.CallToolResult:
+            async with Client(server) as client:
+                return await client.call_tool("get_recording", {"recording_id": "abc", "include": None})
+
+        result = asyncio.run(_call())
+        assert result.is_error is False
+        assert seen == {"recording_id": "abc"}
+
     def test_missing_required_argument_returns_invalid_arguments(self):
         payload = json.loads(self._invoke("get_recording", {}))
         assert payload["error_code"] == "invalid_arguments"

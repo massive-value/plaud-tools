@@ -663,7 +663,10 @@ def _make_server() -> Server:
         # "Error executing tool" text.
         _log_protocol_version(ctx)
         name = params.name
-        arguments = params.arguments or {}
+        # Many LLM clients send null for optional fields they aren't using.
+        # Treat that as "not passed" so the handler default applies and the
+        # schema check doesn't reject it as the wrong type.
+        arguments = {k: v for k, v in (params.arguments or {}).items() if v is not None}
         handler = handlers.get(name)
         if handler is None:
             return _error_payload(f"Unknown tool: {name}", "invalid_arguments")
