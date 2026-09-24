@@ -279,7 +279,7 @@ class TestMutateRecordingValidation:
         payload = json.loads(result["content"][0]["text"])
         assert payload.get("ok") is True
         assert payload["folder_id"] is None
-        mock_client.set_recording_folder.assert_called_once_with("x", None)
+        mock_client.set_recording_folder.assert_called_once_with(["x"], None)
 
     def test_recording_id_and_recording_ids_both_given_returns_validation_code(self):
         handlers, mock_client = self._handlers()
@@ -309,9 +309,7 @@ class TestMutateRecordingValidation:
         assert payload == {"ok": True, "action": "restore", "recording_ids": ["a", "b"], "count": 2}
         mock_client.restore_from_trash.assert_called_once_with(["a", "b"])
 
-    def test_batch_move_calls_client_once_per_id(self):
-        from unittest.mock import call
-
+    def test_batch_move_is_one_request(self):
         handlers, mock_client = self._handlers()
         result = handlers["mutate_recording"](recording_ids=["a", "b"], action="move", folder_id="f1")
         payload = json.loads(result["content"][0]["text"])
@@ -322,7 +320,7 @@ class TestMutateRecordingValidation:
             "count": 2,
             "folder_id": "f1",
         }
-        mock_client.set_recording_folder.assert_has_calls([call("a", "f1"), call("b", "f1")])
+        mock_client.set_recording_folder.assert_called_once_with(["a", "b"], "f1")
 
     def test_rename_rejects_batch_recording_ids(self):
         handlers, mock_client = self._handlers()
@@ -381,9 +379,13 @@ class TestWriteEvent:
 
         mock_client = MagicMock()
         mock_client.list_recordings.side_effect = PlaudSessionExpiredError("expired")
+        mock_client.session_manager.diagnose.return_value = {"store_source": "missing"}
         handlers = build_handlers(lambda: mock_client)
         handlers["browse_recordings"]()
 
+        # Diagnostics reuse the server's SessionManager and its last load, so a
+        # signed-out call pays the keyring retry budget once, not twice.
+        mock_client.session_manager.diagnose.assert_called_once_with(reuse_last_load=True)
         assert events_file.exists()
         lines = events_file.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1

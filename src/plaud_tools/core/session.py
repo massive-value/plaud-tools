@@ -36,6 +36,9 @@ TRAY_EXPIRY_WARNING_DAYS = 5
 
 _SECONDS_PER_DAY = 86_400
 
+# Where SessionStore.load_with_source found (or failed to find) the session.
+SessionSource = Literal["env", "keyring", "legacy_keyring", "dpapi_file", "file", "missing"]
+
 
 def _decode_jwt_segment(jwt: str, index: int) -> dict[str, Any] | None:
     """Decode JWT segment *index* (0=header, 1=payload) without verifying the signature.
@@ -246,16 +249,19 @@ class SessionStore:
         if dpapi_path is _DPAPI_PATH_DEFAULT:
             dpapi_path = appdata.dpapi_shadow_path() if service_name == "plaud-tools" else None
         self.dpapi_path: Path | None = Path(dpapi_path) if dpapi_path else None  # type: ignore[arg-type]
+        # Result of the most recent load, so diagnostics right after a failed
+        # load can report it without paying the keyring retry budget again.
+        self.last_loaded: tuple[PlaudSession | None, SessionSource] | None = None
 
     def load(self) -> PlaudSession | None:
         session, _ = self.load_with_source()
         return session
 
-    def load_with_source(
-        self,
-    ) -> tuple[
-        PlaudSession | None, Literal["env", "keyring", "legacy_keyring", "dpapi_file", "file", "missing"]
-    ]:
+    def load_with_source(self) -> tuple[PlaudSession | None, SessionSource]:
+        self.last_loaded = self._load_with_source()
+        return self.last_loaded
+
+    def _load_with_source(self) -> tuple[PlaudSession | None, SessionSource]:
         env_token = os.getenv("PLAUD_ACCESS_TOKEN")
         if env_token:
             return (
@@ -311,6 +317,11 @@ class SessionStore:
         # Always also write the DPAPI shadow on Windows so the next cold-start
         # MCP read has a Credential-Manager-independent path to the session.
         dpapi_ok = self._save_to_dpapi(session)
+        if not keyring_ok:
+            # load() reads keyring before DPAPI, so an older entry left behind
+            # would shadow the session we just saved (a fresh login would keep
+            # serving the previous, possibly expired, token).
+            self._delete_keyring_entry()
         if keyring_ok or dpapi_ok:
             return
         # Last resort: plaintext JSON.  Only reached if BOTH the OS-protected
@@ -630,13 +641,17 @@ class SessionStore:
             )
             return None
 
-    def clear(self) -> None:
+    def _delete_keyring_entry(self) -> None:
+        """Best-effort removal of this store's keyring entry; never raises."""
         keyring = self._load_keyring_module()
         if keyring is not None:
             try:
                 keyring.delete_password(self.service_name, self.account_name)
             except Exception:
                 pass
+
+    def clear(self) -> None:
+        self._delete_keyring_entry()
         # Delegates to FileSessionStore.clear(), which also removes the
         # legacy pre-ADR-004 session file (#144) — not just self.path.
         self.file_store.clear()
@@ -773,7 +788,11 @@ class SessionManager:
             region=region,
             email=session.email,
         )
-        self.store.save(updated)
+        # A PLAUD_ACCESS_TOKEN session lives only in the environment.  Saving
+        # it would overwrite the user's real stored login with the env token,
+        # so keep the new region in memory only.
+        if session.access_token != os.getenv("PLAUD_ACCESS_TOKEN"):
+            self.store.save(updated)
         self._cache = self._make_cache_entry(updated)
         return updated
 
@@ -805,8 +824,13 @@ class SessionManager:
         exp = obj.get("exp")
         return int(exp) if isinstance(exp, int | float) else None
 
-    def diagnose(self) -> dict[str, Any]:
+    def diagnose(self, *, reuse_last_load: bool = False) -> dict[str, Any]:
         """Best-effort snapshot of the session as seen by this SessionManager.
+
+        ``reuse_last_load=True`` reports the store's most recent load (when it
+        records one, as ``SessionStore.last_loaded`` does) instead of reading
+        again.  The MCP uses it right after ``require()`` failed: re-reading a
+        missing keyring entry would pay the ~3.6 s retry budget a second time.
 
         Returns a dict with the following fields (all are session-y; MCP-local
         fields like ``mcp_pid`` and ``mcp_version`` are added by the caller):
@@ -827,7 +851,10 @@ class SessionManager:
         diag: dict[str, Any] = {}
         try:
             store = self.store
-            if hasattr(store, "load_with_source"):
+            last = getattr(store, "last_loaded", None) if reuse_last_load else None
+            if isinstance(last, tuple):
+                session, source = last
+            elif hasattr(store, "load_with_source"):
                 session, source = store.load_with_source()
             else:
                 session = store.load()

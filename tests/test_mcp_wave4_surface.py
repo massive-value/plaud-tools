@@ -15,9 +15,11 @@ Covers behaviors that don't fit test_mcp_error_codes.py's error-code focus:
 from __future__ import annotations
 
 import json
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from plaud_tools.core.errors import PlaudApiError
+from plaud_tools.core.errors import PlaudApiError, PlaudWaitTimeoutError
 from plaud_tools.core.models import RecordingDetail
 from plaud_tools.mcp_pt.mcp import _WAIT_TIMEOUT_S, build_handlers
 
@@ -75,11 +77,11 @@ class TestEditTranscript:
         payload = json.loads(result["content"][0]["text"])
         assert payload["error_code"] == "validation"
 
-    def test_correct_dry_run_returns_match_count_without_mutating(self):
+    def test_correct_dry_run_returns_client_count_without_mutating(self):
+        # The count comes from the same client rule the real edit uses, so the
+        # preview can't disagree with the edit (it used to count speaker labels).
         mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(
-            id="r1", filename="Meeting", transcript="hello teh world, teh end"
-        )
+        mock_client.count_transcript_matches.return_value = 2
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["edit_transcript"](
@@ -95,34 +97,7 @@ class TestEditTranscript:
             "matches": 2,
         }
         mock_client.correct_transcript.assert_not_called()
-        mock_client.get_recording.assert_called_once_with("r1", include_transcript=True)
-
-    def test_correct_dry_run_zero_matches_is_not_an_error(self):
-        mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(
-            id="r1", filename="Meeting", transcript="nothing matches here"
-        )
-        handlers = build_handlers(lambda: mock_client)
-
-        result = handlers["edit_transcript"](
-            recording_id="r1", action="correct", find="teh", replace="the", dry_run=True
-        )
-
-        payload = json.loads(result["content"][0]["text"])
-        assert payload["matches"] == 0
-        assert "isError" not in result
-
-    def test_correct_dry_run_no_transcript_returns_validation(self):
-        mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting", transcript="")
-        handlers = build_handlers(lambda: mock_client)
-
-        result = handlers["edit_transcript"](
-            recording_id="r1", action="correct", find="x", replace="y", dry_run=True
-        )
-
-        payload = json.loads(result["content"][0]["text"])
-        assert payload["error_code"] == "validation"
+        mock_client.count_transcript_matches.assert_called_once_with("r1", "teh")
 
     def test_unknown_action_returns_validation(self):
         handlers = build_handlers(lambda: MagicMock())
@@ -179,30 +154,42 @@ class TestEditSummaryDryRun:
 
 
 class TestProcessRecordingBoundedWait:
-    def test_transcript_wait_timeout_returns_still_processing(self):
+    def test_transcript_wait_timeout_returns_job_handle(self):
         mock_client = MagicMock()
-        mock_client.wait_for_transcription.side_effect = PlaudApiError("transcription timed out after 90s")
+        mock_client.wait_for_transcription.side_effect = PlaudWaitTimeoutError(
+            "transcription timed out after 90s"
+        )
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["process_recording"]("r1", wait="transcript")
 
         payload = json.loads(result["content"][0]["text"])
-        assert payload == {"recording_id": "r1", "status": "still_processing"}
+        assert payload["status"] == "still_processing"
+        assert payload["recording_id"] == "r1"
+        assert payload["job"] == {"kind": "transcription", "id": "r1", "poll_with": "get_recording"}
+        assert payload["retryable"] is False
         assert "isError" not in result
-        mock_client.wait_for_transcription.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S)
         mock_client.get_recording.assert_not_called()
 
-    def test_summary_wait_timeout_returns_still_processing_with_is_trans(self):
+    def test_summary_wait_gets_only_the_budget_left(self, monkeypatch):
+        """wait="summary" shares one budget: the summary wait gets what's left."""
+        clock = [1000.0]
+        monkeypatch.setattr(
+            "plaud_tools.mcp_pt.mcp.time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time)
+        )
         mock_client = MagicMock()
-        mock_client.wait_for_transcription.return_value = None
-        mock_client.wait_for_summary.side_effect = PlaudApiError("summary timed out after 90s")
+        # Transcription takes 60s of the budget.
+        mock_client.wait_for_transcription.side_effect = lambda *a, **k: clock.__setitem__(0, clock[0] + 60)
+        mock_client.wait_for_summary.side_effect = PlaudWaitTimeoutError("summary timed out after 30s")
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["process_recording"]("r1", wait="summary")
 
+        mock_client.wait_for_transcription.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S)
+        mock_client.wait_for_summary.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S - 60)
         payload = json.loads(result["content"][0]["text"])
-        assert payload == {"recording_id": "r1", "status": "still_processing", "is_trans": True}
-        assert "isError" not in result
+        assert payload["job"]["kind"] == "summary"
+        assert payload["is_trans"] is True
 
     def test_non_timeout_api_error_during_wait_still_propagates(self):
         mock_client = MagicMock()
@@ -434,11 +421,14 @@ class TestGetRecordingAudioUrl:
         mock_client.get_audio_url.return_value = None
         handlers = build_handlers(lambda: mock_client)
 
-        result = handlers["get_recording"]("r1", include=["audio_url"])
+        result = handlers["get_recording"]("r1", include=["audio_url", "transcript"])
 
         payload = json.loads(result["content"][0]["text"])
         assert payload["audio_url"] is None
-        assert "syncing" in payload["note"]
+        # Both gaps are explained; the transcript note no longer overwrites the audio one.
+        assert len(payload["notes"]) == 2
+        assert "syncing" in payload["notes"][0]
+        assert "process_recording" in payload["notes"][1]
 
     def test_audio_url_not_fetched_unless_requested(self):
         mock_client = MagicMock()
@@ -471,7 +461,7 @@ class TestGetRecordingTranscriptBlock:
 
         payload = json.loads(result["content"][0]["text"])
         assert payload["transcript_block"] == "transaction"
-        assert "note" not in payload
+        assert "notes" not in payload
         assert mock_client.get_recording.call_args.kwargs["transcript_block"] == "transaction"
 
     def test_polish_block_is_forwarded_to_the_client(self):
@@ -517,8 +507,8 @@ class TestGetRecordingTranscriptBlock:
         )
 
         payload = json.loads(result["content"][0]["text"])
-        assert "transaction_polish" in payload["note"]
-        assert "Available blocks: transaction" in payload["note"]
+        assert "transaction_polish" in payload["notes"][0]
+        assert "Available blocks: transaction" in payload["notes"][0]
         # Missing is not "empty": no fingerprint for a block that does not exist.
         assert payload["transcript_fingerprint"] is None
         assert payload["transcript_has_more"] is False
@@ -533,7 +523,7 @@ class TestGetRecordingTranscriptBlock:
         result = handlers["get_recording"]("r1", include=["transcript"])
 
         payload = json.loads(result["content"][0]["text"])
-        assert "process_recording" in payload["note"]
+        assert "process_recording" in payload["notes"][0]
 
     def test_unfetchable_summary_reports_null_plus_retry_hint(self):
         """is_summary=True but no content is transient — say so instead of a bare placeholder."""
@@ -547,7 +537,7 @@ class TestGetRecordingTranscriptBlock:
 
         payload = json.loads(result["content"][0]["text"])
         assert payload["summary"] is None
-        assert "retry" in payload["note"].lower()
+        assert "retry" in payload["notes"][0].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -593,19 +583,23 @@ class TestMergeRecordingsSlimResponse:
         payload = json.loads(result["content"][0]["text"])
         assert payload == {"ok": True, "recording_id": "merged1", "title": "Combined"}
 
-    def test_wait_timeout_returns_still_processing(self):
-        # (#151) merge_recordings' own poll loop (up to 300s by default) is
-        # now bounded the same way process_recording's waits are — a soft
-        # deadline that reports still_processing instead of blocking the
-        # handler thread for the full window.
+    def test_wait_timeout_returns_task_id_and_says_not_to_retry(self):
+        # (#151) The combine task keeps running on Plaud; a second call would
+        # be a second merge, so the result carries the task id and retryable=false.
         mock_client = MagicMock()
-        mock_client.merge_recordings.side_effect = PlaudApiError("merge timed out after 90s")
+        mock_client.merge_recordings.side_effect = PlaudWaitTimeoutError(
+            "merge timed out after 90s", task_id="t9"
+        )
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["merge_recordings"](recording_ids=["r1", "r2"], title="Combined")
 
         payload = json.loads(result["content"][0]["text"])
-        assert payload == {"recording_ids": ["r1", "r2"], "title": "Combined", "status": "still_processing"}
+        assert payload["status"] == "still_processing"
+        assert payload["job"] == {"kind": "merge", "id": "t9", "poll_with": "browse_recordings"}
+        assert payload["retryable"] is False
+        assert "Do not call merge_recordings again" in payload["message"]
+        assert payload["recording_ids"] == ["r1", "r2"]
         assert "isError" not in result
         mock_client.merge_recordings.assert_called_once_with(
             ["r1", "r2"], "Combined", timeout_s=_WAIT_TIMEOUT_S

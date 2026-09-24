@@ -267,6 +267,28 @@ class TestCollectFilteredPaged:
         assert has_more is False
         assert len(calls) == 1
 
+    def test_since_filter_stops_once_pages_are_older_than_since(self):
+        # Pages arrive newest-first; once a page reaches back past `since`,
+        # every later page is older still, so paging must stop there instead
+        # of scanning the whole library for a narrow date window.
+        newest = [make_rec(f"a{i}", start_time=10_000_000 - i) for i in range(BROWSE_PAGE_SIZE)]
+        crossing = [make_rec(f"b{i}", start_time=5_000 - i * 100) for i in range(BROWSE_PAGE_SIZE)]
+        older = [make_rec(f"c{i}", start_time=1) for i in range(BROWSE_PAGE_SIZE)]
+        fetch, calls = page_fetcher_from_pages([newest, crossing, older, older])
+        page, has_more = collect_filtered_paged(
+            fetch,
+            BROWSE_PAGE_SIZE,
+            since_ms=4_000,
+            until_ms=None,
+            query="nothing-matches",
+            folder_id=None,
+            after=0,
+            limit=10,
+        )
+        assert page == []
+        assert has_more is False
+        assert calls == [0, BROWSE_PAGE_SIZE]
+
     def test_no_matches_in_any_page(self):
         # Each page has records but none match the query.
         pages = [
@@ -427,11 +449,13 @@ class TestBrowseRecordingsMcpHandler:
         result = handlers["browse_recordings"](limit=3)
         payload = json.loads(result["content"][0]["text"])
         assert len(payload["items"]) == 3
-        # Exactly one call with a PlaudRecordingQuery.
+        # Exactly one call with a PlaudRecordingQuery, asking for one look-ahead item.
         assert mock_client.list_recordings.call_count == 1
         call_query = mock_client.list_recordings.call_args[0][0]
-        assert call_query.limit == 3
+        assert call_query.limit == 4
         assert call_query.is_trash == 0
+        # A library that is an exact multiple of limit has no next page.
+        assert payload["next_after"] is None
 
     # -----------------------------------------------------------------------
     # #148: limit<=0 makes next_after == after forever — an agent that

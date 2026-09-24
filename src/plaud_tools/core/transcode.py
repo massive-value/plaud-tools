@@ -24,6 +24,11 @@ NATIVE_EXTS: dict[str, str] = {
 # Formats that must be transcoded to MP3 before upload.
 TRANSCODE_EXTS: frozenset[str] = frozenset({".m4a", ".mp4", ".wav", ".aac", ".flac", ".wma", ".amr"})
 
+# Upper bound on one ffmpeg run.  Speech-quality MP3 encodes run far faster
+# than real time, so even a multi-hour recording finishes well inside this;
+# it only exists so a wedged ffmpeg can never hang the CLI or MCP forever.
+_FFMPEG_TIMEOUT_S = 30 * 60
+
 
 def get_file_type(path: str | Path) -> tuple[str, bool]:
     """Return (plaud_file_type, needs_transcode) for a given file path.
@@ -84,22 +89,30 @@ def transcode_to_mp3_path(source_path: Path, dest_path: Path, *, quality: int = 
     default (~165 kbps), 9 = worst (~65 kbps).
     """
     ff = _find_ffmpeg()
-    result = subprocess.run(
-        [
-            ff,
-            "-y",
-            "-i",
-            str(source_path),
-            "-codec:a",
-            "libmp3lame",
-            "-qscale:a",
-            str(quality),
-            "-map_metadata",
-            "-1",
-            str(dest_path),
-        ],
-        capture_output=True,
-    )
+    # -nostdin + stdin=DEVNULL: ffmpeg otherwise reads the parent's stdin for
+    # interactive keys, which under the MCP server is the JSON-RPC stream.
+    try:
+        result = subprocess.run(
+            [
+                ff,
+                "-nostdin",
+                "-y",
+                "-i",
+                str(source_path),
+                "-codec:a",
+                "libmp3lame",
+                "-qscale:a",
+                str(quality),
+                "-map_metadata",
+                "-1",
+                str(dest_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_FFMPEG_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg did not finish within {_FFMPEG_TIMEOUT_S // 60} minutes") from exc
     if result.returncode != 0:
         tail = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
         msg = " ".join(tail[-3:])[:500]
@@ -147,7 +160,6 @@ def upload_with_transcode(
     start_time: int | None = None,
     timezone_offset: float | None = None,
     folder_id: str | None = None,
-    timeout_s: float | None = None,
 ) -> UploadOutcome:
     """Upload *path* to Plaud, transcoding first if the format requires it.
 
@@ -160,12 +172,6 @@ def upload_with_transcode(
     failure at that step does NOT raise — it is reported via
     :attr:`UploadOutcome.folder_error` so the caller never loses the
     already-created recording id (see module docstring / issue #149).
-
-    timeout_s: (#151) forwarded to ``PlaudClient.upload_recording``'s soft
-    deadline on the S3 multipart loop. ``None`` (the CLI's default) is
-    unbounded, matching pre-existing behaviour; the MCP facade passes a
-    bounded value so a disconnected client can't orphan the process for the
-    whole transfer.
     """
     if not path.exists():
         raise ValueError(f"file not found: {path}")
@@ -185,7 +191,6 @@ def upload_with_transcode(
                 file_type,
                 start_time=start_time,
                 timezone_offset=timezone_offset,
-                timeout_s=timeout_s,
             )
         finally:
             try:
@@ -199,7 +204,6 @@ def upload_with_transcode(
             file_type,
             start_time=start_time,
             timezone_offset=timezone_offset,
-            timeout_s=timeout_s,
         )
 
     folder_error: str | None = None

@@ -12,7 +12,7 @@ import io
 import json
 from urllib.error import HTTPError
 
-from plaud_tools.core.errors import PlaudApiError
+from plaud_tools.core.errors import PlaudApiError, PlaudWaitTimeoutError
 
 # ---------------------------------------------------------------------------
 # Helper: build a urllib.error.HTTPError with a readable body
@@ -185,6 +185,14 @@ class TestClassify:
         result = self._make_err(500).classify()
         assert isinstance(result, tuple)
         assert len(result) == 2
+
+
+def test_network_timeout_is_not_a_soft_deadline():
+    """A socket timeout says nothing about a Plaud job still running, so it must
+    not become CLI exit 4 / MCP still_processing.  Only PlaudWaitTimeoutError is."""
+    network = PlaudApiError("Plaud API request timed out after 30.0s", network_error=True)
+    assert not network.is_soft_deadline_timeout()
+    assert PlaudWaitTimeoutError("merge timed out after 90s", task_id="t1").is_soft_deadline_timeout()
 
 
 # ---------------------------------------------------------------------------

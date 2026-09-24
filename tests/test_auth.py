@@ -542,6 +542,34 @@ def test_save_writes_keyring_and_dpapi_shadow(tmp_path, monkeypatch):
     assert not (tmp_path / "session.json").exists()
 
 
+def test_failed_keyring_save_does_not_leave_stale_entry_shadowing_new_login(tmp_path, monkeypatch):
+    """load() prefers keyring over DPAPI, so if set_password fails while DPAPI
+    succeeds, the previous keyring entry must go; otherwise a fresh login keeps
+    serving the old (possibly expired) token."""
+    from plaud_tools.core.session import PlaudSession, SessionStore
+
+    _patch_fake_dpapi(monkeypatch)
+    old = json.dumps({"access_token": "old-tok", "region": "us", "email": "u@example.com"})
+    fake = _FakeLegacyKeyring({("plaud-tools", "session"): old})
+
+    def broken_set_password(*_a, **_k):
+        raise RuntimeError("Credential Manager unavailable")
+
+    fake.set_password = broken_set_password
+    monkeypatch.setattr(
+        "plaud_tools.core.session.importlib.import_module",
+        lambda name: fake if name == "keyring" else __import__(name),
+    )
+    monkeypatch.setattr(SessionStore, "_KEYRING_RETRY_DELAYS_S", ())
+    store = SessionStore(tmp_path / "session.json", service_name="plaud-tools", dpapi_path=tmp_path / "s.dat")
+
+    store.save(PlaudSession(access_token="new-tok", region="us", email="u@example.com"))
+
+    session, source = store.load_with_source()
+    assert session is not None and session.access_token == "new-tok"
+    assert source == "dpapi_file"
+
+
 def test_load_falls_back_to_dpapi_when_keyring_returns_none(tmp_path, monkeypatch, caplog):
     """The whole point: when keyring returns None despite the credential
     being present, DPAPI rescues the load.

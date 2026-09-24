@@ -11,9 +11,12 @@ import os
 import sys
 from typing import Any
 
+import jsonschema
 import mcp.server.stdio
 import mcp.types as types
+from mcp.server.caching import CacheableMethod, CacheHint
 from mcp.server.lowlevel import Server
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from .. import __version__
 from ..core.appdata import mcp_log as _mcp_log_path
@@ -21,9 +24,12 @@ from ..core.client import DEFAULT_TRANSCRIPT_BLOCK, TRANSCRIPT_BLOCKS, PlaudClie
 from ..core.session import SessionManager, SessionStore
 from .mcp import (
     DEFAULT_TRANSCRIPT_UTTERANCES,
+    MAX_BROWSE_LIMIT,
     MAX_TRANSCRIPT_UTTERANCES,
     build_handlers,
 )
+
+log = logging.getLogger(__name__)
 
 
 def _setup_mcp_logging() -> None:
@@ -79,6 +85,84 @@ def _setup_mcp_logging() -> None:
 # open_world_hint=True is set on every tool: all calls interact with the external
 # Plaud service and may observe or affect state not visible in this conversation.
 # ---------------------------------------------------------------------------
+
+# outputSchema for the read tools, so clients on newer protocol versions get
+# typed structuredContent.  The same JSON also goes out as text for older
+# clients (see mcp._json_result).  Loose on purpose: only the fields a caller
+# relies on are described, and extra fields are allowed.
+_NULLABLE_STRING = {"type": ["string", "null"]}
+_NULLABLE_INT = {"type": ["integer", "null"]}
+
+_BROWSE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "date": {"type": "string"},
+                    "duration_minutes": {"type": "integer"},
+                    "has_transcript": {"type": "boolean"},
+                    "has_summary": {"type": "boolean"},
+                    "folder_id": _NULLABLE_STRING,
+                },
+                "required": ["id", "title"],
+            },
+        },
+        "next_after": _NULLABLE_INT,
+    },
+    "required": ["items", "next_after"],
+}
+
+_GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "date": {"type": "string"},
+        "duration_minutes": {"type": "integer"},
+        "folder_id": _NULLABLE_STRING,
+        "is_trans": {"type": "boolean"},
+        "is_summary": {"type": "boolean"},
+        "is_trash": {"type": "boolean"},
+        "headline": _NULLABLE_STRING,
+        "language": _NULLABLE_STRING,
+        "speakers": {"type": "array", "items": {"type": "string"}},
+        "audio_url": _NULLABLE_STRING,
+        "transcript": {"type": "string"},
+        "transcript_segments": {"type": "array", "items": {"type": "object"}},
+        "transcript_has_more": {"type": "boolean"},
+        "transcript_next_after": _NULLABLE_INT,
+        "transcript_fingerprint": _NULLABLE_STRING,
+        "summary": _NULLABLE_STRING,
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["id"],
+}
+
+_LIST_FOLDERS_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "folders": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "color": {"type": "string"},
+                    "icon": {"type": "string"},
+                },
+                "required": ["id", "name"],
+            },
+        },
+    },
+    "required": ["folders"],
+}
+
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="browse_recordings",
@@ -90,6 +174,7 @@ _TOOLS: list[types.Tool] = [
                     "type": "integer",
                     "default": 20,
                     "minimum": 1,
+                    "maximum": MAX_BROWSE_LIMIT,
                     "description": "Max results per page",
                 },
                 "since": {
@@ -121,6 +206,7 @@ _TOOLS: list[types.Tool] = [
                 },
             },
         },
+        output_schema=_BROWSE_OUTPUT_SCHEMA,
         # Pure read — no writes, no side-effects.
         # idempotent_hint omitted: redundant when read_only_hint=True (reads are
         # inherently idempotent; stating it again adds noise without value).
@@ -167,6 +253,7 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id"],
         },
+        output_schema=_GET_RECORDING_OUTPUT_SCHEMA,
         # Pure read — same rationale as browse_recordings.
         annotations=types.ToolAnnotations(
             title="Get recording",
@@ -273,19 +360,20 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id", "action"],
         },
-        # Reversible content edit — rerun with swapped args to undo.
-        # idempotent_hint omitted: the two actions have different idempotency
-        # (rename_speaker is a no-op on rerun; correct errors on a second
-        # identical rerun since the text is already replaced).
+        # Destructive: a correct can't always be undone by swapping find and
+        # replace (replacing "Bob" with "Rob" merges with any "Rob" already
+        # there, and an empty replace deletes text), and the old text is not
+        # kept anywhere.  idempotent_hint omitted: rename_speaker is a no-op on
+        # rerun, but a repeated correct errors since the text is already gone.
         annotations=types.ToolAnnotations(
             title="Edit transcript",
-            destructive_hint=False,
+            destructive_hint=True,
             open_world_hint=True,
         ),
     ),
     types.Tool(
         name="upload_recording",
-        description="Upload a local audio file to Plaud.",
+        description="Upload a local audio file to Plaud; returns the new recording_id.",
         input_schema={
             "type": "object",
             "properties": {
@@ -328,6 +416,7 @@ _TOOLS: list[types.Tool] = [
             "type": "object",
             "properties": {},
         },
+        output_schema=_LIST_FOLDERS_OUTPUT_SCHEMA,
         # Pure read — same rationale as browse_recordings / get_recording.
         annotations=types.ToolAnnotations(
             title="List folders",
@@ -346,7 +435,7 @@ _TOOLS: list[types.Tool] = [
                     "type": "string",
                     "enum": ["none", "transcript", "summary"],
                     "default": "transcript",
-                    "description": "How long to block: none/transcript/summary; waits are bounded and return status='still_processing' if not done in time — poll get_recording or retry.",  # noqa: E501
+                    "description": "How long to block: none/transcript/summary. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",  # noqa: E501
                 },
                 "template_type": {
                     "type": "string",
@@ -380,7 +469,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="merge_recordings",
-        description="Merge two or more recordings into a single new recording, blocking until the merge job completes.",  # noqa: E501
+        description="Merge two or more recordings into one new recording. If not done within ~90s, returns status='still_processing' with the merge job id; do not call again (it would merge twice).",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -436,13 +525,14 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["recording_id", "action"],
         },
-        # Reversible content edit — a 'correct' can be undone by re-running with
-        # swapped find/replace; a 'replace' overwrites, but the prior text can be
-        # re-supplied.  idempotent_hint omitted: a second 'correct' with the same
-        # find returns "no occurrences" (an error), so it is not a no-op.
+        # Destructive: 'replace' overwrites the whole summary and Plaud keeps
+        # no prior version, so unless the agent saved the old text it is gone;
+        # 'correct' has the same can't-always-swap-back problem as
+        # edit_transcript.  idempotent_hint omitted: a second 'correct' with the
+        # same find returns "no occurrences" (an error), so it is not a no-op.
         annotations=types.ToolAnnotations(
             title="Edit summary",
-            destructive_hint=False,
+            destructive_hint=True,
             open_world_hint=True,
         ),
     ),
@@ -493,79 +583,124 @@ _TOOLS: list[types.Tool] = [
 ]
 
 
+# Reject arguments a tool doesn't declare.  Without this an unexpected name
+# reached the handler as a Python TypeError; now the schema check below
+# reports it by name.
+for _tool in _TOOLS:
+    _tool.input_schema.setdefault("additionalProperties", False)
+
+# One compiled validator per tool; the schemas never change at runtime.
+_VALIDATORS: dict[str, jsonschema.protocols.Validator] = {
+    tool.name: jsonschema.Draft202012Validator(tool.input_schema) for tool in _TOOLS
+}
+
+# tools/list never changes while the process runs, so clients that honour
+# SEP-2549 cache hints (protocol 2026-07-28) may reuse it for an hour.  The
+# listing holds nothing user-specific, hence "public".
+_CACHE_HINTS: dict[CacheableMethod, CacheHint] = {
+    "tools/list": CacheHint(ttl_ms=60 * 60 * 1000, scope="public")
+}
+
+
+def _error_payload(message: str, error_code: str) -> types.CallToolResult:
+    """A tool-level error in the same {error, error_code, retryable} shape mcp.py uses."""
+    payload = {"error": message, "error_code": error_code, "retryable": False}
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
+        is_error=True,
+    )
+
+
+def _argument_error(name: str, arguments: dict[str, Any]) -> str | None:
+    """Return a readable message for the first schema violation, or None if valid."""
+    error = jsonschema.exceptions.best_match(_VALIDATORS[name].iter_errors(arguments))
+    if error is None:
+        return None
+    where = ".".join(str(part) for part in error.absolute_path)
+    return f"Invalid arguments for tool '{name}': {f'{where}: ' if where else ''}{error.message}"
+
+
 def _make_server() -> Server:
     store = SessionStore()
-    # One SessionManager per server process so the in-memory keyring cache
-    # added in v0.1.22 actually applies to MCP tool calls.  Previously this
-    # constructed a fresh SessionManager (and thus a fresh empty cache) on
-    # every tool invocation, defeating the cache and doubling keyring reads.
+    # One SessionManager per server process so the in-memory session cache
+    # applies to every tool call.  Signed-out detection happens inside
+    # require() (PlaudSessionExpiredError), so there is no per-call
+    # Credential Manager probe here.
     manager = SessionManager(store)
 
     def get_client() -> PlaudClient | None:
-        # store.load() also fronts the keyring; we keep it as the cheap
-        # "is there any session at all?" probe before constructing the client.
-        # SessionManager.require() (called inside PlaudClient.request paths)
-        # validates expiry against the in-memory cache after the first hit.
-        if store.load() is None:
-            return None
         return PlaudClient(manager)
 
     handlers = build_handlers(get_client)
+    seen_versions: set[str] = set()
+
+    def _log_protocol_version(ctx: Any) -> None:
+        """Log each protocol version a client speaks, once per process.
+
+        Shows in mcp.log when Claude clients move from the handshake era
+        (2025-11-25 and earlier) to the stateless 2026-07-28 era.
+        """
+        version = getattr(ctx, "protocol_version", None)
+        if not isinstance(version, str) or version in seen_versions:
+            return
+        seen_versions.add(version)
+        era = "modern" if version in MODERN_PROTOCOL_VERSIONS else "legacy"
+        client_params = getattr(getattr(ctx, "session", None), "client_params", None)
+        client_info = getattr(client_params, "client_info", None)
+        client = f"{getattr(client_info, 'name', '?')}/{getattr(client_info, 'version', '?')}"
+        log.info("MCP client protocol_version=%s era=%s client=%s", version, era, client)
 
     async def list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
+        _log_protocol_version(ctx)
         return types.ListToolsResult(tools=_TOOLS)
 
     async def call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         # #139 (and the mcp v2 migration, #200): the SDK never auto-wraps a
-        # bare return into a CallToolResult — a handler that doesn't build one
-        # explicitly fails validation outright. Every one of the 3 return
-        # paths below builds the CallToolResult itself so that refused
-        # deletes, session-expired, and other tool-level errors are delivered
-        # to clients as errors (is_error=True) instead of silent "successes".
+        # bare return into a CallToolResult, so every path below builds one
+        # itself.  Tool-level failures (refused deletes, session expired, bad
+        # arguments, bugs) all come back as is_error=True results carrying our
+        # own message, never as a protocol error or the SDK's generic
+        # "Error executing tool" text.
+        _log_protocol_version(ctx)
         name = params.name
-        arguments = params.arguments or {}
+        # Many LLM clients send null for optional fields they aren't using.
+        # Treat that as "not passed" so the handler default applies and the
+        # schema check doesn't reject it as the wrong type.
+        arguments = {k: v for k, v in (params.arguments or {}).items() if v is not None}
         handler = handlers.get(name)
         if handler is None:
-            payload: dict[str, Any] = {"error": f"Unknown tool: {name}"}
-            return types.CallToolResult(
-                content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
-                is_error=True,
-            )
+            return _error_payload(f"Unknown tool: {name}", "invalid_arguments")
+        problem = _argument_error(name, arguments)
+        if problem is not None:
+            return _error_payload(problem, "invalid_arguments")
         try:
             # Wave 2 / C2: run the synchronous handler in a worker thread so
             # blocking network I/O (PlaudClient HTTP calls, keyring reads,
             # wait_for_transcription polling) does not stall the asyncio event
             # loop.  Other in-flight requests (e.g. list_tools) remain
             # responsive while a long upload or transcode waits in its thread.
-            #
-            # TypeError propagation: a TypeError raised *inside* the thread
-            # (bad kwargs forwarded by the MCP framework) propagates out of the
-            # ``await`` and is caught by the except clause below — identical
-            # behaviour to the previous synchronous call.
             result = await asyncio.to_thread(handler, **arguments)
-            text = result["content"][0]["text"]
-            is_error = bool(result.get("isError"))
-        except TypeError as exc:
-            # The MCP framework or a misbehaving client passed unexpected / missing
-            # keyword arguments.  Returning a structured validation error keeps the
-            # raw TypeError inside the server process and lets the caller
-            # self-correct.  Shape mirrors _error_result() in mcp.py exactly:
-            # {"error": ..., "error_code": "validation", "retryable": false}.
-            payload = {
-                "error": f"Invalid arguments for tool '{name}': {exc}",
-                "error_code": "validation",
-                "retryable": False,
-            }
-            return types.CallToolResult(
-                content=[types.TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))],
-                is_error=True,
+        except Exception:  # noqa: BLE001 — last line of defence, see below
+            # mcp.py maps every expected failure to a structured error, so
+            # reaching here means a bug.  Log the traceback and still answer
+            # with a structured result the model can read.
+            log.exception("tool %s raised an unexpected exception", name)
+            return _error_payload(
+                f"Internal error in tool '{name}'. Details are in the plaud-mcp log.", "internal"
             )
         return types.CallToolResult(
-            content=[types.TextContent(type="text", text=text)],
-            is_error=is_error,
+            content=[types.TextContent(type="text", text=result["content"][0]["text"])],
+            structured_content=result.get("structuredContent"),
+            is_error=bool(result.get("isError")),
         )
 
-    return Server("plaud-mcp", version=__version__, on_list_tools=list_tools, on_call_tool=call_tool)
+    return Server(
+        "plaud-mcp",
+        version=__version__,
+        on_list_tools=list_tools,
+        on_call_tool=call_tool,
+        cache_hints=_CACHE_HINTS,
+    )
 
 
 async def _run() -> None:

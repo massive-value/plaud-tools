@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import json
 from dataclasses import dataclass
 from typing import Protocol
@@ -94,3 +95,12 @@ class UrllibTransport:
             # refused, etc.) — also a transient transport failure, not a
             # structural API problem.  See network_error=True note above.
             raise PlaudApiError(f"Plaud API request failed: {exc.reason}", network_error=True) from exc
+        except (http.client.HTTPException, OSError) as exc:
+            # Failures after the connection opened: the server hung up
+            # (RemoteDisconnected), reset the socket (ConnectionResetError),
+            # sent a short body (IncompleteRead), or TLS broke (ssl.SSLError).
+            # Same transient class as above; without this they escaped raw,
+            # skipping GET retries and aborting poll loops.
+            raise PlaudApiError(
+                f"Plaud API connection failed: {type(exc).__name__}: {exc}", network_error=True
+            ) from exc

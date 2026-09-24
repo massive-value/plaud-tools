@@ -49,7 +49,12 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # Raised deliberately rather than trimming, because every added word is a
 # parameter contract an LLM caller has to get right. Re-baseline this comment
 # alongside any future change.
-_TOKEN_BUDGET_WORDS = 517
+#
+# v0.9 -> next: 516 -> ~536 words.  The slow tools (process_recording,
+# merge_recordings) now say that a still_processing result must be polled, not
+# re-called, since a re-call starts a duplicate job; upload_recording says it
+# returns the recording_id.  Budget set to ~5% over the new count.
+_TOKEN_BUDGET_WORDS = 565
 
 
 def _serialize_tools() -> str:

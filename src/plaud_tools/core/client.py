@@ -5,13 +5,14 @@ import logging
 import random
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, overload
+from typing import Any, TypeVar
 from urllib.parse import urlencode
 
-from .errors import PlaudApiError, PlaudSessionExpiredError
+from .errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from .models import BASE_URLS, BROWSER_USER_AGENT, FileTag, Recording, RecordingDetail, TaskStatus
 from .query import format_transcript
 from .session import SessionManager
@@ -43,10 +44,10 @@ def _jitter(lo: float, hi: float) -> float:
 # _MAX_ATTEMPTS = 3 means 1 original attempt + 2 retries.
 #
 # Backoff formula (exponential with ±25 % full jitter):
-#   base_delay = _BACKOFF_BASE * (2 ** attempt_index)   # 1 s, 3 s
+#   base_delay = _BACKOFF_BASE * (2 ** retry_index)   # 1 s, 2 s
 #   actual_delay = jitter(base_delay * 0.75, base_delay * 1.25)
-# On attempt_index 0 (first retry) → base ≈ 1 s → actual ∈ [0.75, 1.25] s
-# On attempt_index 1 (second retry) → base ≈ 3 s → actual ∈ [2.25, 3.75] s
+# First retry (retry_index 0)  → base 1 s → actual ∈ [0.75, 1.25] s
+# Second retry (retry_index 1) → base 2 s → actual ∈ [1.5, 2.5] s
 #
 # When Retry-After is present we sleep max(retry_after, computed_backoff).
 # Rationale: honour the server's instruction but never sleep *less* than our
@@ -89,6 +90,31 @@ DEFAULT_TRANSCRIPT_BLOCK = "transaction"
 AUDIO_URL_TTL_S = 3600
 
 
+_T = TypeVar("_T")
+
+
+def _local_utc_offset_hours() -> float:
+    """This machine's UTC offset in hours, signed the way Plaud expects.
+
+    Plaud's web app sends the plain UTC offset: US Central (UTC-6) is ``-6``,
+    CET (UTC+1) is ``1``, as seen in HAR captures of both upload and
+    transcribe requests.  (JavaScript's ``getTimezoneOffset()`` has the
+    opposite sign; that is not what goes on the wire.)
+    """
+    offset = datetime.now().astimezone().utcoffset()
+    return offset.total_seconds() / 3600 if offset is not None else 0.0
+
+
+def count_segment_matches(segments: list[dict[str, Any]], find: str) -> tuple[int, int]:
+    """Return ``(occurrences, segments_containing)`` of *find* in segment content.
+
+    Literal, case-sensitive, content only (speaker labels are not searched).
+    The single counting rule behind ``correct_transcript`` and its dry run.
+    """
+    counts = [(segment.get("content") or "").count(find) for segment in segments]
+    return sum(counts), sum(1 for count in counts if count)
+
+
 @dataclass(slots=True)
 class PlaudRecordingQuery:
     skip: int | None = None
@@ -102,6 +128,11 @@ class PlaudClient:
     def __init__(self, session_manager: SessionManager, transport: Transport | None = None) -> None:
         self._session_manager = session_manager
         self._transport = transport or UrllibTransport()
+
+    @property
+    def session_manager(self) -> SessionManager:
+        """The session manager this client authenticates through."""
+        return self._session_manager
 
     def list_recordings(self, query: PlaudRecordingQuery | None = None) -> list[Recording]:
         params: dict[str, str] = {}
@@ -138,8 +169,7 @@ class PlaudClient:
             raise ValueError(
                 f"transcript_block must be one of {', '.join(TRANSCRIPT_BLOCKS)}; got {transcript_block!r}"
             )
-        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
-        raw = data.get("data", data)
+        raw = self._get_detail_raw(recording_id)
         detail = self._normalize_recording_detail(raw, recording_id)
         if include_transcript:
             detail.transcript_blocks_available = self._available_transcript_blocks(raw)
@@ -206,86 +236,42 @@ class PlaudClient:
         data = self._request_json("GET", "/user/me", strict=True)
         return data.get("data_user") or data.get("data") or data
 
-    @overload
     def upload_recording(
         self,
-        data: Path,
-        filename: str,
-        file_type: str,
-        *,
-        start_time: int | None = ...,
-        timezone_offset: float | None = ...,
-        timeout_s: float | None = ...,
-    ) -> Recording: ...
-
-    @overload
-    def upload_recording(
-        self,
-        data: bytes,
-        filename: str,
-        file_type: str,
-        *,
-        start_time: int | None = ...,
-        timezone_offset: float | None = ...,
-        timeout_s: float | None = ...,
-    ) -> Recording: ...
-
-    def upload_recording(
-        self,
-        data: Path | bytes,
+        path: Path,
         filename: str,
         file_type: str,
         *,
         start_time: int | None = None,
         timezone_offset: float | None = None,
-        timeout_s: float | None = None,
     ) -> Recording:
         """4-step upload: presign → S3 multipart PUT → merge_multipart → confirm_upload.
 
-        *data* may be either a ``Path`` pointing to the audio file on disk, or
-        a ``bytes`` buffer (kept for backward compatibility).  The ``Path``
-        variant is preferred for large files: it reads 5 MiB chunks directly
-        from disk rather than holding the entire file in memory.
+        Reads *path* 5 MiB at a time, one chunk per presigned part URL, so a
+        large recording never sits in memory whole.
 
         file_type must be "MP3", "OPUS", or "OGG". For other audio formats,
         transcode to MP3 first using plaud_tools.transcode.transcode_to_mp3_path()
         and pass the resulting path here.
 
-        start_time_ms: millisecond epoch for the recording's date. Defaults to now.
+        start_time: millisecond epoch for the recording's date. Defaults to now.
         Plaud respects whatever value the client sends — pass the original
         recording's timestamp to preserve the date after re-upload.
 
-        timeout_s: (#151) optional overall wall-clock budget for the S3 chunk
-        loop below.  ``None`` (the default) preserves the historical unbounded
-        behaviour — each individual PUT already has its own 120 s ceiling
-        (see ``_s3_put``), so this only matters for many-chunk files on a slow
-        link.  Callers that can retry safely (the MCP facade) pass a soft
-        deadline so a disconnected client doesn't orphan the process for the
-        full multipart transfer; the CLI leaves it unset.
+        There is deliberately no overall deadline: an upload is an active
+        transfer, not a poll, and abandoning it midway leaves nothing to check
+        back on.  Each S3 PUT has its own 120 s ceiling (see ``_s3_put``).
         """
         if not filename.strip():
             raise ValueError("filename cannot be empty")
         if file_type not in ("MP3", "OPUS", "OGG"):
             raise ValueError(f"file_type must be MP3, OPUS, or OGG — got {file_type!r}")
-
-        # Resolve filesize without loading the entire file into memory when a
-        # Path is supplied.  For the bytes overload we keep the existing len()
-        # behaviour so the presign filesize matches what we actually upload.
-        if isinstance(data, Path):
-            filesize = data.stat().st_size
-            if filesize == 0:
-                raise ValueError("data cannot be empty")
-        else:
-            filesize = len(data)
-            if filesize == 0:
-                raise ValueError("data cannot be empty")
+        filesize = path.stat().st_size
+        if filesize == 0:
+            raise ValueError("data cannot be empty")
 
         start_time_ms = start_time if start_time is not None else int(time.time() * 1000)
-        if timezone_offset is None:
-            offset = datetime.now().astimezone().utcoffset()
-            tz = -offset.total_seconds() / 3600 if offset is not None else 0.0
-        else:
-            tz = timezone_offset
+        tz = _local_utc_offset_hours() if timezone_offset is None else timezone_offset
 
         presign = self._request_json(
             "POST",
@@ -308,52 +294,26 @@ class PlaudClient:
         # Upload chunks to S3. Content-Type matches the web client exactly —
         # the presigned signature does not bind Content-Type, but mimicking
         # the browser shields against any future tightening.
-        #
-        # For the Path variant we open the file once and read _CHUNK_SIZE bytes
-        # per part, avoiding a full in-memory buffer.  For the bytes variant we
-        # slice the existing buffer as before (no behaviour change for callers
-        # that already have bytes in hand).
-        # (#151) Soft deadline across the whole multipart loop — a many-chunk
-        # file on a slow link can accumulate a long total even though each
-        # individual PUT stays under its own 120 s ceiling.  ``None`` (the
-        # CLI's default) skips the check entirely, so this cannot regress
-        # unbounded callers.
-        deadline = None if timeout_s is None else time.time() + timeout_s
-
         parts: list[dict[str, Any]] = []
-        if isinstance(data, Path):
-            with data.open("rb") as fh:
-                for i, url in enumerate(part_urls):
-                    if deadline is not None and time.time() >= deadline:
-                        assert timeout_s is not None  # deadline is only ever set from timeout_s
-                        raise PlaudApiError(f"upload timed out after {int(timeout_s)}s")
-                    chunk = fh.read(_CHUNK_SIZE)
-                    if not chunk:
-                        # Presign returned more part URLs than the file has
-                        # chunks — treat as a protocol error rather than
-                        # silently uploading an empty part.
-                        raise PlaudApiError(
-                            f"Presign returned {len(part_urls)} part URLs but "
-                            f"file exhausted after {i} chunk(s)"
-                        )
-                    response = self._s3_put(str(url), chunk)
-                    etag = response.headers.get("etag", "").replace('"', "")
-                    if not etag:
-                        raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
-                    parts.append({"Etag": etag, "PartNumber": i + 1})
-        else:
+        with path.open("rb") as fh:
             for i, url in enumerate(part_urls):
-                if deadline is not None and time.time() >= deadline:
-                    assert timeout_s is not None  # deadline is only ever set from timeout_s
-                    raise PlaudApiError(f"upload timed out after {int(timeout_s)}s")
-                start_byte = i * _CHUNK_SIZE
-                end_byte = min(start_byte + _CHUNK_SIZE, len(data))
-                chunk = data[start_byte:end_byte]
+                chunk = fh.read(_CHUNK_SIZE)
+                if not chunk:
+                    # Presign returned more part URLs than the file has
+                    # chunks — treat as a protocol error rather than
+                    # silently uploading an empty part.
+                    raise PlaudApiError(
+                        f"Presign returned {len(part_urls)} part URLs but file exhausted after {i} chunk(s)"
+                    )
                 response = self._s3_put(str(url), chunk)
                 etag = response.headers.get("etag", "").replace('"', "")
                 if not etag:
                     raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
                 parts.append({"Etag": etag, "PartNumber": i + 1})
+            if fh.read(1):
+                # The opposite mismatch: fewer part URLs than chunks.  Merging
+                # now would store a silently truncated recording.
+                raise PlaudApiError(f"Presign returned {len(part_urls)} part URLs but the file has more data")
 
         self._request_json(
             "POST",
@@ -362,24 +322,31 @@ class PlaudClient:
             body={"upload_id": upload_id, "object_name": object_name, "parts": parts},
         )
 
-        confirm = self._request_json(
-            "POST",
-            "/file/confirm_upload",
-            strict=True,
-            body={
-                "upload_id": upload_id,
-                "object_name": object_name,
-                "scene": 101,
-                "is_tmp": 0,
-                "support_mul_summ": True,
-                "file_type": file_type,
-                "filename": filename,
-                "start_time": start_time_ms,
-                "session_id": start_time_ms // 1000,
-                "serial_number": str(uuid.uuid4()),
-                "timezone": tz,
-            },
-        )
+        confirm_body = {
+            "upload_id": upload_id,
+            "object_name": object_name,
+            "scene": 101,
+            "is_tmp": 0,
+            "support_mul_summ": True,
+            "file_type": file_type,
+            "filename": filename,
+            "start_time": start_time_ms,
+            "session_id": start_time_ms // 1000,
+            "serial_number": str(uuid.uuid4()),
+            "timezone": tz,
+        }
+        try:
+            confirm = self._request_json("POST", "/file/confirm_upload", strict=True, body=confirm_body)
+        except PlaudApiError as exc:
+            if not exc.network_error:
+                raise
+            # The request may have reached Plaud before the connection died,
+            # in which case the recording exists.  Report it as non-retryable
+            # so an agent checks first instead of uploading a duplicate.
+            raise PlaudApiError(
+                f"{exc}. The upload may have completed anyway; check browse_recordings for "
+                f"{filename!r} before uploading again."
+            ) from exc
         return self._normalize_recording(confirm.get("data") or {})
 
     def _s3_put(self, url: str, chunk: bytes) -> HttpResponse:
@@ -407,7 +374,12 @@ class PlaudClient:
         poll_interval_s: float = 3.0,
         timeout_s: float = 300.0,
     ) -> RecordingDetail:
-        """Merge recordings via /file/combine and poll /file/combine-tasks until done."""
+        """Merge recordings via /file/combine and poll /file/combine-tasks until done.
+
+        On timeout raises ``PlaudWaitTimeoutError`` carrying the combine
+        ``task_id``: the merge keeps running on Plaud, so re-running it would
+        create a duplicate.
+        """
         if len(ids) < 2:
             raise ValueError("merge requires at least 2 recording IDs")
         if not filename.strip():
@@ -423,32 +395,19 @@ class PlaudClient:
         if not task_id:
             raise PlaudApiError("Plaud combine response missing task_id")
 
-        deadline = time.time() + timeout_s
-        while True:
-            if time.time() >= deadline:
-                raise PlaudApiError(f"merge timed out after {int(timeout_s)}s")
-            _sleep(poll_interval_s)
-            try:
-                poll = self._request_json("GET", f"/file/combine-tasks/{task_id}", strict=False)
-            except PlaudApiError as exc:
-                # Treat transient errors (429/5xx) as skipped polls so a
-                # brief server hiccup during a long merge doesn't abort the
-                # whole wait.  Non-transient errors (auth, 404, …) propagate
-                # immediately — they signal a structural problem, not a blip.
-                _code, retryable = exc.classify()
-                if retryable:
-                    _log.info(
-                        "merge poll transient error (%s) — continuing until deadline",
-                        exc,
-                    )
-                    continue
-                raise
+        def check() -> RecordingDetail | None:
+            poll = self._request_json("GET", f"/file/combine-tasks/{task_id}", strict=False)
             task = poll.get("data") or {}
             if task.get("status") == "success":
                 file_raw = task.get("file") or {}
                 return self._normalize_recording_detail(file_raw, str(file_raw.get("file_id") or ""))
             if task.get("status") == "error":
                 raise PlaudApiError(f"merge failed: {task.get('error_message') or 'unknown error'}")
+            return None
+
+        return self._poll_until(
+            check, what="merge", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id
+        )
 
     def wait_for_transcription(
         self,
@@ -457,31 +416,13 @@ class PlaudClient:
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
     ) -> None:
-        """Poll get_recording() until is_trans is True or timeout elapses.
-
-        A transient error (429 / 5xx) during a poll is treated as a skipped
-        poll: we log and continue until the deadline.  Non-transient errors
-        (e.g. 404, auth failure) propagate immediately.
-        """
-        deadline = time.time() + timeout_s
-        while True:
-            if time.time() >= deadline:
-                raise PlaudApiError(f"transcription timed out after {int(timeout_s)}s")
-            try:
-                detail = self.get_recording(recording_id)
-            except PlaudApiError as exc:
-                _code, retryable = exc.classify()
-                if retryable:
-                    _log.info(
-                        "wait_for_transcription transient error (%s) — continuing until deadline",
-                        exc,
-                    )
-                    _sleep(poll_interval_s)
-                    continue
-                raise
-            if detail.is_trans:
-                return
-            _sleep(poll_interval_s)
+        """Poll get_recording() until is_trans is True or timeout elapses."""
+        self._poll_until(
+            lambda: True if self.get_recording(recording_id).is_trans else None,
+            what="transcription",
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
 
     def wait_for_summary(
         self,
@@ -490,38 +431,57 @@ class PlaudClient:
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
     ) -> None:
-        """Poll get_recording() until is_summary is True or timeout elapses.
+        """Poll get_recording() until is_summary is True or timeout elapses."""
+        self._poll_until(
+            lambda: True if self.get_recording(recording_id).is_summary else None,
+            what="summary",
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
 
-        A transient error (429 / 5xx) during a poll is treated as a skipped
-        poll: we log and continue until the deadline.  Non-transient errors
-        (e.g. 404, auth failure) propagate immediately.
+    def _poll_until(
+        self,
+        check: Callable[[], _T | None],
+        *,
+        what: str,
+        timeout_s: float,
+        poll_interval_s: float,
+        task_id: str | None = None,
+    ) -> _T:
+        """Call *check* until it returns non-None, sleeping between polls.
+
+        Shared by the transcription, summary, and merge waits.  *check* always
+        runs at least once, so a job that is already done is reported done
+        even with a zero budget.  A transient error (429 / 5xx / network blip)
+        counts as a skipped poll; anything else propagates.  When the budget
+        runs out this raises ``PlaudWaitTimeoutError`` (with *task_id*, if
+        any): the job is still running server-side.
         """
-        deadline = time.time() + timeout_s
+        deadline = time.monotonic() + timeout_s
         while True:
-            if time.time() >= deadline:
-                raise PlaudApiError(f"summary timed out after {int(timeout_s)}s")
             try:
-                detail = self.get_recording(recording_id)
+                result = check()
             except PlaudApiError as exc:
                 _code, retryable = exc.classify()
-                if retryable:
-                    _log.info(
-                        "wait_for_summary transient error (%s) — continuing until deadline",
-                        exc,
-                    )
-                    _sleep(poll_interval_s)
-                    continue
-                raise
-            if detail.is_summary:
-                return
-            _sleep(poll_interval_s)
+                if not retryable:
+                    raise
+                _log.info("%s poll transient error (%s); continuing until deadline", what, exc)
+            else:
+                if result is not None:
+                    return result
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PlaudWaitTimeoutError(f"{what} timed out after {int(timeout_s)}s", task_id=task_id)
+            _sleep(min(poll_interval_s, remaining))
 
     def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
         """Return the raw /file/detail payload for debugging."""
+        return self._get_detail_raw(recording_id)
+
+    def _get_detail_raw(self, recording_id: str) -> dict[str, Any]:
+        """GET /file/detail/{id} and unwrap Plaud's ``data`` envelope."""
         data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
         raw = data.get("data", data)
-        # .get() returns Any (the dict value type); the Plaud API always returns
-        # a dict here but the annotation is Any — cast to satisfy warn_return_any.
         return raw if isinstance(raw, dict) else data
 
     def edit_transcript(self, recording_id: str, segments: list[dict[str, Any]]) -> None:
@@ -632,13 +592,20 @@ class PlaudClient:
     def list_trash(self) -> list[Recording]:
         return self.list_recordings(PlaudRecordingQuery(is_trash=1))
 
-    def set_recording_folder(self, recording_id: str, folder_id: str | None) -> None:
+    def set_recording_folder(self, recording_ids: str | list[str], folder_id: str | None) -> None:
+        """Move one or more recordings into *folder_id* (``None`` unfiles them).
+
+        ``/file/update-tags`` takes a ``file_id_list``, so a batch is one request.
+        """
+        ids = [recording_ids] if isinstance(recording_ids, str) else list(recording_ids)
+        if not ids:
+            raise ValueError("recording_ids cannot be empty")
         self._request_json(
             "POST",
             "/file/update-tags",
             strict=True,
             body={
-                "file_id_list": [recording_id],
+                "file_id_list": ids,
                 "filetag_id": folder_id or "",
             },
         )
@@ -674,11 +641,10 @@ class PlaudClient:
             template_type = "AUTO-SELECT"
         if language and "-" in language:
             language = language.split("-")[0]
-        utcoffset = datetime.now().astimezone().utcoffset()
         info = json.dumps(
             {
                 "language": language or "auto",
-                "timezone": -utcoffset.total_seconds() / 3600 if utcoffset is not None else 0,
+                "timezone": _local_utc_offset_hours(),
                 "diarization": 0 if diarization is False else 1,
                 "llm": llm or "auto",
             }
@@ -727,11 +693,7 @@ class PlaudClient:
         if not new_name.strip():
             raise ValueError("new_name cannot be empty")
 
-        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
-        raw = data.get("data", data)
-        segments = self._fetch_transcript_segments(raw)
-        if not segments:
-            raise ValueError(f"recording {recording_id} has no transcript yet")
+        segments = self._editable_segments(recording_id)
 
         # Match the label against BOTH the displayed `speaker` and the
         # `original_speaker` fields.  Plaud auto-resolves enrolled voices, so a
@@ -773,30 +735,39 @@ class PlaudClient:
         if not find:
             raise ValueError("find text cannot be empty")
 
-        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
-        raw = data.get("data", data)
-        segments = self._fetch_transcript_segments(raw)
-        if not segments:
-            raise ValueError(f"recording {recording_id} has no transcript yet")
+        segments = self._editable_segments(recording_id)
 
-        replacements = 0
-        segments_changed = 0
-        next_segments: list[dict[str, Any]] = []
-        for segment in segments:
-            content = segment.get("content") or ""
-            count = content.count(find)
-            if count:
-                replacements += count
-                segments_changed += 1
-                next_segments.append({**segment, "content": content.replace(find, replace)})
-            else:
-                next_segments.append(segment)
-
+        replacements, segments_changed = count_segment_matches(segments, find)
         if replacements == 0:
             raise ValueError(f'no occurrences of "{find}" found in transcript')
 
+        next_segments = [
+            {**segment, "content": segment["content"].replace(find, replace)}
+            if find in (segment.get("content") or "")
+            else segment
+            for segment in segments
+        ]
         self.edit_transcript(recording_id, next_segments)
         return {"replacements": replacements, "segments_changed": segments_changed}
+
+    def count_transcript_matches(self, recording_id: str, find: str) -> int:
+        """Count what ``correct_transcript`` would replace, without editing.
+
+        Same block, same field (segment ``content`` only, never speaker
+        labels), same counting as the real edit, so a dry run's number
+        matches the real run's ``replacements``.
+        """
+        if not find:
+            raise ValueError("find text cannot be empty")
+        replacements, _ = count_segment_matches(self._editable_segments(recording_id), find)
+        return replacements
+
+    def _editable_segments(self, recording_id: str) -> list[dict[str, Any]]:
+        """The editable (``transaction``) transcript segments; ValueError if none."""
+        segments = self._fetch_transcript_segments(self._get_detail_raw(recording_id))
+        if not segments:
+            raise ValueError(f"recording {recording_id} has no transcript yet")
+        return segments
 
     def _get_summary_note(self, recording_id: str) -> tuple[str, str]:
         """Return ``(note_id, current_content)`` for a recording's AI summary.
@@ -808,8 +779,7 @@ class PlaudClient:
 
         Raises ``ValueError`` if the recording has no completed summary.
         """
-        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
-        raw = data.get("data", data)
+        raw = self._get_detail_raw(recording_id)
         note_id: str | None = None
         for item in raw.get("content_list") or []:
             if item.get("data_type") == "auto_sum_note" and item.get("task_status") == 1:
@@ -922,15 +892,8 @@ class PlaudClient:
         last_error: PlaudApiError | None = None
         for attempt in range(_MAX_ATTEMPTS):
             if attempt > 0:
-                # Exponential backoff with ±25 % full jitter.
-                # base_delay doubles each retry: 1 s → 3 s (base * 2^attempt_index
-                # where attempt_index = attempt - 1 for readability, but since
-                # attempt starts at 1 here, base * 2^(attempt-1) gives 1 s, 2 s;
-                # we use _BACKOFF_BASE * (2 ** attempt) which gives 2 s, 4 s —
-                # but we want ~1 s and ~3 s so we use attempt directly:
-                #   attempt=1 → _BACKOFF_BASE * 2^0 = 1 s
-                #   attempt=2 → _BACKOFF_BASE * 2^1 = 2 s  (jittered to ~[1.5, 2.5])
-                # This is intentionally kept simple.  See module-level doc for formula.
+                # Exponential backoff with ±25 % jitter: 1 s before the first
+                # retry, 2 s before the second (see the module-level formula).
                 base_delay = _BACKOFF_BASE * (2 ** (attempt - 1))
                 computed_delay = _jitter(base_delay * 0.75, base_delay * 1.25)
 

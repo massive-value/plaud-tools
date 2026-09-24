@@ -81,10 +81,15 @@ class PlaudApiError(PlaudError):
         — Plaud sends integers here, not HTTP-dates) and stores it as
         ``retry_after`` so the caller can honour it without re-parsing.
         """
+        # The HTTPError *is* the open response; read its body and then close
+        # it, or its socket lingers until GC and emits a ResourceWarning
+        # (which Python 3.14 surfaces far more aggressively).
         try:
             raw_bytes = exc.read()
         except Exception:
             raw_bytes = b""
+        finally:
+            exc.close()
 
         raw_text: str | None = None
         if raw_bytes:
@@ -157,18 +162,16 @@ class PlaudApiError(PlaudError):
     def is_soft_deadline_timeout(self) -> bool:
         """True if this is one of client.py's soft-deadline timeouts (#151).
 
-        Those are raised with no ``http_status`` and a message ending
-        "timed out after Ns" — see ``wait_for_transcription``,
-        ``wait_for_summary``, ``merge_recordings``, and ``upload_recording``.
-        Any other error (auth failure, 404, non-retryable API error) is not a
-        timeout.
+        Only :class:`PlaudWaitTimeoutError` (raised by the client's poll loops
+        when a server-side job outlives the caller's budget) answers True.  A
+        transport-level network timeout is a plain ``PlaudApiError`` with
+        ``network_error=True`` and is NOT a soft deadline: nothing is known to
+        be running server-side, so callers must not report "still processing".
 
-        Lives here rather than in a single facade because both surfaces need
-        it: the MCP maps it to a ``status="still_processing"`` response, and
-        the CLI maps it to exit code 4 so a wrapper script can tell "the job
-        is still running server-side, poll later" from a hard failure.
+        Both surfaces use this: the MCP maps it to a ``still_processing``
+        response, and the CLI maps it to exit code 4.
         """
-        return self.http_status is None and "timed out" in str(self)
+        return False
 
     def classify(self) -> tuple[str, bool]:
         """Return ``(error_code, retryable)`` for this error.
@@ -203,3 +206,23 @@ class PlaudApiError(PlaudError):
         if status is None and self.network_error:
             return "transient", True
         return "api_error", False
+
+
+class PlaudWaitTimeoutError(PlaudApiError):
+    """A poll loop gave up waiting while the Plaud job keeps running (#151).
+
+    Raised by ``PlaudClient`` waits (transcription, summary, merge) when the
+    caller's time budget runs out.  The job itself is still in flight on
+    Plaud's side, so this is "check back later", not a failure.
+
+    ``task_id`` carries Plaud's job handle when there is one (merge's
+    ``/file/combine`` task id) so callers can report it instead of inviting a
+    duplicate re-run.
+    """
+
+    def __init__(self, message: str, *, task_id: str | None = None) -> None:
+        super().__init__(message)
+        self.task_id = task_id
+
+    def is_soft_deadline_timeout(self) -> bool:
+        return True

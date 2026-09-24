@@ -116,7 +116,7 @@ must carry explicit evidence of consent through the call.
 
 **Region-redirect bound.** Plaud's `-302` region-redirect is followed at most once per request. A second `-302` raises `PlaudApiError("region redirect loop")`.
 
-**Retry / backoff (Wave 2 / C5).** HTTP 429 and 5xx responses are retried up to twice with exponential backoff + ±25 % jitter (base ≈ 1 s → 3 s). When the server supplies a `Retry-After` header the client sleeps the larger of the header value and the computed delay. The transcription, summary, and merge poll loops treat a transient error as a skipped poll and continue until their deadline instead of aborting early.
+**Retry / backoff (Wave 2 / C5).** HTTP 429 and 5xx responses are retried up to twice with exponential backoff + ±25 % jitter (1 s, then 2 s). When the server supplies a `Retry-After` header the client sleeps the larger of the header value and the computed delay. The transcription, summary, and merge poll loops treat a transient error as a skipped poll and continue until their deadline instead of aborting early.
 
 ## Browse and upload behavior
 

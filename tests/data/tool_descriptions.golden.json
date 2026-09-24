@@ -2,6 +2,7 @@
   {
     "description": "Page through Plaud recordings with optional filters.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "after": {
           "default": 0,
@@ -16,6 +17,7 @@
         "limit": {
           "default": 20,
           "description": "Max results per page",
+          "maximum": 200,
           "minimum": 1,
           "type": "integer"
         },
@@ -44,6 +46,7 @@
   {
     "description": "Fetch full detail for one recording. Transcripts are paged: while transcript_has_more, call again with transcript_after=transcript_next_after. A changed transcript_fingerprint between pages means it was edited; restart from 0.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "include": {
           "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",
@@ -95,6 +98,7 @@
   {
     "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "action": {
           "enum": [
@@ -139,6 +143,7 @@
   {
     "description": "Permanently and irreversibly delete a recording.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "confirm": {
           "description": "Must be true; set only after the human has explicitly confirmed the permanent deletion.",
@@ -159,6 +164,7 @@
   {
     "description": "Edit a recording's transcript. action='rename_speaker' relabels a speaker across all segments; action='correct' does a literal find-and-replace on transcript text (dry_run=true previews the match count).",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "action": {
           "enum": [
@@ -200,8 +206,9 @@
     "name": "edit_transcript"
   },
   {
-    "description": "Upload a local audio file to Plaud.",
+    "description": "Upload a local audio file to Plaud; returns the new recording_id.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "file_path": {
           "description": "Absolute path to the audio file",
@@ -237,6 +244,7 @@
   {
     "description": "List Plaud folders, returning id, name, color, and icon for each.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
@@ -245,6 +253,7 @@
   {
     "description": "Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript).",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "diarization": {
           "description": "Enable speaker diarization",
@@ -267,7 +276,7 @@
         },
         "wait": {
           "default": "transcript",
-          "description": "How long to block: none/transcript/summary; waits are bounded and return status='still_processing' if not done in time \u2014 poll get_recording or retry.",
+          "description": "How long to block: none/transcript/summary. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",
           "enum": [
             "none",
             "transcript",
@@ -284,8 +293,9 @@
     "name": "process_recording"
   },
   {
-    "description": "Merge two or more recordings into a single new recording, blocking until the merge job completes.",
+    "description": "Merge two or more recordings into one new recording. If not done within ~90s, returns status='still_processing' with the merge job id; do not call again (it would merge twice).",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "recording_ids": {
           "description": "IDs to merge in order (minimum 2)",
@@ -310,6 +320,7 @@
   {
     "description": "Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "action": {
           "enum": [
@@ -349,6 +360,7 @@
   {
     "description": "Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",
     "inputSchema": {
+      "additionalProperties": false,
       "properties": {
         "action": {
           "enum": [

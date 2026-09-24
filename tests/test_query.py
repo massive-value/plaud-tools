@@ -79,10 +79,12 @@ class TestParseIsoish:
         expected_ms = int(dt_expected.timestamp() * 1000)
         assert result == expected_ms
 
-    def test_end_of_day_on_full_datetime_does_not_mutate_time(self):
-        # end_of_day only applies when "T" is absent from the value.
-        result_with = parse_isoish("2024-01-15T08:00:00+00:00", "until", end_of_day=True)
-        result_without = parse_isoish("2024-01-15T08:00:00+00:00", "until", end_of_day=False)
+    @pytest.mark.parametrize("value", ["2024-01-15T08:00:00+00:00", "2024-01-15 08:00"])
+    def test_end_of_day_on_full_datetime_does_not_mutate_time(self, value):
+        # end_of_day only applies to date-only input; a space-separated time
+        # used to be pushed to 23:59:59 because it lacked a "T".
+        result_with = parse_isoish(value, "until", end_of_day=True)
+        result_without = parse_isoish(value, "until", end_of_day=False)
         assert result_with == result_without
 
     def test_end_of_day_false_on_bare_date(self):
