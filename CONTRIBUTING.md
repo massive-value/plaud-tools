@@ -12,10 +12,11 @@ cd plaud-tools
 pip install -e ".[dev,tray]"
 ```
 
-The `dev` extra installs `pytest`, `pyinstaller`, `build`, `mypy`, and
-`mcp[cli]`. The `tray` extra installs the optional Windows tray dependencies
-(`pystray`, `Pillow`, `sv-ttk`). On non-Windows hosts you can drop the `tray`
-extra.
+The `dev` extra installs `pytest`, `pyinstaller`, `build`, `mypy`, and `ruff`
+(the latter two pinned exact versions so `ruff check`/`format` and `mypy`
+match what CI enforces). The `tray` extra installs the optional Windows tray
+dependencies (`pystray`, `Pillow`, `sv-ttk`, `comtypes`). On non-Windows hosts
+you can drop the `tray` extra.
 
 Equivalent with [uv](https://docs.astral.sh/uv/) (faster, and what CI's
 `constraints/*.txt` files are compiled with):
@@ -83,7 +84,7 @@ live tests don't disturb your normal login.
 
 ## Branching and PR workflow
 
-- Branch off `master` with a descriptive name (e.g. `fix-folder-clear`,
+- Branch off `main` with a descriptive name (e.g. `fix-folder-clear`,
   `issue-12-merge-progress`).
 - Keep PRs focused — one logical change per PR. Smaller diffs review faster.
 - Run `pytest -q` locally before pushing. CI will run it again on the PR.
