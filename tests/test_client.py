@@ -4,14 +4,16 @@ import base64
 import gzip
 import io
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
 
 import plaud_tools.core.client as client_mod
 from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery
-from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError
+from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
 from plaud_tools.core.transport import HttpResponse
 
@@ -750,6 +752,22 @@ def test_correct_transcript_replaces_text_and_patches(tmp_path):
     assert write_body["trans_result"][0]["speaker"] == "A"
 
 
+def test_count_transcript_matches_counts_content_not_speaker_labels(tmp_path):
+    """The dry-run count must equal what correct_transcript would replace.
+
+    It used to count on the formatted transcript, so a speaker named "Ann"
+    inflated the count for find="Ann" even though labels are never edited.
+    """
+    manager, _ = make_manager(tmp_path)
+    segments = [
+        {"content": "Ann said hi to Ann", "speaker": "Ann", "original_speaker": "Speaker 1"},
+        {"content": "bye", "speaker": "Ann", "original_speaker": "Speaker 1"},
+    ]
+    client = PlaudClient(manager, transport=_detail_and_transcript_transport(segments))
+    assert client.count_transcript_matches("rec1", "Ann") == 2
+    assert len(client._transport.calls) == 2  # read-only: detail + transcript link, no PATCH
+
+
 def test_correct_transcript_rejects_no_match(tmp_path):
     manager, _ = make_manager(tmp_path)
     transport = _detail_and_transcript_transport(
@@ -1107,7 +1125,12 @@ def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
     assert info["llm"] == "auto"
 
 
-def test_transcribe_and_summarize_honors_overrides(tmp_path):
+def test_transcribe_and_summarize_honors_overrides(tmp_path, monkeypatch):
+    # Pin the machine to US Central (UTC-6).  Plaud's web app sends -6 for it,
+    # the plain UTC offset, not JavaScript's inverted getTimezoneOffset().
+    central = datetime(2026, 1, 5, 12, tzinfo=timezone(timedelta(hours=-6)))
+    fake_now = SimpleNamespace(astimezone=lambda: central)
+    monkeypatch.setattr(client_mod, "datetime", SimpleNamespace(now=lambda: fake_now))
     manager, _ = make_manager(tmp_path)
     transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
     client = PlaudClient(manager, transport=transport)
@@ -1119,7 +1142,7 @@ def test_transcribe_and_summarize_honors_overrides(tmp_path):
     info = json.loads(body["info"])
     assert info == {
         "language": "en",
-        "timezone": info["timezone"],
+        "timezone": -6.0,
         "diarization": 0,
         "llm": "gpt-5",
     }
@@ -1341,6 +1364,19 @@ def test_session_cache_update_region_updates_cache_and_store(tmp_path):
     # store.load() should have been called at most once more during update_region
     # (to read current token), but NOT again after cache is repopulated.
     assert counting_store.load_count <= initial_load_count + 1
+
+
+def test_update_region_does_not_persist_env_token_session(monkeypatch):
+    """A PLAUD_ACCESS_TOKEN session must not be written over the user's real
+    stored login when a -302 changes the region; the region lives in memory."""
+    env_token = make_jwt()
+    monkeypatch.setenv("PLAUD_ACCESS_TOKEN", env_token)
+    store = CountingStore(PlaudSession(access_token=env_token, region="us"))
+    manager = SessionManager(store)
+
+    assert manager.update_region("eu").region == "eu"
+    assert store.save_count == 0
+    assert manager.require().region == "eu"
 
 
 def test_session_cache_region_failover_loads_store_at_most_twice(tmp_path):
@@ -1932,148 +1968,52 @@ class TestAudioDownload:
 
 
 class TestPollLoopSurvival:
-    """Poll loops must survive transient errors and abort on non-transient ones."""
+    """PlaudClient._poll_until backs the transcription, summary, and merge waits."""
 
-    def _recording_response(self, is_trans: bool = True, is_summary: bool = True) -> HttpResponse:
-        return HttpResponse(
-            200,
-            json.dumps(
-                {
-                    "status": 0,
-                    "data": {
-                        "file_id": "rec1",
-                        "file_name": "Test",
-                        "content_list": [
-                            {"data_type": "transaction", "task_status": 1 if is_trans else 0},
-                            {"data_type": "auto_sum_note", "task_status": 1 if is_summary else 0},
-                        ],
-                    },
-                }
-            ).encode(),
-            {},
+    def test_skips_transient_errors_then_returns_result(self, tmp_path, monkeypatch):
+        """A 429 and a network blip count as skipped polls, not failures."""
+        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
+        outcomes = iter(
+            [
+                _transient_error(429),
+                PlaudApiError("Plaud API request timed out after 30.0s", network_error=True),
+                None,
+                "done",
+            ]
         )
 
-    def test_wait_for_transcription_survives_one_transient_error(self, tmp_path, monkeypatch):
-        """A single 429 during the poll must be skipped, not abort the wait."""
-        manager, _ = make_manager(tmp_path)
-        # First poll: 429 (transient). Second poll: recording ready.
-        transport = StubTransport([_transient_error(429), self._recording_response(is_trans=True)])
+        def check():
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
 
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+        assert client._poll_until(check, what="job", timeout_s=60, poll_interval_s=0) == "done"
 
-        client = PlaudClient(manager, transport=transport)
-        # Must complete without raising.
-        client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
-        # Transport was called twice: once for the transient, once for success.
-        assert len(transport.calls) == 2
-
-    def test_wait_for_transcription_survives_one_network_blip(self, tmp_path, monkeypatch):
-        """#143: a raw transport-level failure (e.g. a socket timeout, no HTTP
-        status at all) during the poll must also be skipped, not abort a
-        multi-minute transcription wait that is still succeeding server-side.
-        Before the fix, network_error-flagged errors classified as
-        ("api_error", False) and aborted the wait on the very first blip."""
-        manager, _ = make_manager(tmp_path)
-        network_blip = PlaudApiError("Plaud API request timed out after 30.0s", network_error=True)
-        transport = StubTransport([network_blip, self._recording_response(is_trans=True)])
-
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
-        assert len(transport.calls) == 2
-
-    def test_wait_for_transcription_propagates_non_transient_error(self, tmp_path, monkeypatch):
-        """A non-transient error (e.g. 404) during the poll must propagate."""
-        manager, _ = make_manager(tmp_path)
+    def test_non_transient_error_propagates(self, tmp_path):
+        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
         err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"not found"))
-        transport = StubTransport([err_404])
 
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+        def check():
+            raise err_404
 
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.wait_for_transcription("rec1", timeout_s=60.0, poll_interval_s=0.0)
+        with pytest.raises(PlaudApiError) as info:
+            client._poll_until(check, what="job", timeout_s=60, poll_interval_s=0)
+        assert info.value is err_404
 
-        assert len(transport.calls) == 1
+    def test_timeout_checks_once_then_raises_wait_timeout(self, tmp_path):
+        """Even a zero budget polls once; then it's a soft deadline, not a failure."""
+        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
+        calls = []
 
-    def test_wait_for_summary_survives_one_transient_error(self, tmp_path, monkeypatch):
-        """A single 503 during the summary poll must be skipped."""
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([_transient_error(503), self._recording_response(is_summary=True)])
-
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        client.wait_for_summary("rec1", timeout_s=60.0, poll_interval_s=0.0)
-        assert len(transport.calls) == 2
-
-    def test_wait_for_summary_propagates_non_transient_error(self, tmp_path, monkeypatch):
-        """A non-transient error (e.g. 401) during the summary poll must propagate."""
-        manager, _ = make_manager(tmp_path)
-        err_401 = PlaudApiError.from_http_error(_make_http_error(401, b"unauthorized"))
-        transport = StubTransport([err_401])
-
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.wait_for_summary("rec1", timeout_s=60.0, poll_interval_s=0.0)
-
-        assert len(transport.calls) == 1
-
-    def test_merge_poll_survives_one_transient_error(self, tmp_path, monkeypatch):
-        """A transient error during a merge poll must be skipped, not abort."""
-        manager, _ = make_manager(tmp_path)
-
-        combine_response = HttpResponse(
-            200,
-            json.dumps({"status": 0, "task_id": "task123"}).encode(),
-            {},
-        )
-        poll_transient = _transient_error(429)
-        poll_success = HttpResponse(
-            200,
-            json.dumps(
-                {
-                    "status": 0,
-                    "data": {
-                        "status": "success",
-                        "file": {"file_id": "merged1", "file_name": "merged", "start_time": 0},
-                    },
-                }
-            ).encode(),
-            {},
-        )
-
-        transport = StubTransport([combine_response, poll_transient, poll_success])
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        result = client.merge_recordings(["id1", "id2"], "merged")
-        # Should return the merged recording detail without aborting on the 429.
-        assert result.id == "merged1"
-        assert len(transport.calls) == 3
-
-    def test_merge_poll_propagates_non_transient_error(self, tmp_path, monkeypatch):
-        """A non-transient error during a merge poll must propagate immediately."""
-        manager, _ = make_manager(tmp_path)
-
-        combine_response = HttpResponse(
-            200,
-            json.dumps({"status": 0, "task_id": "task123"}).encode(),
-            {},
-        )
-        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"task not found"))
-
-        transport = StubTransport([combine_response, err_404])
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.merge_recordings(["id1", "id2"], "merged")
-
-        assert len(transport.calls) == 2
+        with pytest.raises(PlaudWaitTimeoutError, match="job timed out after 0s") as info:
+            client._poll_until(
+                lambda: calls.append(1), what="job", timeout_s=0, poll_interval_s=0, task_id="t1"
+            )
+        assert calls == [1]
+        assert info.value.task_id == "t1"
+        assert info.value.is_soft_deadline_timeout()
 
 
 class TestRedirectAndRetryComposition:

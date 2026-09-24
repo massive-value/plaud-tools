@@ -56,7 +56,7 @@ properties:
   `_MAX_ATTEMPTS = 3`.
 - **Backoff:** exponential with ±25 % full jitter.
   - Attempt 0 → retry 1: base ≈ 1 s, actual ∈ [0.75, 1.25] s.
-  - Attempt 1 → retry 2: base ≈ 3 s, actual ∈ [2.25, 3.75] s.
+  - Attempt 1 → retry 2: base 2 s, actual ∈ [1.5, 2.5] s.
 - **`Retry-After` header:** when present, the client sleeps
   `max(computed_delay, retry_after)` so it never retries faster than the
   server's hint.

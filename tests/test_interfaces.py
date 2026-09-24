@@ -76,7 +76,7 @@ class StubClient:
             raw={},
         )
 
-    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None, **kwargs):
+    def upload_recording(self, path, filename, file_type, *, start_time=None, timezone_offset=None, **kwargs):
         from plaud_tools.core.models import Recording
 
         return Recording(
@@ -126,8 +126,8 @@ class StubClient:
     def list_file_tags(self):
         return [FileTag(id="tag1", name="Work", color="#191919", icon="e627")]
 
-    def set_recording_folder(self, recording_id, folder_id):
-        self.move_call = (recording_id, folder_id)
+    def set_recording_folder(self, recording_ids, folder_id):
+        self.move_call = (recording_ids, folder_id)
 
     def list_trash(self):
         return [
@@ -1028,11 +1028,11 @@ def test_cli_main_soft_deadline_timeout_exits_timeout(capsys, monkeypatch):
     them a plain "api_error" — without the explicit check in main() they would
     exit 1 and a polling wrapper could not tell them from a hard error.
     """
-    from plaud_tools.core.errors import PlaudApiError
+    from plaud_tools.core.errors import PlaudWaitTimeoutError
 
     class SlowClient:
         def list_recordings(self, query=None):
-            raise PlaudApiError("transcription timed out after 90s")
+            raise PlaudWaitTimeoutError("transcription timed out after 90s")
 
     code = _run_main_with_client(monkeypatch, SlowClient(), ["list"])
     assert code == 4
@@ -1205,7 +1205,8 @@ def test_mcp_list_folders_returns_tags():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["list_folders"]()
     payload = json.loads(result["content"][0]["text"])
-    assert payload == [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]
+    assert payload == {"folders": [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]}
+    assert result["structuredContent"] == payload
 
 
 def test_mcp_list_folders_returns_empty_when_no_tags():
@@ -1216,7 +1217,7 @@ def test_mcp_list_folders_returns_empty_when_no_tags():
     handlers = build_handlers(lambda: EmptyClient())
     result = handlers["list_folders"]()
     payload = json.loads(result["content"][0]["text"])
-    assert payload == []
+    assert payload == {"folders": []}
 
 
 def test_mcp_list_folders_returns_session_error_when_client_missing():
@@ -1258,7 +1259,7 @@ def test_mcp_mutate_recording_move():
     result = handlers["mutate_recording"]("rec1", "move", folder_id="tag1")
     payload = json.loads(result["content"][0]["text"])
     assert payload == {"ok": True, "recording_id": "rec1", "folder_id": "tag1"}
-    assert client.move_call == ("rec1", "tag1")
+    assert client.move_call == (["rec1"], "tag1")
 
 
 def test_mcp_mutate_recording_move_clears_folder_with_empty_string():
@@ -1267,7 +1268,7 @@ def test_mcp_mutate_recording_move_clears_folder_with_empty_string():
     result = handlers["mutate_recording"]("rec1", "move", folder_id="")
     payload = json.loads(result["content"][0]["text"])
     assert payload["folder_id"] is None
-    assert client.move_call == ("rec1", None)
+    assert client.move_call == (["rec1"], None)
 
 
 def test_mcp_mutate_recording_move_clears_folder_with_clear_folder_flag():
@@ -1276,7 +1277,7 @@ def test_mcp_mutate_recording_move_clears_folder_with_clear_folder_flag():
     result = handlers["mutate_recording"]("rec1", "move", folder_id="tag1", clear_folder=True)
     payload = json.loads(result["content"][0]["text"])
     assert payload["folder_id"] is None
-    assert client.move_call == ("rec1", None)
+    assert client.move_call == (["rec1"], None)
 
 
 def test_mcp_mutate_recording_delete_is_unknown_action():

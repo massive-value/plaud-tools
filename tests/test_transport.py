@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
+import ssl
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
@@ -299,3 +301,22 @@ class TestUrllibTransportTimeoutErrors:
                 transport.request("GET", "https://example.com/api", {})
 
         assert exc_info.value.network_error is False
+
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            ConnectionResetError(10054, "An existing connection was forcibly closed"),
+            http.client.IncompleteRead(b"partial", 100),
+            ssl.SSLError("record layer failure"),
+        ],
+    )
+    def test_mid_connection_failures_are_transient_network_errors(self, raised):
+        """Failures after the socket opened must not escape raw: GET retries and
+        poll loops only recognise PlaudApiError(network_error=True)."""
+        with patch("plaud_tools.core.transport.urlopen", side_effect=raised):
+            with pytest.raises(PlaudApiError) as exc_info:
+                UrllibTransport().request("GET", "https://example.com/api", {})
+
+        assert exc_info.value.network_error is True
+        assert exc_info.value.classify() == ("transient", True)

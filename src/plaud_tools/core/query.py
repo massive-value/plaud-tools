@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 
@@ -81,15 +81,28 @@ def parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> in
     Reconciliation note: cli.py called the parameter ``flag`` while mcp.py used
     ``field_name``; both produced the same error message pattern so ``field_name``
     is kept as the canonical name.
+
+    ``end_of_day`` applies only to date-only input ("2026-01-05" means through
+    23:59:59.999 that day); an explicit time such as "2026-01-05 10:00" is
+    taken as given.
     """
     try:
         normalized = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
-        if end_of_day and "T" not in value:
+        if end_of_day and _is_date_only(value):
             dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
         return int(dt.timestamp() * 1000)
     except ValueError as exc:
         raise ValueError(f"Invalid {field_name} value: {value}") from exc
+
+
+def _is_date_only(value: str) -> bool:
+    """True when *value* is a bare ISO date with no time part."""
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def filter_recordings(
@@ -155,7 +168,12 @@ def collect_filtered_paged(
     for the given upstream window.  Paging stops when either:
     - ``after + limit + 1`` filtered matches have been collected (enough to
       resolve ``has_more`` without over-fetching), or
-    - the upstream returns fewer than ``page_size`` items (list exhausted).
+    - the upstream returns fewer than ``page_size`` items (list exhausted), or
+    - with ``since_ms`` set, a batch reaches back past ``since_ms``.  This
+      relies on ``fetch_page`` returning newest-first (``sort_by=start_time``,
+      ``is_desc=True``, as both callers request): every later page is older
+      still, so none of it can match.  Without it, a narrow date filter on a
+      big library scanned the whole library.
 
     ``limit=None`` means "everything": paging only stops at upstream
     exhaustion (backs CLI ``list --all``), and ``has_more`` is always False.
@@ -190,6 +208,8 @@ def collect_filtered_paged(
         )
         matched.extend(filtered)
         if len(batch) < page_size:
+            break
+        if since_ms is not None and min(item.start_time for item in batch) < since_ms:
             break
         upstream_skip += page_size
 
