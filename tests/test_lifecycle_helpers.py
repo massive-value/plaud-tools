@@ -375,11 +375,11 @@ class TestSetupPsCompletions:
         profile = profile_dir / "Microsoft.PowerShell_profile.ps1"
         assert profile.exists()
         content = profile.read_text(encoding="utf-8")
-        assert f'. "{completions / "plaud-tools.ps1"}"' in content
+        assert tray_helpers._guarded_source_line(completions / "plaud-tools.ps1") in content
 
     def test_idempotent_when_line_already_present(self, tray_helpers, tmp_path, monkeypatch):
         completions = self._make_completions_dir(tmp_path)
-        source_line = f'. "{completions / "plaud-tools.ps1"}"'
+        source_line = tray_helpers._guarded_source_line(completions / "plaud-tools.ps1")
         profile_dir = tmp_path / "Documents" / "PowerShell"
         profile_dir.mkdir(parents=True)
         profile = profile_dir / "Microsoft.PowerShell_profile.ps1"
@@ -409,8 +409,12 @@ class TestSetupPsCompletions:
         canonical_completions = _patch_home(monkeypatch, tray_helpers, tmp_path)
         # Stale line points at the canonical install dir, so it should be stripped.
         stale_line = f'. "{canonical_completions / "plaud.ps1"}"'
-        # Unrelated line points elsewhere and must be preserved.
-        unrelated_line = '. "/opt/plaud/completions/plaud.ps1"'
+        # Unrelated line points at a script that exists elsewhere and must be
+        # preserved.  (A line whose target is gone is broken and is removed.)
+        other_ps1 = tmp_path / "opt" / "plaud" / "completions" / "plaud.ps1"
+        other_ps1.parent.mkdir(parents=True)
+        other_ps1.write_text("# someone else's", encoding="utf-8")
+        unrelated_line = f'. "{other_ps1}"'
         profile.write_text(stale_line + "\n" + unrelated_line + "\n", encoding="utf-8")
 
         monkeypatch.setattr(tray_helpers, "_completions_dir", lambda: completions)
@@ -516,6 +520,33 @@ class TestRemovePsCompletions:
             content = profile.read_text(encoding="utf-8")
             assert plaud_line not in content
 
+    def test_removes_internal_lines_from_onedrive_and_home_profiles(
+        self, tray_uninstall_helpers, tmp_path, monkeypatch
+    ):
+        """The real bundle's line lives under _internal and, on OneDrive
+        machines, in the redirected Documents profile. Both old and guarded
+        formats must go from both locations, leaving the user's own lines."""
+        from plaud_tools.tray import setup as setup_mod
+
+        completions = _patch_home(monkeypatch, tray_uninstall_helpers, tmp_path)
+        real_ps1 = completions.parent / "_internal" / "completions" / "plaud-tools.ps1"
+        onedrive = tmp_path / "OneDrive" / "Documents"
+        monkeypatch.setattr(setup_mod, "_known_documents_dir", lambda: onedrive)
+        profiles = [
+            onedrive / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+            tmp_path / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+        ]
+        for profile in profiles:
+            profile.parent.mkdir(parents=True)
+            profile.write_text(
+                f'# mine\n. "{real_ps1}"\n{setup_mod._guarded_source_line(real_ps1)}\n', encoding="utf-8"
+            )
+
+        tray_uninstall_helpers._remove_ps_completions()
+
+        for profile in profiles:
+            assert profile.read_text(encoding="utf-8") == "# mine\n"
+
 
 # ---------------------------------------------------------------------------
 # _delete_session_files
@@ -563,80 +594,60 @@ class TestDeleteSessionFiles:
 
 
 class TestDeleteLogFiles:
-    """Tests for _delete_log_files — removes tray.log* from both log dirs."""
+    """Tests for _delete_log_files — removes only tray.log* / mcp.log* from PlaudTools."""
 
-    def test_deletes_log_files_from_plaud_dir(self, tray_uninstall_helpers, tmp_path, monkeypatch):
-        log_dir = tmp_path / "Plaud"
-        log_dir.mkdir()
-        log1 = log_dir / "tray.log"
-        log1.write_text("log content", encoding="utf-8")
-        log2 = log_dir / "tray.log.1"
-        log2.write_text("rotated", encoding="utf-8")
-
-        # appdata.data_dir() branches on sys.platform; pin to win32 so the
-        # LOCALAPPDATA env-var override is honoured on all platforms (Linux and
-        # macOS otherwise use platformdirs which ignores LOCALAPPDATA).
+    @pytest.fixture()
+    def data_dir(self, tmp_path, monkeypatch):
+        # Pin sys.platform to win32 so data_dir() honours LOCALAPPDATA on
+        # every CI platform (macOS/Linux would otherwise use platformdirs).
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        d = tmp_path / "PlaudTools"
+        d.mkdir()
+        return d
+
+    def test_deletes_tray_and_mcp_logs_including_rotations(self, tray_uninstall_helpers, data_dir):
+        names = ["tray.log", "tray.log.1", "mcp.log", "mcp.log.3"]
+        for name in names:
+            (data_dir / name).write_text("x", encoding="utf-8")
+
         tray_uninstall_helpers._delete_log_files()
 
-        assert not log1.exists()
-        assert not log2.exists()
+        assert not any((data_dir / n).exists() for n in names)
 
-    def test_deletes_log_files_from_plaud_tools_dir(self, tray_uninstall_helpers, tmp_path, monkeypatch):
-        log_dir = tmp_path / "PlaudTools"
-        log_dir.mkdir()
-        log_file = log_dir / "tray.log"
-        log_file.write_text("log", encoding="utf-8")
+    def test_keeps_session_credentials_and_other_files(self, tray_uninstall_helpers, data_dir):
+        keep = ["session.json", "session.dat", "events.jsonl"]
+        for name in keep:
+            (data_dir / name).write_text("x", encoding="utf-8")
+        (data_dir / "tray.log").write_text("x", encoding="utf-8")
 
-        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
-        # platforms; without this macOS would resolve to ~/Library/... and the
-        # log file under tmp_path would never be found and deleted.
+        tray_uninstall_helpers._delete_log_files()
+
+        assert all((data_dir / n).exists() for n in keep)
+        assert data_dir.exists()
+
+    def test_never_touches_official_plaud_app_folder(self, tray_uninstall_helpers, data_dir, tmp_path):
+        official = tmp_path / "Plaud"
+        official.mkdir()
+        (official / "tray.log").write_text("not ours", encoding="utf-8")
+
+        tray_uninstall_helpers._delete_log_files()
+
+        assert (official / "tray.log").exists()
+
+    def test_noop_when_data_dir_absent(self, tray_uninstall_helpers, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_uninstall_helpers._delete_log_files()
+        tray_uninstall_helpers._delete_log_files()  # must not raise
 
-        assert not log_file.exists()
+    def test_uninstall_ps1_deletes_the_same_patterns(self, tray_uninstall_helpers):
+        """uninstall.ps1 finishes the job after the tray exits; its patterns
+        must match the Python list exactly."""
+        from plaud_tools.tray.ps1_templates import scripts_dir
 
-    def test_deletes_from_both_dirs(self, tray_uninstall_helpers, tmp_path, monkeypatch):
-        for name in ("Plaud", "PlaudTools"):
-            d = tmp_path / name
-            d.mkdir()
-            (d / "tray.log").write_text("x", encoding="utf-8")
-
-        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
-        # platforms; without this macOS would resolve to ~/Library/... and the
-        # log files under tmp_path would never be found and deleted.
-        monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_uninstall_helpers._delete_log_files()
-
-        for name in ("Plaud", "PlaudTools"):
-            assert not (tmp_path / name / "tray.log").exists()
-
-    def test_preserves_non_log_files(self, tray_uninstall_helpers, tmp_path, monkeypatch):
-        log_dir = tmp_path / "Plaud"
-        log_dir.mkdir()
-        keeper = log_dir / "config.json"
-        keeper.write_text("{}", encoding="utf-8")
-        (log_dir / "tray.log").write_text("x", encoding="utf-8")
-
-        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
-        # platforms (macOS would otherwise use platformdirs and skip tmp_path).
-        monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        tray_uninstall_helpers._delete_log_files()
-
-        assert keeper.exists()
-
-    def test_noop_when_log_dirs_absent(self, tray_uninstall_helpers, tmp_path, monkeypatch):
-        # Pin sys.platform to win32 so data_dir() uses LOCALAPPDATA on all
-        # platforms; the test verifies no exception is raised regardless of
-        # whether the directories exist.
-        monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        # Neither Plaud nor PlaudTools directories exist — should not raise
-        tray_uninstall_helpers._delete_log_files()
+        content = (scripts_dir() / "uninstall.ps1").read_text(encoding="utf-8")
+        expected = ", ".join(f"'{g}'" for g in tray_uninstall_helpers._LOG_FILE_GLOBS)
+        assert f"@({expected})" in content
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +701,7 @@ class TestRenderedPs1NoStrayPaths:
         result = render_uninstall_ps1(
             tray_pid=99,
             install_dir=self.INSTALL_DIR,
-            log_dirs=[r"C:\Users\foo\AppData\Local\PlaudTools"],
+            log_dir=r"C:\Users\foo\AppData\Local\PlaudTools",
         )
         assert self.INSTALL_DIR in result
         # Arbitrary other install dir must not appear
@@ -802,13 +813,10 @@ class TestRenderUninstallPs1Snapshot:
     def test_rendered_ends_with_newline(self):
         assert self._render().endswith("\n")
 
-    def test_rendered_log_dirs_semicolon_separated(self):
+    def test_rendered_passes_log_dir_and_dispatcher(self):
         result = self._render(
-            log_dirs=[
-                r"C:\Users\foo\AppData\Local\PlaudTools",
-                r"C:\Users\foo\AppData\Local\Plaud",
-            ]
+            log_dir=r"C:\Users\foo\AppData\Local\PlaudTools",
+            dispatcher_path=r"C:\Temp\plaud_uninstall_999.ps1",
         )
-        # Semicolon joins them
-        assert "PlaudTools;" in result or ";C:" in result
-        assert "-LogDirs" in result
+        assert r"-LogDir 'C:\Users\foo\AppData\Local\PlaudTools'" in result
+        assert r"-DispatcherPath 'C:\Temp\plaud_uninstall_999.ps1'" in result

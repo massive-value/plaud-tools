@@ -130,6 +130,105 @@ function Get-ZipExtractDestination {
     }
 }
 
+# Strip any pre-release suffix (e.g. "0.3.0-rc1" -> "0.3.0") before casting
+# to [version] so that numeric comparison is always used and a pre-release tag
+# is never ranked above or equal to the same numeric release.
+function Get-NumericVersion {
+    param([string]$v)
+    # Remove leading 'v', then strip everything from the first '-' onward.
+    $numeric = $v.TrimStart('v') -replace '-.*$', ''
+    return [version]$numeric
+}
+
+# Return the installed PlaudTools.exe version as [version], or $null when it
+# cannot be read. A corrupt or quarantined exe has no VersionInfo, and calling
+# .Trim() on the null FileVersion used to crash the installer with "You cannot
+# call a method on a null-valued expression" - exactly the -Repair case.
+function Get-InstalledVersion {
+    param([string]$ExePath)
+    try {
+        $raw = (Get-Item -LiteralPath $ExePath -ErrorAction Stop).VersionInfo.FileVersion
+        if (-not $raw) { return $null }
+        return Get-NumericVersion $raw.Trim()
+    } catch {
+        return $null
+    }
+}
+
+# Return the expected hash (upper-case hex) for $FileName from SHA256SUMS text,
+# or $null if the file is not listed. Standard sha256sum format, one
+# "<hex>  <name>" (or "<hex> *<name>") per line; other lines are ignored.
+function Get-ExpectedHash {
+    param([string]$SumsText, [string]$FileName)
+    foreach ($line in ($SumsText -split "`r?`n")) {
+        if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+            if ($Matches[2] -eq $FileName) { return $Matches[1].ToUpper() }
+        }
+    }
+    return $null
+}
+
+# Stop every process whose exe lives under $InstallDir (tray, plaud-mcp,
+# ffmpeg, the CLI) and confirm they stay dead. Retries because an MCP client
+# such as Claude Desktop respawns plaud-mcp right after it is killed. Returns
+# $true once nothing has been running for $StableMs. Mirrors update.ps1's
+# Stop-PlaudMcpScoped.
+function Stop-ScopedProcesses {
+    param(
+        [string]$InstallDir,
+        [int]$MaxAttempts = 8,
+        [int]$StableMs = 500
+    )
+
+    $scope = $InstallDir.TrimEnd('\').TrimEnd('/').ToLower() + '\'
+
+    $findProcs = {
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.ToLower().StartsWith($scope)
+        }
+    }
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $procs = & $findProcs
+        if (-not $procs) {
+            # Nothing alive - wait $StableMs to make sure nobody respawns it.
+            Start-Sleep -Milliseconds $StableMs
+            if (-not (& $findProcs)) {
+                return $true
+            }
+            continue
+        }
+
+        # Ask nicely first (gives the tray a chance to exit cleanly).
+        foreach ($p in $procs) {
+            try { $p.CloseMainWindow() | Out-Null } catch {}
+        }
+        Start-Sleep -Milliseconds 500
+        $procs = & $findProcs
+        if ($procs) {
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    return $false
+}
+
+# Shut down everything running from $InstallDir, then delete it, retrying
+# (and re-killing) when a respawned process still holds a file. Throws with
+# a clear message if the folder cannot be removed.
+function Remove-InstallDir {
+    param([string]$InstallDir, [int]$MaxAttempts = 5)
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Stop-ScopedProcesses -InstallDir $InstallDir | Out-Null
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $InstallDir)) { return }
+        Start-Sleep -Seconds 1
+    }
+    throw "Could not remove $InstallDir because a file in it is still in use. Close Claude Desktop (and any other AI client that uses Plaud Tools), then run the installer again."
+}
+
 try {
     $installDir = Join-Path $env:LOCALAPPDATA 'Programs\PlaudTools'
     $exePath    = Join-Path $installDir 'PlaudTools.exe'
@@ -147,43 +246,36 @@ try {
 
     Write-Host "    Latest: v$latestVersion - PlaudTools.zip ($([math]::Round($asset.size / 1MB, 1)) MB)"
 
-    # Strip any pre-release suffix (e.g. "0.3.0-rc1" -> "0.3.0") before casting
-    # to [version] so that numeric comparison is always used and a pre-release tag
-    # is never ranked above or equal to the same numeric release.
-    function Get-NumericVersion {
-        param([string]$v)
-        # Remove leading 'v', then strip everything from the first '-' onward.
-        $numeric = $v.TrimStart('v') -replace '-.*$', ''
-        return [version]$numeric
-    }
-
     # --- Guard: handle existing installs ---
     if (Test-Path $exePath) {
-        $installedVersion = (Get-Item $exePath).VersionInfo.FileVersion.Trim()
-        $installedVerNum  = Get-NumericVersion $installedVersion
-        $latestVerNum     = Get-NumericVersion $latestVersion
-        if ($installedVerNum -eq $latestVerNum -and -not $Force) {
+        # -Force/-Repair skip the version probe entirely: they reinstall no
+        # matter what, and the exe may be too broken to read.
+        $installedVerNum = $null
+        if (-not $Force) { $installedVerNum = Get-InstalledVersion $exePath }
+        $latestVerNum = Get-NumericVersion $latestVersion
+
+        if (-not $Force -and $installedVerNum -and $installedVerNum -eq $latestVerNum) {
             Write-Host ''
-            Write-Host "PlaudTools v$installedVersion is already installed and up to date." -ForegroundColor Green
+            Write-Host "PlaudTools v$installedVerNum is already installed and up to date." -ForegroundColor Green
             Write-Host ''
             Write-Host 'Press Enter to close...' -ForegroundColor Gray
             try { Read-Host } catch { }
             exit 0
-        } elseif ($installedVerNum -gt $latestVerNum -and -not $Force) {
+        } elseif (-not $Force -and $installedVerNum -and $installedVerNum -gt $latestVerNum) {
             # Installed build is ahead of the latest published release (e.g. a
             # dev/pre-release build). Without this branch, control fell into
             # the -Force/-Repair wipe branch below and silently DOWNGRADED the
             # user to the older published release (#159).
             Write-Host ''
-            Write-Host "PlaudTools v$installedVersion (installed) is newer than the latest published release v$latestVersion." -ForegroundColor Yellow
+            Write-Host "PlaudTools v$installedVerNum (installed) is newer than the latest published release v$latestVersion." -ForegroundColor Yellow
             Write-Host 'Nothing to do. Re-run with -Force if you want to reinstall the published release anyway.' -ForegroundColor Yellow
             Write-Host ''
             Write-Host 'Press Enter to close...' -ForegroundColor Gray
             try { Read-Host } catch { }
             exit 0
-        } elseif ($latestVerNum -gt $installedVerNum -and -not $Force) {
+        } elseif (-not $Force -and $installedVerNum -and $latestVerNum -gt $installedVerNum) {
             Write-Host ''
-            Write-Host "PlaudTools v$installedVersion is installed; v$latestVersion is available." -ForegroundColor Yellow
+            Write-Host "PlaudTools v$installedVerNum is installed; v$latestVersion is available." -ForegroundColor Yellow
             Write-Host 'Open PlaudTools from the system tray and click Check for Updates to upgrade.' -ForegroundColor Yellow
             Write-Host 'If the in-app updater does not work (older installs), re-run this installer with -Repair.' -ForegroundColor Yellow
             Write-Host ''
@@ -191,39 +283,16 @@ try {
             try { Read-Host } catch { }
             exit 1
         } else {
-            # -Force/-Repair: shut down running processes then wipe the install dir.
-            $switchName = if ($Repair) { '-Repair' } else { '-Force' }
+            # -Force/-Repair, or an exe whose version cannot be read (a broken
+            # install): shut down running processes, then wipe the install dir.
+            if ($Force) {
+                $reason = if ($Repair) { '-Repair specified' } else { '-Force specified' }
+            } else {
+                $reason = 'Existing install looks broken (could not read its version)'
+            }
             Write-Host ''
-            Write-Host "$switchName specified - shutting down PlaudTools processes..." -ForegroundColor Yellow
-
-            # Gracefully stop any running tray process.
-            $trayProcs = Get-Process -Name 'PlaudTools' -ErrorAction SilentlyContinue | Where-Object {
-                $_.Path -and $_.Path.ToLower().StartsWith($installDir.ToLower())
-            }
-            if ($trayProcs) {
-                foreach ($p in $trayProcs) { $p.CloseMainWindow() | Out-Null }
-                $deadline = (Get-Date).AddSeconds(5)
-                while (($trayProcs | Where-Object { !$_.HasExited }) -and (Get-Date) -lt $deadline) {
-                    Start-Sleep -Milliseconds 200
-                }
-                $trayProcs | Where-Object { !$_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
-            }
-
-            # Gracefully stop any running MCP process.
-            $mcpProcs = Get-Process -Name 'plaud-mcp' -ErrorAction SilentlyContinue | Where-Object {
-                $_.Path -and $_.Path.ToLower().StartsWith($installDir.ToLower())
-            }
-            if ($mcpProcs) {
-                foreach ($p in $mcpProcs) { $p.CloseMainWindow() | Out-Null }
-                $deadline = (Get-Date).AddSeconds(3)
-                while (($mcpProcs | Where-Object { !$_.HasExited }) -and (Get-Date) -lt $deadline) {
-                    Start-Sleep -Milliseconds 100
-                }
-                $mcpProcs | Where-Object { !$_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
-            }
-
-            Write-Host "    Removing existing install at $installDir ..." -ForegroundColor Yellow
-            Remove-Item $installDir -Recurse -Force
+            Write-Host "$reason - shutting down PlaudTools processes and removing $installDir ..." -ForegroundColor Yellow
+            Remove-InstallDir -InstallDir $installDir
         }
     }
 
@@ -231,7 +300,7 @@ try {
     if (Test-Path $installDir) {
         Write-Host ''
         Write-Host 'Found an incomplete installation (directory present, exe missing) - cleaning up...' -ForegroundColor Yellow
-        Remove-Item $installDir -Recurse -Force
+        Remove-InstallDir -InstallDir $installDir
     }
 
     # --- Step 2: download the zip to temp ---
@@ -257,8 +326,11 @@ try {
     try {
         Invoke-RestMethod -Uri $sumsAsset.browser_download_url -OutFile $sumsTemp -UseBasicParsing
         $sumsContent = Get-Content $sumsTemp -Encoding UTF8 -Raw
-        # Parse first token from the two-space format: "<hex>  <filename>"
-        $expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
+        # Use the PlaudTools.zip line, not just the first token of the file.
+        $expectedHash = Get-ExpectedHash -SumsText $sumsContent -FileName 'PlaudTools.zip'
+        if (-not $expectedHash) {
+            throw 'SHA256SUMS does not list PlaudTools.zip; the download''s integrity cannot be verified. Aborting install.'
+        }
         $actualHash   = (Get-FileHash -Path $zipTemp -Algorithm SHA256).Hash.ToUpper()
         if ($actualHash -ne $expectedHash) {
             throw (

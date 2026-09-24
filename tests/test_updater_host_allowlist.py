@@ -108,3 +108,21 @@ def test_allowed_update_hosts_does_not_contain_evil_variants() -> None:
     assert "github.com.evil.com" not in _ALLOWED_UPDATE_HOSTS
     assert "notgithub.com" not in _ALLOWED_UPDATE_HOSTS
     assert "evil.com" not in _ALLOWED_UPDATE_HOSTS
+
+
+def test_allowed_update_hosts_contains_release_assets_cdn() -> None:
+    """GitHub now redirects release downloads to release-assets.githubusercontent.com;
+    the final-URL check would refuse every real update without it."""
+    assert "release-assets.githubusercontent.com" in _ALLOWED_UPDATE_HOSTS
+
+
+def test_redirect_to_untrusted_host_is_refused_before_following() -> None:
+    """Every redirect hop is checked before the new request is sent."""
+    import urllib.request
+
+    from plaud_tools.tray.updater import _AllowlistRedirectHandler
+
+    handler = _AllowlistRedirectHandler()
+    req = urllib.request.Request("https://github.com/x/PlaudTools.zip")
+    with pytest.raises(ValueError, match="untrusted host"):
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example/PlaudTools.zip")

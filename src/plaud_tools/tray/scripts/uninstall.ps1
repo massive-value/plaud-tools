@@ -5,18 +5,27 @@
 .DESCRIPTION
     Waits for the tray process to exit, shuts down all processes running from
     the install directory (plaud-mcp, ffmpeg, etc.), deletes the install
-    directory, and optionally removes log directories.
+    directory, and optionally deletes the tray/MCP log files.
 
 .PARAMETER TrayPid
     PID of the running PlaudTools.exe (tray app) to wait for.
 
 .PARAMETER InstallDir
     Absolute path to the PlaudTools install directory (e.g. C:\Programs\PlaudTools).
-    This directory is deleted after cleanup.
+    Deleted after cleanup, but only if it contains PlaudTools.exe.
 
-.PARAMETER LogDirs
-    Optional semicolon-separated list of log directories to delete.
-    Example: "C:\Users\foo\AppData\Local\PlaudTools;C:\Users\foo\AppData\Local\Plaud"
+.PARAMETER LogDir
+    Optional data directory (e.g. C:\Users\foo\AppData\Local\PlaudTools).
+    Only tray.log* and mcp.log* inside it are deleted. The directory itself and
+    the session files next to the logs (session.json, session.dat) are kept;
+    the tray deletes those only when "Delete session / credentials" is checked.
+
+.PARAMETER DispatcherPath
+    Optional path of the %TEMP% dispatcher that invoked this script. Deleted at
+    the end so %TEMP% does not accumulate stale .ps1 files.
+
+.PARAMETER TrayExitTimeoutSec
+    How long to wait for the tray to exit before giving up (default 60).
 #>
 param(
     [Parameter(Mandatory)]
@@ -25,7 +34,11 @@ param(
     [Parameter(Mandatory)]
     [string]$InstallDir,
 
-    [string]$LogDirs = ""
+    [string]$LogDir = "",
+
+    [string]$DispatcherPath = "",
+
+    [int]$TrayExitTimeoutSec = 60
 )
 
 Set-StrictMode -Off
@@ -84,34 +97,56 @@ function Stop-ScopedProcesses {
     return $false
 }
 
-# Wait for the tray process to exit.
-while (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) {
-    Start-Sleep -Seconds 1
-}
-# Brief pause so Windows can release file handles on the PyInstaller bundle DLLs.
-Start-Sleep -Seconds 2
+# ---------------------------------------------------------------------------
+# Delete only the tray and MCP log files in $Dir. Keep this list in sync with
+# _LOG_FILE_GLOBS in tray/uninstaller.py (a test enforces it). Never deletes
+# the directory itself: session.json / session.dat live next to the logs.
+# ---------------------------------------------------------------------------
 
-# Shut down ALL processes running from the install directory (plaud-mcp, ffmpeg,
-# any future executables), retrying if a supervisor respawns them.
-Stop-ScopedProcesses -InstallDir $InstallDir | Out-Null
-
-# Delete the install directory with retries in case file handles are still held.
-$maxAttempts = 5
-for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-    Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-    if (-not (Test-Path $InstallDir)) { break }
-    if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds 2 }
-}
-
-# Optionally delete log directories.
-if ($LogDirs -ne "") {
-    foreach ($dir in ($LogDirs -split ';')) {
-        $dir = $dir.Trim()
-        if ($dir -ne "") {
-            Remove-Item -Path $dir -Recurse -Force -ErrorAction SilentlyContinue
-        }
+function Remove-PlaudLogFiles {
+    param([string]$Dir)
+    if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) { return }
+    foreach ($pattern in @('tray.log*', 'mcp.log*')) {
+        Get-ChildItem -LiteralPath $Dir -Filter $pattern -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
     }
 }
 
-# Self-destruct.
-Remove-Item $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+# Wait for the tray process to exit, but not forever: if it never exits the
+# install dir stays locked, so give up instead of hanging in the background.
+$deadline = (Get-Date).AddSeconds($TrayExitTimeoutSec)
+while ((Get-Process -Id $TrayPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {
+    Start-Sleep -Seconds 1
+}
+$trayExited = -not (Get-Process -Id $TrayPid -ErrorAction SilentlyContinue)
+
+if ($trayExited) {
+    # Brief pause so Windows can release file handles on the PyInstaller bundle DLLs.
+    Start-Sleep -Seconds 2
+
+    # Shut down ALL processes running from the install directory (plaud-mcp,
+    # ffmpeg, any future executables), retrying if a supervisor respawns them.
+    Stop-ScopedProcesses -InstallDir $InstallDir | Out-Null
+
+    # Only delete a directory that really is a PlaudTools install, so a wrong
+    # InstallDir can never take an unrelated folder with it.
+    $isPlaudInstall = $InstallDir -and (Test-Path -LiteralPath (Join-Path $InstallDir 'PlaudTools.exe'))
+    if ($isPlaudInstall) {
+        # Retry in case file handles are still held.
+        $maxAttempts = 5
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $InstallDir)) { break }
+            if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds 2 }
+        }
+    }
+
+    # The tray and plaud-mcp are gone now, so their logs are unlocked.
+    Remove-PlaudLogFiles -Dir $LogDir
+}
+
+# Delete the %TEMP% dispatcher that launched us. The bundled uninstall.ps1
+# goes away with the install directory.
+if ($DispatcherPath -and (Test-Path -LiteralPath $DispatcherPath)) {
+    Remove-Item -LiteralPath $DispatcherPath -Force -ErrorAction SilentlyContinue
+}

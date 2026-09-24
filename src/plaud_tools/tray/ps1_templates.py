@@ -13,9 +13,9 @@ Public API
     Return a PowerShell dispatcher string that invokes ``update.ps1`` with the
     given arguments.
 
-``render_uninstall_ps1(tray_pid, install_dir, log_dirs)``
+``render_uninstall_ps1(tray_pid, install_dir, log_dir, dispatcher_path)``
     Return a PowerShell dispatcher string that invokes ``uninstall.ps1`` with
-    the given arguments (log_dirs is a list of Path / str, may be empty).
+    the given arguments.
 """
 
 from __future__ import annotations
@@ -126,7 +126,8 @@ def render_update_ps1(
 def render_uninstall_ps1(
     tray_pid: int,
     install_dir: str,
-    log_dirs: list[str] | None = None,
+    log_dir: str | None = None,
+    dispatcher_path: str | None = None,
 ) -> str:
     """Return a PS1 dispatcher that calls the bundled uninstall.ps1 with the given args.
 
@@ -136,20 +137,19 @@ def render_uninstall_ps1(
         PID of the calling tray process; uninstall.ps1 waits for it to exit.
     install_dir:
         Absolute path to the PlaudTools install directory to delete.
-    log_dirs:
-        Optional list of log directory paths to delete.  Passed as a
-        semicolon-joined ``-LogDirs`` argument.
+    log_dir:
+        Optional data directory whose ``tray.log*`` / ``mcp.log*`` files
+        uninstall.ps1 deletes after the tray exits (``-LogDir``).  Only those
+        log files are removed; the directory and credentials stay.
+    dispatcher_path:
+        Absolute path to this dispatcher in %TEMP%, passed as
+        ``-DispatcherPath`` so uninstall.ps1 can delete it when done.
     """
     scripts = scripts_dir()
     ps1 = scripts / "uninstall.ps1"
-    safe_ps1 = _ps_escape(str(ps1))
-    safe_install = _ps_escape(install_dir)
-    log_dirs_str = ";".join(str(d) for d in (log_dirs or []))
-    safe_log_dirs = _ps_escape(log_dirs_str)
-    lines = [
-        f"& '{safe_ps1}' -TrayPid {tray_pid} -InstallDir '{safe_install}'",
-    ]
-    if log_dirs_str:
-        lines[0] += f" -LogDirs '{safe_log_dirs}'"
-    lines[0] += "\n"
-    return lines[0]
+    line = f"& '{_ps_escape(str(ps1))}' -TrayPid {tray_pid} -InstallDir '{_ps_escape(install_dir)}'"
+    if log_dir:
+        line += f" -LogDir '{_ps_escape(log_dir)}'"
+    if dispatcher_path:
+        line += f" -DispatcherPath '{_ps_escape(dispatcher_path)}'"
+    return line + "\n"

@@ -306,9 +306,9 @@ _AUTOSTART_NAME = APP_NAME
 # Marker file written into the install dir when the user explicitly disables
 # autostart via the "Start with Windows" menu toggle.  Read by _verify_env so
 # the tray's auto-repair pass does NOT silently re-enable autostart for a user
-# who deliberately turned it off.  Lives in the install dir so it survives
-# in-app upgrades (Expand-Archive doesn't delete files absent from the zip)
-# but is wiped by uninstall (the install dir is deleted wholesale).
+# who deliberately turned it off.  Lives in the install dir; update.ps1 copies
+# it into the freshly extracted tree so it survives in-app upgrades, and it is
+# wiped by uninstall (the install dir is deleted wholesale).
 _AUTOSTART_OPT_OUT_MARKER = ".autostart_disabled"
 
 
@@ -411,10 +411,11 @@ def _completions_dir() -> Path | None:
 
 
 def _install_completions_dir() -> Path | None:
-    """Return the expected completions path inside the running install dir, or None.
+    """Return the legacy completions path inside the running install dir, or None.
 
-    Returns None for pip/dev channels where install_root is None (no bundle
-    install directory to anchor the stale-sourcing regex to).
+    PyInstaller 6 actually puts the file under ``<root>\\_internal\\completions``;
+    :func:`_stale_sourcing_re` accepts both.  Returns None for pip/dev channels
+    where install_root is None (no bundle install directory to anchor to).
     """
     install_root = _install_dir()
     if install_root is None:
@@ -422,28 +423,150 @@ def _install_completions_dir() -> Path | None:
     return install_root / "completions"
 
 
-def _stale_sourcing_re() -> re.Pattern[str] | None:
-    """Regex that matches only sourcing lines that point at the PlaudTools install dir.
+# A profile line that dot-sources a plaud completion script, in either the
+# old format (``. "<path>"``) or the current guarded format
+# (``if (Test-Path '<path>') { . '<path>' }``).  Group "path" is the script.
+_SOURCING_LINE_RE = re.compile(
+    r"""^(?:\.\s+|if\s*\(\s*Test-Path\s+)["'](?P<path>[^"']+)["']""",
+    re.IGNORECASE,
+)
 
-    Anchored to the running install path (derived from sys.executable) so
+# The file part of a plaud completion script path:
+# ``...\completions\plaud.ps1`` / ``...\_internal\completions\plaud-tools.ps1``.
+_PLAUD_COMPLETION_TAIL_RE = re.compile(r"[/\\]completions[/\\]plaud[^/\\]*\.ps1$", re.IGNORECASE)
+
+
+def _stale_sourcing_re() -> re.Pattern[str] | None:
+    """Regex that matches sourcing lines that point at the running PlaudTools install.
+
+    Anchored to the running install root (derived from sys.executable) so
     unrelated user scripts that happen to live in a directory called
-    ``completions`` are never touched.
+    ``completions`` are never touched.  Matches ``<root>\\completions\\`` and
+    ``<root>\\_internal\\completions\\`` (PyInstaller 6), in both the old
+    ``. "..."`` format and the guarded ``if (Test-Path '...')`` format.
 
     Returns None for pip/dev channels where there is no install directory to
     anchor the pattern to.  Callers must handle the None case.
     """
-    completions_dir = _install_completions_dir()
-    if completions_dir is None:
+    install_root = _install_dir()
+    if install_root is None:
         return None
-    # Escape backslashes for use inside a regex; the install dir may contain
-    # only standard ASCII path characters so a simple re.escape is safe.
-    install_completions = str(completions_dir)
-    escaped = re.escape(install_completions)
-    # Allow either forward or back slashes as the trailing separator.
+    sep = r"[/\\]"
+    escaped_root = re.escape(str(install_root)).replace(re.escape("\\"), sep)
     return re.compile(
-        r'^\. "' + escaped.replace(re.escape("\\"), r"[/\\]") + r'[/\\]plaud[^"]*\.ps1"',
+        r"""^(?:\.\s+|if\s*\(\s*Test-Path\s+)["']"""
+        + escaped_root
+        + sep
+        + r"(?:_internal"
+        + sep
+        + r")?completions"
+        + sep
+        + r"""plaud[^"']*\.ps1["']""",
         re.IGNORECASE,
     )
+
+
+def _is_dangling_plaud_sourcing_line(line: str) -> bool:
+    """True if *line* dot-sources a plaud completion script that no longer exists.
+
+    Catches lines left behind by other (deleted) PlaudTools installs, e.g. a
+    test extraction under ``C:\\Users\\me\\plaud_v131_e2e\\``.  Such a line is
+    broken no matter who wrote it: PowerShell prints an error for it on every
+    shell start.  Lines whose target still exists are left alone.
+    """
+    m = _SOURCING_LINE_RE.match(line.strip())
+    if m is None:
+        return False
+    path = m.group("path")
+    if not _PLAUD_COMPLETION_TAIL_RE.search(path):
+        return False
+    return not Path(path).exists()
+
+
+def _is_removable_sourcing_line(line: str, stale_re: re.Pattern[str] | None) -> bool:
+    """True if *line* is a plaud completion line our cleanup should remove."""
+    stripped = line.strip()
+    if stale_re is not None and stale_re.match(stripped):
+        return True
+    return _is_dangling_plaud_sourcing_line(stripped)
+
+
+def _guarded_source_line(ps1: Path) -> str:
+    """Return the profile line that loads *ps1* only if it still exists.
+
+    The ``Test-Path`` guard means an uninstall that could not clean the
+    profile leaves a harmless no-op line instead of an error on every
+    PowerShell start.  Single quotes are doubled for PowerShell literals.
+    """
+    quoted = str(ps1).replace("'", "''")
+    return f"if (Test-Path '{quoted}') {{ . '{quoted}' }}"
+
+
+def _known_documents_dir() -> Path | None:
+    """Return the Windows Documents known folder, or None if unavailable.
+
+    PowerShell builds ``$PROFILE`` from this folder (SHGetKnownFolderPath
+    FOLDERID_Documents), which is NOT ``~/Documents`` when OneDrive folder
+    backup redirects it, e.g. ``C:\\Users\\me\\OneDrive - Contoso\\Documents``.
+    Tests redirect this function (see tests/conftest.py) so they never touch
+    the real profile.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        folder_id = _GUID.from_buffer_copy(uuid.UUID("{FDD39AD0-238F-46AF-ADB4-6C85480369C7}").bytes_le)
+        out = ctypes.c_wchar_p()
+        shell32 = ctypes.WinDLL("shell32")
+        ole32 = ctypes.WinDLL("ole32")
+        hr = shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(out))
+        try:
+            if hr != 0 or not out.value:
+                return None
+            return Path(out.value)
+        finally:
+            ole32.CoTaskMemFree(out)
+    except Exception:
+        logging.warning("Could not resolve the Documents known folder", exc_info=True)
+        return None
+
+
+def _profiles_in(docs: Path) -> list[Path]:
+    """Return the PowerShell 7 and Windows PowerShell 5.1 profile paths under *docs*."""
+    return [
+        docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+        docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+    ]
+
+
+def _ps_profile_paths() -> list[Path]:
+    """Return the profiles PowerShell actually loads (write/check target)."""
+    docs = _known_documents_dir() or (Path.home() / "Documents")
+    return _profiles_in(docs)
+
+
+def _all_ps_profile_paths() -> list[Path]:
+    """Return every profile our cleanup should scrub.
+
+    The real profiles plus the ``~/Documents`` ones older builds wrote to
+    even when Documents was redirected (OneDrive).  Deduplicated.
+    """
+    paths = _ps_profile_paths()
+    for legacy in _profiles_in(Path.home() / "Documents"):
+        if legacy not in paths:
+            paths.append(legacy)
+    return paths
 
 
 def _setup_cli_path() -> None:
@@ -532,21 +655,55 @@ def _read_profile_text(path: Path) -> tuple[str | None, bool]:
 def _write_profile_text(path: Path, content: str, had_bom: bool) -> None:
     """Write *content* back to *path*, preserving the original BOM presence.
 
-    A brand-new file (``had_bom=False``, since there was nothing to sniff)
-    is written without a BOM, matching prior behaviour; an existing BOM'd
-    profile keeps its BOM on rewrite instead of silently losing it.
+    An existing BOM'd profile keeps its BOM on rewrite instead of silently
+    losing it.  A BOM-less file stays BOM-less unless the content is
+    non-ASCII: Windows PowerShell 5.1 reads a BOM-less file as the ANSI
+    codepage, so a non-ASCII path (e.g. a non-ASCII username) needs the BOM
+    to load correctly.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8-sig" if had_bom else "utf-8")
+    use_bom = had_bom or not content.isascii()
+    # newline="" writes *content* byte-for-byte.  Without it, Windows text
+    # mode turned every existing CRLF into CR CR LF on each rewrite.
+    path.write_text(content, encoding="utf-8-sig" if use_bom else "utf-8", newline="")
+
+
+def _scrub_profile(profile: Path, stale_re: re.Pattern[str] | None, add_line: str | None = None) -> None:
+    """Remove our old completion lines from *profile*; optionally append *add_line*.
+
+    Leaves the file untouched when nothing changes, when it is not valid
+    UTF-8, or when it does not exist and there is nothing to add.
+    """
+    content, had_bom = _read_profile_text(profile)
+    if content is None:
+        logging.warning("Could not decode PowerShell profile %s as UTF-8; leaving it untouched", profile)
+        return
+    # The current line is dropped too and re-appended below, so it ends up
+    # exactly once, at the end; a second run then produces identical content.
+    kept = [
+        line
+        for line in content.splitlines(keepends=True)
+        if line.strip() != add_line and not _is_removable_sourcing_line(line, stale_re)
+    ]
+    new_content = "".join(kept)
+    if add_line is not None:
+        eol = "\r\n" if "\r\n" in content else "\n"  # match the file's line endings
+        prefix = new_content.rstrip("\r\n") + eol if new_content else ""
+        new_content = prefix + add_line + eol
+    if new_content == content:
+        return
+    _write_profile_text(profile, new_content, had_bom)
+    logging.info("Updated plaud-tools completions in %s", profile)
 
 
 def _setup_ps_completions() -> None:
-    """Source plaud-tools.ps1 from the user's PowerShell profiles (idempotent).
+    """Load plaud-tools.ps1 from the user's PowerShell profiles (idempotent).
 
-    Also removes any stale sourcing lines left by older builds that pointed at
-    the same install directory (e.g. plaud.ps1 renamed to plaud-tools.ps1).
-    Only lines pointing at the canonical PlaudTools install directory are removed;
-    unrelated user scripts in other completions folders are not touched.
+    Writes a guarded ``if (Test-Path ...) { . ... }`` line to the profiles
+    PowerShell really loads (the Documents known folder, which OneDrive may
+    redirect).  Also removes old-format and stale lines that point at this
+    install, plus dangling plaud completion lines from deleted installs, from
+    both the real profiles and the legacy ``~/Documents`` ones.
     """
     completions = _completions_dir()
     if completions is None:
@@ -554,37 +711,12 @@ def _setup_ps_completions() -> None:
     ps1 = completions / "plaud-tools.ps1"
     if not ps1.exists():
         return
-    source_line = f'. "{ps1}"'
+    source_line = _guarded_source_line(ps1)
     stale_re = _stale_sourcing_re()
-    user_docs = Path.home() / "Documents"
-    profiles = [
-        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ]
-    for profile in profiles:
+    targets = _ps_profile_paths()
+    for profile in _all_ps_profile_paths():
         try:
-            content, had_bom = _read_profile_text(profile)
-            if content is None:
-                logging.warning(
-                    "Could not decode PowerShell profile %s as UTF-8; leaving it untouched", profile
-                )
-                continue
-            if profile.exists():
-                lines = [
-                    line
-                    for line in content.splitlines(keepends=True)
-                    if stale_re is None or not stale_re.match(line.strip())
-                ]
-                content = "".join(lines)
-                if source_line in content:
-                    _write_profile_text(profile, content, had_bom)
-                    continue
-            _write_profile_text(
-                profile,
-                (content.rstrip("\n") + "\n" + source_line + "\n") if content else (source_line + "\n"),
-                had_bom,
-            )
-            logging.info("Added plaud-tools completions to %s", profile)
+            _scrub_profile(profile, stale_re, add_line=source_line if profile in targets else None)
         except OSError:
             logging.warning("Could not update PowerShell profile %s", profile, exc_info=True)
 
@@ -639,22 +771,22 @@ def _check_cli_path() -> bool:
 
 
 def _check_ps_completions() -> bool:
-    """Return True if a plaud-tools.ps1 sourcing line is present in at least one profile."""
+    """Return True if the current guarded sourcing line is in a profile PowerShell loads.
+
+    Only the real (known-folder) profiles count, and only the current line
+    format: an old-format line, or one in an unused ``~/Documents`` profile,
+    reports "missing" so the auto-heal pass migrates it.
+    """
     completions = _completions_dir()
     if completions is None:
         return True  # not a frozen bundle — nothing to verify
     ps1 = completions / "plaud-tools.ps1"
     if not ps1.exists():
         return True  # completions script not present; nothing to verify
-    source_line = f'. "{ps1}"'
-    user_docs = Path.home() / "Documents"
-    profiles = [
-        user_docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-        user_docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ]
-    for profile in profiles:
+    source_line = _guarded_source_line(ps1)
+    for profile in _ps_profile_paths():
         content, _had_bom = _read_profile_text(profile)
-        if content and source_line in content:
+        if content and any(line.strip() == source_line for line in content.splitlines()):
             return True
     return False
 
@@ -698,6 +830,12 @@ __all__ = [
     "_completions_dir",
     "_install_completions_dir",
     "_stale_sourcing_re",
+    "_is_removable_sourcing_line",
+    "_guarded_source_line",
+    "_known_documents_dir",
+    "_ps_profile_paths",
+    "_all_ps_profile_paths",
+    "_scrub_profile",
     "_setup_cli_path",
     "_setup_ps_completions",
     "_read_profile_text",

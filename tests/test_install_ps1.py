@@ -59,8 +59,26 @@ def test_install_ps1_repair_aliases_force():
 
 def test_install_ps1_force_branch_removes_install_dir():
     content = _read_install_ps1()
-    # When -Force is active the existing dir must be removed.
-    assert "Remove-Item $installDir -Recurse -Force" in content
+    # When -Force is active the existing dir is removed through the
+    # kill-and-retry helper, never a single unretried Remove-Item.
+    assert "Remove-InstallDir -InstallDir $installDir" in content
+    assert "Remove-Item $installDir -Recurse -Force" not in content
+
+
+def test_install_ps1_remove_retries_with_path_scoped_kill():
+    """Claude Desktop respawns plaud-mcp; one kill pass then a delete fails.
+    Each delete attempt must re-run the install-dir-scoped kill."""
+    func = _extract_function("Remove-InstallDir")
+    assert "for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++)" in func
+    assert "Stop-ScopedProcesses -InstallDir $InstallDir" in func
+    assert "StartsWith($scope)" in _extract_function("Stop-ScopedProcesses")
+
+
+def test_install_ps1_force_skips_version_probe():
+    """-Force/-Repair must not read the exe version at all (#repair crash)."""
+    content = _read_install_ps1()
+    assert "if (-not $Force) { $installedVerNum = Get-InstalledVersion $exePath }" in content
+    assert ".VersionInfo.FileVersion.Trim()" not in content
 
 
 def test_install_ps1_force_kills_tray_process():
@@ -153,9 +171,8 @@ def test_install_ps1_cleans_up_sums_temp_file():
 
 def test_install_ps1_parses_two_space_format():
     content = _read_install_ps1()
-    # Must split on whitespace to extract the hash token (standard sha256sum format).
-    # The parser uses -split or Trim() to isolate the first hex token.
-    assert r"-split '\s+'" in content or r"-split" in content
+    # The PlaudTools.zip line is looked up by name (standard sha256sum format).
+    assert "Get-ExpectedHash -SumsText $sumsContent -FileName 'PlaudTools.zip'" in content
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
@@ -173,6 +190,58 @@ def test_install_ps1_syntax_valid():
         timeout=30,
     )
     assert result.returncode == 0, f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
+
+
+def _extract_function(name: str) -> str:
+    """Return the source of PowerShell function *name* from install.ps1."""
+    content = _read_install_ps1().replace("\r\n", "\n")
+    start = content.index(f"function {name} {{")
+    end = content.index("\n}\n", start) + len("\n}\n")
+    return content[start:end]
+
+
+def _run_install_functions(tmp_path: Path, names: list[str], body: str, exe: str = "pwsh"):  # type: ignore[no-untyped-def]
+    """Run *body* after dot-defining the real install.ps1 functions *names*."""
+    harness = tmp_path / "harness.ps1"
+    harness.write_text("\n".join(_extract_function(n) for n in names) + "\n" + body, encoding="ascii")
+    return subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+_PS_EXES = [e for e in ("pwsh", "powershell") if shutil.which(e)]
+
+
+@pytest.mark.parametrize("exe", _PS_EXES)
+def test_get_expected_hash_uses_plaudtools_zip_line_not_first_token(tmp_path: Path, exe: str):
+    good = "b" * 64
+    body = f"""
+$sums = "{"a" * 64}  PlaudTools-debug.zip`n{good}  PlaudTools.zip`n"
+Write-Host "HASH=$(Get-ExpectedHash -SumsText $sums -FileName 'PlaudTools.zip')"
+Write-Host "MISSING=$(Get-ExpectedHash -SumsText $sums -FileName 'Other.zip')"
+"""
+    result = _run_install_functions(tmp_path, ["Get-ExpectedHash"], body, exe)
+    assert result.returncode == 0, result.stderr
+    assert f"HASH={good.upper()}" in result.stdout
+    assert "MISSING=\n" in result.stdout + "\n"
+
+
+@pytest.mark.parametrize("exe", _PS_EXES)
+def test_get_installed_version_returns_null_for_corrupt_exe(tmp_path: Path, exe: str):
+    """A corrupt exe (the -Repair case) has no FileVersion; the probe must
+    return $null instead of throwing on .Trim()."""
+    corrupt = tmp_path / "PlaudTools.exe"
+    corrupt.write_bytes(b"\x00garbage, not a PE file")
+    body = f"""
+$v = Get-InstalledVersion '{corrupt}'
+Write-Host "IS_NULL=$($null -eq $v)"
+"""
+    result = _run_install_functions(tmp_path, ["Get-NumericVersion", "Get-InstalledVersion"], body, exe)
+    assert result.returncode == 0, result.stderr
+    assert "IS_NULL=True" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +267,8 @@ if (-not ($SumsPath -and (Test-Path $SumsPath))) {
     throw "SHA256SUMS asset not found; integrity cannot be verified"
 }
 $sumsContent = Get-Content $SumsPath -Encoding UTF8 -Raw
-$expectedHash = ($sumsContent.Trim() -split '\s+')[0].ToUpper()
+$expectedHash = Get-ExpectedHash -SumsText $sumsContent -FileName 'PlaudTools.zip'
+if (-not $expectedHash) { throw "SHA256SUMS does not list PlaudTools.zip" }
 $actualHash   = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToUpper()
 if ($actualHash -ne $expectedHash) {
     throw "SHA256 mismatch"
@@ -214,7 +284,11 @@ def _run_hash_check(  # type: ignore[type-arg]
     zip_file = tmp_path / "PlaudTools.zip"
     zip_file.write_bytes(zip_bytes)
     harness = tmp_path / "hash_check.ps1"
-    harness.write_text(_HASH_CHECK_PS1, encoding="utf-8")
+    # Splice in the real Get-ExpectedHash after the param() block.
+    head, tail = _HASH_CHECK_PS1.split("$ErrorActionPreference", 1)
+    harness.write_text(
+        head + _extract_function("Get-ExpectedHash") + "$ErrorActionPreference" + tail, encoding="utf-8"
+    )
 
     sums_path = ""
     if sums_content is not None:

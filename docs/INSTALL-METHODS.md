@@ -80,7 +80,7 @@ Useful for air-gapped machines, restrictive IT environments where `irm | iex` is
 On first launch, the tray app:
 
 - Adds `PlaudTools\cli\` to your user `PATH` via `HKCU\Environment`, so `plaud-tools` and `pt` work from any new shell without manual PATH editing. No admin elevation required.
-- Sources `PlaudTools\completions\plaud-tools.ps1` from your PowerShell profile, enabling tab-completion for both `plaud-tools` and `pt`.
+- Adds a line to your PowerShell profiles that loads `PlaudTools\_internal\completions\plaud-tools.ps1`, enabling tab-completion for both `plaud-tools` and `pt`. The line is guarded (`if (Test-Path ...)`), so it does nothing if the install is later removed. The profiles are found through the Windows Documents folder, so they are the right ones even when OneDrive redirects Documents.
 - Registers a Run-on-login entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (visible and removable from the tray's Uninstall dialog).
 
 Open a **new** PowerShell or cmd window after the first launch — the PATH change takes effect in new shells only.
@@ -114,7 +114,7 @@ The `[dev]` extra pulls in test and lint tooling. See [CONTRIBUTING.md](../CONTR
 
 ### PowerShell (Windows tray bundle)
 
-Completions are wired up automatically on first launch. No manual step needed. The tray sources `completions\plaud-tools.ps1` from your `$PROFILE`.
+Completions are wired up automatically on first launch. No manual step needed. The tray adds a guarded line that loads `_internal\completions\plaud-tools.ps1` to your `$PROFILE` (both Windows PowerShell 5.1 and PowerShell 7), including when OneDrive redirects your Documents folder. Uninstall removes the line again.
 
 ### PowerShell (pip install)
 
