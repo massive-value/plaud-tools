@@ -1155,7 +1155,8 @@ class PlaudClient:
         the same block they write). Read-only callers may request any block in
         ``TRANSCRIPT_BLOCKS``. Returns ``[]`` when the block is absent or
         unfinished; callers distinguish that from "no transcript at all" via
-        ``_available_transcript_blocks``.
+        ``_available_transcript_blocks``. A finished block whose download fails
+        raises ``PlaudApiError`` rather than reading as empty.
         """
         transcript_item = None
         for item in raw.get("content_list") or []:
@@ -1170,7 +1171,13 @@ class PlaudClient:
             headers={"User-Agent": BROWSER_USER_AGENT},
         )
         if response.status_code < 200 or response.status_code >= 300:
-            return []
+            # Plaud says this block is finished, so a failed download is an
+            # upstream error — returning [] here would pass it off as a
+            # genuinely empty transcript (#210).
+            raise PlaudApiError(
+                f"Plaud transcript link returned HTTP {response.status_code}",
+                http_status=response.status_code,
+            )
         try:
             body = response.json()
         except ValueError as exc:

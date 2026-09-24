@@ -23,7 +23,9 @@ from ..core.query import (
     detail_summary_dict,
     folder_dict,
     parse_isoish,
+    structured_segments,
     summarize_recording,
+    transcript_fingerprint,
 )
 from ..core.session import PlaudSession, SessionManager, SessionStore
 
@@ -34,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     list_cmd = sub.add_parser("list")
-    list_cmd.add_argument("--limit", type=int, default=20)
+    _add_limit_or_all(list_cmd)
     list_cmd.add_argument("--since")
     list_cmd.add_argument("--until")
     list_cmd.add_argument("--query")
@@ -46,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Shorthand for 'list --query QUERY' (identical filtering, positional query arg).",
     )
     search_cmd.add_argument("query")
-    search_cmd.add_argument("--limit", type=int, default=20)
+    _add_limit_or_all(search_cmd)
     search_cmd.add_argument("--since")
     search_cmd.add_argument("--until")
     search_cmd.add_argument("--folder-id")
@@ -67,6 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Return Plaud's AI-cleaned transcript (filler words removed, punctuation "
             "repaired) instead of the raw one. Errors if the recording has no polished block."
+        ),
+    )
+    transcript_cmd.add_argument(
+        "--segments",
+        action="store_true",
+        help=(
+            "Print JSON with every utterance's index, speaker, text and start/end time "
+            "(ms from recording start), plus a fingerprint of the whole block, instead of plain text."
         ),
     )
 
@@ -261,6 +271,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# `list`/`search` return this many recordings unless --limit or --all says otherwise.
+DEFAULT_LIST_LIMIT = 20
+
+
+def _add_limit_or_all(cmd: argparse.ArgumentParser) -> None:
+    """Add the mutually exclusive --limit N / --all pair shared by list and search."""
+    group = cmd.add_mutually_exclusive_group()
+    group.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    group.add_argument(
+        "--all",
+        action="store_true",
+        help="Page through the whole library (honoring filters) until it is exhausted.",
+    )
+
+
 def _mask_token(token: str) -> str:
     if len(token) <= 12:
         return token
@@ -396,7 +421,7 @@ def _handle_doctor(args: argparse.Namespace, store: SessionStore) -> str:  # noq
 def _list_recordings_filtered(
     client: PlaudClient,
     *,
-    limit: int,
+    limit: int | None,
     since: str | None,
     until: str | None,
     query: str | None,
@@ -408,8 +433,11 @@ def _list_recordings_filtered(
     ``search`` is a positional-argument shorthand for ``list --query`` — it
     has no ranking of its own, so it delegates here instead of re-implementing
     the same paged-filter call (previously duplicated verbatim).
+
+    ``limit=None`` (``--all``) pages upstream until it runs dry, filtered or
+    not, so the result is the complete matching set rather than one page.
     """
-    has_filters = bool(since or until or query or folder_id or unfiled)
+    has_filters = bool(since or until or query or folder_id or unfiled) or limit is None
     since_ms = parse_isoish(since, "--since") if since else None
     until_ms = parse_isoish(until, "--until", end_of_day=True) if until else None
     if has_filters:
@@ -441,7 +469,7 @@ def _list_recordings_filtered(
 def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
     recordings = _list_recordings_filtered(
         client,
-        limit=args.limit,
+        limit=None if args.all else args.limit,
         since=args.since,
         until=args.until,
         query=args.query,
@@ -454,7 +482,7 @@ def _handle_list(args: argparse.Namespace, client: PlaudClient) -> str:
 def _handle_search(args: argparse.Namespace, client: PlaudClient) -> str:
     recordings = _list_recordings_filtered(
         client,
-        limit=args.limit,
+        limit=None if args.all else args.limit,
         since=args.since,
         until=args.until,
         query=args.query,
@@ -483,7 +511,10 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
         "summary": detail.ai_content,
     }
     if args.include_transcript:
-        payload["transcript"] = detail.transcript
+        # null, not "", when there is no transcript to return — an empty
+        # string would read as a successfully transcribed silent recording.
+        has_block = DEFAULT_TRANSCRIPT_BLOCK in detail.transcript_blocks_available
+        payload["transcript"] = detail.transcript if has_block else None
     return json.dumps(payload, indent=2)
 
 
@@ -763,13 +794,31 @@ def _handle_dump(args: argparse.Namespace, client: PlaudClient) -> str:
 def _handle_transcript(args: argparse.Namespace, client: PlaudClient) -> str:
     block = "transaction_polish" if args.polish else DEFAULT_TRANSCRIPT_BLOCK
     detail = client.get_recording(args.recording_id, include_transcript=True, transcript_block=block)
-    if not detail.transcript and args.polish:
-        # Don't print an empty string and leave the user guessing whether the
-        # recording has no transcript or merely no *polished* one.
-        available = ", ".join(detail.transcript_blocks_available) or "none"
+    if block not in detail.transcript_blocks_available:
+        # Fail (exit 1) instead of printing an empty string: a script must be
+        # able to tell "no transcript" from a successfully empty one, which
+        # exits 0 with empty output.
+        if not detail.transcript_blocks_available:
+            raise ValueError(
+                f"No transcript for {args.recording_id} yet. Run 'plaud-tools transcribe' first."
+            )
+        available = ", ".join(detail.transcript_blocks_available)
         raise ValueError(
             f"No AI-polished transcript for {args.recording_id} "
             f"(available blocks: {available}). Retry without --polish."
+        )
+    if args.segments:
+        segments = detail.transcript_segments
+        return json.dumps(
+            {
+                "recording_id": args.recording_id,
+                "transcript_block": block,
+                "utterance_count": len(segments),
+                "fingerprint": transcript_fingerprint(segments),
+                "segments": structured_segments(segments),
+            },
+            indent=2,
+            ensure_ascii=False,
         )
     return detail.transcript
 
@@ -882,8 +931,9 @@ def run_cli(
 def _reconfigure_stdout_utf8() -> None:
     """Force stdout to UTF-8 so non-ASCII output survives redirection.
 
-    Every command's JSON output is ASCII-safe (json.dumps escapes non-ASCII
-    by default), but `transcript` prints raw transcript text.  On Windows a
+    Most commands' JSON output is ASCII-safe (json.dumps escapes non-ASCII
+    by default), but `transcript` prints raw transcript text (and
+    `transcript --segments` keeps it unescaped in its JSON).  On Windows a
     piped/redirected stdout often falls back to the legacy cp1252 console
     code page, which raises UnicodeEncodeError on non-Latin-1 characters
     (issue #155).  reconfigure() is a no-op when stdout is already UTF-8 and

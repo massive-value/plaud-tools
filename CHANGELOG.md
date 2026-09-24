@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-23
+
+Transcript export and paging you can script against (#210). Additive except
+for two small contract changes, listed under *Changed*.
+
+### Added
+
+- **`plaud-tools transcript <id> --segments`** prints JSON with one record per
+  utterance (`index`, `speaker`, `text`, `start_ms`, `end_ms`) and a
+  `fingerprint` of the whole transcript. Timings are milliseconds from the
+  start of the recording, passed through from Plaud, and `null` when Plaud
+  sent none.
+- **`list --all` / `search --all`** return every matching recording. They page
+  through the library 200 at a time until Plaud runs out, and honor
+  `--folder-id`, `--since`, `--until`, `--query` and `--unfiled`. Before this,
+  the most you could get was whatever `--limit` you guessed.
+- **MCP `get_recording` paging fields.** `transcript_has_more`,
+  `transcript_page_start`, `transcript_page_end` (end-exclusive) and
+  `transcript_fingerprint` are now on every transcript response.
+  `transcript_fingerprint` is the same on every page of one version and
+  changes after any edit, so a caller can tell when to restart instead of
+  splicing two versions. It is `null` when the requested block doesn't exist.
+- **MCP `include=["segments"]`** returns `transcript_segments` for the page,
+  with the same records and fingerprint the CLI export produces. The default
+  response is still text-only.
+- `docs/CLI.md` documents the export commands and their exit codes.
+
+### Changed
+
+- **`transcript_next_after` is always present** in MCP transcript responses,
+  `null` on the last page. It used to be left out. `transcript_truncated`
+  keeps its old meaning ("this page is not the whole transcript"). Use
+  `transcript_has_more` to decide whether to keep paging.
+- **`plaud-tools transcript <id>` exits 1 when the recording has no
+  transcript**, with the reason on stderr, instead of printing an empty
+  string and exiting 0. A transcript that exists but is empty still exits 0.
+  `detail --include-transcript` reports a missing transcript as `null`
+  rather than `""`.
+
+### Fixed
+
+- A transcript file that failed to download from Plaud's storage (for example
+  an HTTP 403) came back as an empty transcript. It now raises an API error,
+  so the CLI exits non-zero and the MCP returns a structured error.
+
 ## [0.8.2] - 2026-07-31
 
 Maintenance release. No functional or behavioral changes.
@@ -1609,7 +1654,10 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/massive-value/plaud-tools/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/massive-value/plaud-tools/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/massive-value/plaud-tools/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/massive-value/plaud-tools/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/massive-value/plaud-tools/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/massive-value/plaud-tools/compare/v0.6.0...v0.7.0

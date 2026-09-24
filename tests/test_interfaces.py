@@ -377,6 +377,161 @@ def test_cli_transcript_polish_errors_when_unavailable():
         run_cli(["transcript", "rec1", "--polish"], NoPolishStub())
 
 
+# --- CLI programmatic export (#210) ---
+
+
+class TranscriptStub(StubClient):
+    """Serves one fixed transcript block to both the CLI and the MCP facade."""
+
+    def __init__(self, segments, blocks=("transaction",)):
+        self.segments = segments
+        self.blocks = list(blocks)
+
+    def get_recording(self, recording_id, include_transcript=False, **kwargs):
+        from plaud_tools.core.query import format_transcript
+
+        return RecordingDetail(
+            id=recording_id,
+            filename="meeting",
+            is_trans=bool(self.blocks),
+            transcript=format_transcript(self.segments),
+            transcript_segments=self.segments,
+            transcript_blocks_available=self.blocks,
+        )
+
+
+def _utterances(count: int, text: str = "line") -> list[dict]:
+    return [
+        {"speaker": f"S{i % 2}", "content": f"{text} {i}", "start_time": i * 1000, "end_time": i * 1000 + 900}
+        for i in range(count)
+    ]
+
+
+def _run_main_to_file(monkeypatch, tmp_path: Path, argv: list[str], client) -> tuple[int, bytes]:
+    """Run main() with stdout redirected to a cp1252 file, like a Windows `> out.txt`."""
+    import sys
+
+    import plaud_tools.cli.cli as cli_module
+
+    out_path = tmp_path / "out.txt"
+    # A scoped context, not monkeypatch.undo(): undo would also revert
+    # conftest's autouse safety redirects for the rest of the test.
+    with monkeypatch.context() as patch, out_path.open("w", encoding="cp1252") as handle:
+        patch.setattr(cli_module, "_build_runtime_client", lambda store: client)
+        patch.setattr(sys, "stdout", handle)
+        code = main(argv)
+    return code, out_path.read_bytes()
+
+
+def test_cli_transcript_unicode_survives_redirect_to_file(monkeypatch, tmp_path: Path):
+    stub = TranscriptStub([{"speaker": "Zoë", "content": "Ｑ４ 预算 — café ✓"}])
+    code, data = _run_main_to_file(monkeypatch, tmp_path, ["transcript", "rec1"], stub)
+    assert code == 0
+    assert data.decode("utf-8").rstrip("\r\n") == "Zoë: Ｑ４ 预算 — café ✓"
+
+
+def test_cli_transcript_large_output_is_complete(monkeypatch, tmp_path: Path):
+    segments = _utterances(5000)
+    code, data = _run_main_to_file(
+        monkeypatch, tmp_path, ["transcript", "rec1", "--segments"], TranscriptStub(segments)
+    )
+    assert code == 0
+    payload = json.loads(data.decode("utf-8"))
+    assert payload["utterance_count"] == 5000
+    assert payload["segments"][-1] == {
+        "index": 4999,
+        "speaker": "S1",
+        "text": "line 4999",
+        "start_ms": 4_999_000,
+        "end_ms": 4_999_900,
+    }
+
+
+def test_cli_transcript_missing_fails_without_stdout(monkeypatch, tmp_path: Path, capsys):
+    code, data = _run_main_to_file(
+        monkeypatch, tmp_path, ["transcript", "rec1"], TranscriptStub([], blocks=())
+    )
+    assert code == 1
+    assert data == b""
+    assert "No transcript" in capsys.readouterr().err
+
+
+def test_cli_transcript_genuinely_empty_succeeds_with_empty_output(monkeypatch, tmp_path: Path):
+    code, data = _run_main_to_file(monkeypatch, tmp_path, ["transcript", "rec1"], TranscriptStub([]))
+    assert code == 0
+    assert data.strip() == b""
+
+
+def test_cli_detail_reports_missing_transcript_as_null():
+    payload = json.loads(run_cli(["detail", "rec1", "--include-transcript"], TranscriptStub([], blocks=())))
+    assert payload["transcript"] is None
+
+
+def test_cli_segments_and_fingerprint_match_mcp_pages():
+    stub = TranscriptStub(_utterances(7))
+    cli_payload = json.loads(run_cli(["transcript", "rec1", "--segments"], stub))
+
+    handlers = build_handlers(lambda: stub)
+    mcp_segments = []
+    after = 0
+    while after is not None:
+        page = json.loads(
+            handlers["get_recording"](
+                "rec1", include=["segments"], transcript_after=after, transcript_limit=3
+            )["content"][0]["text"]
+        )
+        assert page["transcript_fingerprint"] == cli_payload["fingerprint"]
+        mcp_segments.extend(page["transcript_segments"])
+        after = page["transcript_next_after"]
+
+    assert mcp_segments == cli_payload["segments"]
+
+
+class LibraryStub(StubClient):
+    """A library of ``size`` recordings served in upstream pages; every third is in tag1."""
+
+    def __init__(self, size: int):
+        self.library = [
+            Recording(
+                id=f"r{i}",
+                filename=f"rec {i}",
+                start_time=1_746_000_000_000 - i * 60_000,
+                filetag_id_list=["tag1"] if i % 3 == 0 else [],
+            )
+            for i in range(size)
+        ]
+        self.requests: list[tuple[int, int]] = []
+
+    def list_recordings(self, query=None):
+        skip = query.skip or 0
+        self.requests.append((skip, query.limit))
+        return self.library[skip : skip + query.limit]
+
+
+def test_cli_list_all_pages_a_filtered_library_to_exhaustion():
+    stub = LibraryStub(650)
+    payload = json.loads(run_cli(["list", "--all", "--folder-id", "tag1"], stub))
+    assert len(payload) == 217  # ceil(650 / 3): far more than the 20 default
+    assert {item["folder_id"] for item in payload} == {"tag1"}
+    # Bounded requests, stopping at the first short page.
+    assert stub.requests == [(0, 200), (200, 200), (400, 200), (600, 200)]
+
+
+def test_cli_list_all_without_filters_returns_everything():
+    payload = json.loads(run_cli(["list", "--all"], LibraryStub(401)))
+    assert len(payload) == 401
+
+
+def test_cli_list_default_limit_is_unchanged():
+    payload = json.loads(run_cli(["list"], LibraryStub(401)))
+    assert len(payload) == 20
+
+
+def test_cli_list_all_and_limit_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        run_cli(["list", "--all", "--limit", "5"], LibraryStub(1))
+
+
 def test_cli_list_filters_query_and_unfiled():
     output = run_cli(["list", "--limit", "5", "--query", "lunch", "--unfiled"], StubClient())
     payload = json.loads(output)

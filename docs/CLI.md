@@ -125,6 +125,12 @@ plaud-tools list --unfiled
 
 Defaults to 20 most recent recordings. `--since` and `--until` accept dates (`2025-01-01`), datetimes (`2025-01-01T09:30`), or relative offsets. `--query` is case-insensitive substring matching against titles.
 
+`--all` returns every matching recording instead of one page. It fetches the library 200 recordings per request and stops when Plaud returns a short page, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
+
+```
+plaud-tools list --all --folder-id <folder-id> > recordings.json
+```
+
 ### `search`
 
 ```
@@ -149,13 +155,14 @@ plaud-tools detail <recording-id>
 plaud-tools detail <recording-id> --include-transcript
 ```
 
-Lower-level dump of the recording's API fields. Always includes the AI summary (`null` if none exists yet). Use `--include-transcript` to also fetch the linked transcript content.
+Lower-level dump of the recording's API fields. Always includes the AI summary (`null` if none exists yet). Use `--include-transcript` to also fetch the linked transcript content. `transcript` is `null` when the recording has no transcript, and `""` only when it has one that is empty.
 
 ### `transcript`
 
 ```
 plaud-tools transcript <recording-id>
 plaud-tools transcript <recording-id> --polish
+plaud-tools transcript <recording-id> --segments
 ```
 
 Prints the full transcript text. By default this is the raw diarized transcript.
@@ -165,8 +172,58 @@ punctuation repaired, with the same speakers and timestamps. Not every recording
 has one; when it's missing the command errors and names the blocks that are
 available rather than printing nothing.
 
+`--segments` prints JSON instead of text, with one record per utterance and a
+fingerprint of the whole transcript:
+
+```json
+{
+  "recording_id": "<recording-id>",
+  "transcript_block": "transaction",
+  "utterance_count": 2,
+  "fingerprint": "sha256:9f2c...",
+  "segments": [
+    {"index": 0, "speaker": "Speaker 1", "text": "Morning, let's start.", "start_ms": 1510, "end_ms": 11430},
+    {"index": 1, "speaker": "Speaker 2", "text": "Sounds good.", "start_ms": 11430, "end_ms": null}
+  ]
+}
+```
+
+`start_ms`/`end_ms` are milliseconds from the start of the recording, as Plaud
+sent them. They are `null` when Plaud sent none. `index` counts utterances from
+0 and matches the MCP `get_recording` `transcript_segments` indexes. The
+fingerprint is a SHA-256 of the transcript content (not a Plaud revision
+number), so any edit changes it. Indexes stay valid only while the fingerprint
+stays the same; after an edit, re-export.
+
 Note that the editing commands (`rename-speaker`, `correct-transcript`) always
 operate on the raw transcript, whichever block you read.
+
+#### Exporting transcripts from a script
+
+Redirect stdout to a file. Output is UTF-8 on every platform, including a
+Windows console redirect, and errors go to stderr, so the file holds only the
+transcript.
+
+```
+plaud-tools transcript <recording-id> > meeting.txt
+plaud-tools transcript <recording-id> --segments > meeting.json
+```
+
+| Outcome | Exit code | stdout |
+|---|---|---|
+| Transcript exported | `0` | The transcript |
+| Transcript exists but is empty | `0` | Empty |
+| No transcript yet, or `--polish` with no polished block | `1` | Empty (reason on stderr) |
+| Unknown recording ID | `1` | Empty |
+| Session expired | `2` | Empty |
+| Network or Plaud server error, including a failed transcript download | `3` (or `1` for a non-retryable HTTP error) | Empty |
+
+To export a whole folder, list it with `--all` and loop over the IDs:
+
+```
+plaud-tools list --all --folder-id <folder-id> | jq -r '.[] | select(.has_transcript) | .id' |
+  while read -r id; do plaud-tools transcript "$id" --segments > "$id.json" || echo "failed: $id" >&2; done
+```
 
 ### `summary`
 

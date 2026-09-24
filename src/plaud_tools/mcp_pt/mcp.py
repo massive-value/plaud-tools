@@ -24,7 +24,9 @@ from ..core.query import (
     folder_dict,
     format_transcript,
     parse_isoish,
+    structured_segments,
     summarize_recording,
+    transcript_fingerprint,
 )
 from ..core.session import SessionManager, SessionStore
 
@@ -218,21 +220,23 @@ MAX_TRANSCRIPT_UTTERANCES = 1000
 
 def _page_transcript(
     segments: list[dict[str, Any]], after: int, limit: int
-) -> tuple[list[dict[str, Any]], int | None]:
-    """Return one page of utterances plus the cursor for the next.
+) -> tuple[list[dict[str, Any]], int, int | None]:
+    """Return one page of utterances, its actual start index, and the next cursor.
 
     Paging on utterance boundaries rather than characters: a character offset
     cuts mid-word and hands the model a fragment ("…and then Sar"), and forces
     it to do offset arithmetic to continue. An utterance index can't tear a
     record, and ``next_after`` is directly reusable as the next ``after``.
 
-    ``after`` past the end yields an empty page and no cursor rather than an
-    error — a caller that reuses a stale cursor after the transcript shrank
-    gets "nothing more", which is true.
+    ``after`` past the end yields an empty page starting at EOF and no cursor
+    rather than an error — a caller that reuses a stale cursor after the
+    transcript shrank gets "nothing more", which is true.
     """
-    page = segments[after : after + limit]
-    next_after = after + len(page) if after + len(page) < len(segments) else None
-    return page, next_after
+    start = min(after, len(segments))
+    page = segments[start : start + limit]
+    end = start + len(page)
+    next_after = end if end < len(segments) else None
+    return page, start, next_after
 
 
 def _transcript_unavailable_note(detail: Any, requested_block: str) -> str | None:
@@ -451,7 +455,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         def inner(client: PlaudClient) -> dict[str, Any]:
             include_set = set(include or [])
-            need_transcript = bool(include_set & {"transcript", "speakers"})
+            need_transcript = bool(include_set & {"transcript", "segments", "speakers"})
             need_summary = "summary" in include_set
             detail = client.get_recording(
                 recording_id,
@@ -472,18 +476,31 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     )
                 else:
                     output["audio_url_expires_in_s"] = AUDIO_URL_TTL_S
-            if "transcript" in include_set:
+            if include_set & {"transcript", "segments"}:
                 segments = detail.transcript_segments or []
-                page, next_after = _page_transcript(segments, transcript_after, transcript_limit)
-                output["transcript"] = format_transcript(page)
+                page, start, next_after = _page_transcript(segments, transcript_after, transcript_limit)
+                if "transcript" in include_set:
+                    output["transcript"] = format_transcript(page)
+                if "segments" in include_set:
+                    output["transcript_segments"] = structured_segments(page, start)
                 output["transcript_block"] = transcript_block
                 output["transcript_utterance_count"] = len(segments)
+                output["transcript_page_start"] = start
+                output["transcript_page_end"] = start + len(page)
                 # Keep transcript_truncated as the loud "this is partial" flag —
                 # a caller that ignores transcript_next_after would otherwise
                 # summarize half a meeting believing it had the whole thing.
+                # It is NOT a continuation signal (a last page is still
+                # partial); transcript_has_more / transcript_next_after are.
                 output["transcript_truncated"] = next_after is not None or transcript_after > 0
-                if next_after is not None:
-                    output["transcript_next_after"] = next_after
+                output["transcript_has_more"] = next_after is not None
+                output["transcript_next_after"] = next_after
+                # Hash of the whole block, identical on every page of the same
+                # version; None when the requested block does not exist.
+                block_available = transcript_block in (detail.transcript_blocks_available or [])
+                output["transcript_fingerprint"] = (
+                    transcript_fingerprint(segments) if block_available else None
+                )
                 note = _transcript_unavailable_note(detail, transcript_block)
                 if note is not None:
                     output["note"] = note

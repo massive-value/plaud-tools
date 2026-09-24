@@ -6,6 +6,8 @@ differences; the canonical versions below reconcile those differences.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -24,6 +26,53 @@ def format_transcript(segments: list[dict[str, Any]]) -> str:
         content = segment.get("content") or ""
         parts.append(f"{speaker}: {content}" if speaker else content)
     return "\n\n".join(parts)
+
+
+def _timing(value: Any) -> int | float | None:
+    """Upstream timing as-is when numeric; ``None`` when missing or malformed."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return value
+
+
+def structured_segments(segments: list[dict[str, Any]], start: int = 0) -> list[dict[str, Any]]:
+    """Render utterance dicts as source-location records for export/citation.
+
+    ``start`` is the absolute index of ``segments[0]`` within the full block, so
+    a page of utterances keeps the same ``index`` values as the whole
+    transcript. ``start_ms``/``end_ms`` are Plaud's per-utterance timings —
+    milliseconds from the start of the recording — passed through verbatim, or
+    ``None`` when Plaud did not send them. ``speaker`` matches the label
+    ``format_transcript`` prints.
+
+    Shared by the CLI ``transcript --segments`` export and MCP
+    ``get_recording(include=["segments"])`` so both surfaces cite identical
+    locations.
+    """
+    return [
+        {
+            "index": start + offset,
+            "speaker": segment.get("speaker") or segment.get("original_speaker") or "",
+            "text": segment.get("content") or "",
+            "start_ms": _timing(segment.get("start_time")),
+            "end_ms": _timing(segment.get("end_time")),
+        }
+        for offset, segment in enumerate(segments)
+    ]
+
+
+def transcript_fingerprint(segments: list[dict[str, Any]]) -> str:
+    """Content fingerprint of a whole transcript block: ``"sha256:<hex>"``.
+
+    Hashes every utterance field as Plaud returned it (text, speakers,
+    timings), so any edit — a corrected word, a renamed speaker — changes it,
+    and an unchanged block hashes identically on every read. Paging callers
+    compare it across pages to detect an edit mid-read and restart instead of
+    splicing two versions. This is our hash of the content, not a Plaud
+    revision number; Plaud exposes none.
+    """
+    canonical = json.dumps(segments, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> int:
@@ -83,6 +132,9 @@ def filter_recordings(
 
 # Upstream page size for incremental filtered browse (shared by cli.py and mcp.py).
 BROWSE_PAGE_SIZE = 200
+# Safety stop for exhaustive paging: 1000 pages x 200 = 200k recordings, far
+# beyond any real library. Only hit if the upstream ignores ``skip``.
+MAX_BROWSE_PAGES = 1000
 
 
 def collect_filtered_paged(
@@ -95,7 +147,7 @@ def collect_filtered_paged(
     folder_id: str | None,
     unfiled: bool = False,
     after: int = 0,
-    limit: int,
+    limit: int | None,
 ) -> tuple[list[Any], bool]:
     """Incrementally fetch upstream pages, filter each one, and stop early.
 
@@ -105,15 +157,26 @@ def collect_filtered_paged(
       resolve ``has_more`` without over-fetching), or
     - the upstream returns fewer than ``page_size`` items (list exhausted).
 
+    ``limit=None`` means "everything": paging only stops at upstream
+    exhaustion (backs CLI ``list --all``), and ``has_more`` is always False.
+    Each request is still bounded to ``page_size``; if the upstream never runs
+    dry within ``MAX_BROWSE_PAGES`` requests this raises instead of returning a
+    list that merely looks complete.
+
     Returns ``(page, has_more)`` where ``page`` is the slice
     ``matched[after:after+limit]`` and ``has_more`` is True when a subsequent
     page would be non-empty.
     """
-    need = after + limit + 1
+    need = None if limit is None else after + limit + 1
     matched: list[Any] = []
     upstream_skip = 0
 
-    while len(matched) < need:
+    while need is None or len(matched) < need:
+        if upstream_skip >= MAX_BROWSE_PAGES * page_size:
+            raise RuntimeError(
+                f"recording list did not end after {MAX_BROWSE_PAGES} pages of {page_size}; "
+                "refusing to return a possibly incomplete list"
+            )
         batch = fetch_page(upstream_skip, page_size)
         if not batch:
             break
@@ -130,6 +193,8 @@ def collect_filtered_paged(
             break
         upstream_skip += page_size
 
+    if limit is None:
+        return matched[after:], False
     page = matched[after : after + limit]
     has_more = len(matched) > after + limit
     return page, has_more

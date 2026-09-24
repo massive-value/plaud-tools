@@ -132,7 +132,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="get_recording",
-        description="Fetch full detail for one recording. Transcripts are returned a page of utterances at a time — check transcript_truncated and follow transcript_next_after to read the rest.",  # noqa: E501
+        description="Fetch full detail for one recording. Transcripts are paged: while transcript_has_more, call again with transcript_after=transcript_next_after. A changed transcript_fingerprint between pages means it was edited; restart from 0.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -141,9 +141,9 @@ _TOOLS: list[types.Tool] = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["transcript", "speakers", "summary", "audio_url"],
+                        "enum": ["transcript", "segments", "speakers", "summary", "audio_url"],
                     },
-                    "description": "Large or extra fields to include: transcript, speakers, summary, audio_url",  # noqa: E501
+                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",  # noqa: E501
                 },
                 "transcript_after": {
                     "type": "integer",
@@ -156,7 +156,7 @@ _TOOLS: list[types.Tool] = [
                     "default": DEFAULT_TRANSCRIPT_UTTERANCES,
                     "minimum": 1,
                     "maximum": MAX_TRANSCRIPT_UTTERANCES,
-                    "description": f"Max utterances to return (default {DEFAULT_TRANSCRIPT_UTTERANCES}). When more remain, the response sets transcript_truncated=true and transcript_next_after.",  # noqa: E501
+                    "description": f"Max utterances per page (default {DEFAULT_TRANSCRIPT_UTTERANCES})",  # noqa: E501
                 },
                 "transcript_block": {
                     "type": "string",

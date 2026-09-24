@@ -217,7 +217,7 @@ class TestProcessRecordingBoundedWait:
 
 
 # ---------------------------------------------------------------------------
-# get_recording — transcript_offset / transcript_max_chars slicing
+# get_recording — utterance paging + completion contract
 # ---------------------------------------------------------------------------
 
 
@@ -247,7 +247,11 @@ class TestGetRecordingTranscriptPagination:
         assert payload["transcript"] == "S0: line 0\n\nS1: line 1\n\nS2: line 2"
         assert payload["transcript_truncated"] is False
         assert payload["transcript_utterance_count"] == 3
-        assert "transcript_next_after" not in payload
+        assert payload["transcript_has_more"] is False
+        assert payload["transcript_next_after"] is None
+        assert (payload["transcript_page_start"], payload["transcript_page_end"]) == (0, 3)
+        # Default response stays text-only.
+        assert "transcript_segments" not in payload
 
     def test_limit_pages_on_utterance_boundaries(self):
         handlers = build_handlers(lambda: self._client_with_utterances(5))
@@ -256,7 +260,9 @@ class TestGetRecordingTranscriptPagination:
         # Whole utterances only — no partial "line 1" fragment.
         assert payload["transcript"] == "S0: line 0\n\nS1: line 1"
         assert payload["transcript_truncated"] is True
+        assert payload["transcript_has_more"] is True
         assert payload["transcript_next_after"] == 2
+        assert (payload["transcript_page_start"], payload["transcript_page_end"]) == (0, 2)
 
     def test_next_after_resumes_exactly_where_the_page_ended(self):
         handlers = build_handlers(lambda: self._client_with_utterances(5))
@@ -274,9 +280,23 @@ class TestGetRecordingTranscriptPagination:
         )
         payload = json.loads(result["content"][0]["text"])
         assert payload["transcript"] == "S4: line 4"
-        assert "transcript_next_after" not in payload
+        assert payload["transcript_has_more"] is False
+        assert payload["transcript_next_after"] is None
+        assert (payload["transcript_page_start"], payload["transcript_page_end"]) == (4, 5)
         # Still flagged truncated: this page is not the start of the transcript.
         assert payload["transcript_truncated"] is True
+
+    def test_exact_final_page_ends_without_a_cursor(self):
+        """A page that ends exactly at EOF must not invite a follow-up call."""
+        handlers = build_handlers(lambda: self._client_with_utterances(4))
+        result = handlers["get_recording"](
+            "r1", include=["transcript"], transcript_after=2, transcript_limit=2
+        )
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == "S2: line 2\n\nS3: line 3"
+        assert payload["transcript_has_more"] is False
+        assert payload["transcript_next_after"] is None
+        assert payload["transcript_page_end"] == payload["transcript_utterance_count"] == 4
 
     def test_after_past_the_end_is_empty_not_an_error(self):
         """A stale cursor should mean "nothing more", not a failure."""
@@ -284,7 +304,29 @@ class TestGetRecordingTranscriptPagination:
         result = handlers["get_recording"]("r1", include=["transcript"], transcript_after=99)
         payload = json.loads(result["content"][0]["text"])
         assert payload["transcript"] == ""
-        assert "transcript_next_after" not in payload
+        assert payload["transcript_has_more"] is False
+        assert payload["transcript_next_after"] is None
+        # The actual page is empty at EOF, not at the requested offset.
+        assert (payload["transcript_page_start"], payload["transcript_page_end"]) == (3, 3)
+
+    def test_after_exactly_at_eof_is_empty_and_final(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(3))
+        result = handlers["get_recording"]("r1", include=["transcript"], transcript_after=3)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == ""
+        assert payload["transcript_has_more"] is False
+        assert (payload["transcript_page_start"], payload["transcript_page_end"]) == (3, 3)
+
+    def test_empty_transcript_terminates_with_a_fingerprint(self):
+        """An available-but-empty block is a real, finished (empty) transcript."""
+        handlers = build_handlers(lambda: self._client_with_utterances(0))
+        result = handlers["get_recording"]("r1", include=["transcript"])
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript"] == ""
+        assert payload["transcript_utterance_count"] == 0
+        assert payload["transcript_has_more"] is False
+        assert payload["transcript_next_after"] is None
+        assert payload["transcript_fingerprint"].startswith("sha256:")
 
     def test_default_limit_caps_a_long_transcript(self):
         handlers = build_handlers(lambda: self._client_with_utterances(500))
@@ -293,6 +335,60 @@ class TestGetRecordingTranscriptPagination:
         assert payload["transcript_next_after"] == 200
         assert payload["transcript_truncated"] is True
         assert payload["transcript_utterance_count"] == 500
+
+    def test_fingerprint_is_identical_on_every_page_of_one_version(self):
+        handlers = build_handlers(lambda: self._client_with_utterances(5))
+        prints = []
+        after = 0
+        while after is not None:
+            payload = json.loads(
+                handlers["get_recording"](
+                    "r1", include=["transcript"], transcript_after=after, transcript_limit=2
+                )["content"][0]["text"]
+            )
+            prints.append(payload["transcript_fingerprint"])
+            after = payload["transcript_next_after"]
+        assert len(prints) == 3
+        assert len(set(prints)) == 1
+
+    def test_fingerprint_changes_after_an_edit(self):
+        mock_client = self._client_with_utterances(3)
+        handlers = build_handlers(lambda: mock_client)
+        first = json.loads(
+            handlers["get_recording"]("r1", include=["transcript"], transcript_limit=1)["content"][0]["text"]
+        )
+        # Simulate a correct_transcript edit landing between page reads.
+        mock_client.get_recording.return_value.transcript_segments[2]["content"] = "line 2, corrected"
+        second = json.loads(
+            handlers["get_recording"]("r1", include=["transcript"], transcript_after=1, transcript_limit=1)[
+                "content"
+            ][0]["text"]
+        )
+        assert first["transcript_fingerprint"] != second["transcript_fingerprint"]
+
+    def test_segments_keep_absolute_index_and_timing(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1",
+            filename="Meeting",
+            is_trans=True,
+            transcript_segments=[
+                {"speaker": "Alex", "content": "a", "start_time": 0, "end_time": 1500},
+                {"speaker": "", "original_speaker": "Speaker 2", "content": "b", "start_time": 1500},
+                {"speaker": "Alex", "content": "c"},
+            ],
+            transcript_blocks_available=["transaction"],
+        )
+        handlers = build_handlers(lambda: mock_client)
+        result = handlers["get_recording"]("r1", include=["segments"], transcript_after=1, transcript_limit=5)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["transcript_segments"] == [
+            {"index": 1, "speaker": "Speaker 2", "text": "b", "start_ms": 1500, "end_ms": None},
+            {"index": 2, "speaker": "Alex", "text": "c", "start_ms": None, "end_ms": None},
+        ]
+        # segments alone is opt-in structure, not the formatted text too.
+        assert "transcript" not in payload
+        assert mock_client.get_recording.call_args.kwargs["include_transcript"] is True
 
     def test_negative_after_returns_validation_error(self):
         handlers = build_handlers(lambda: MagicMock())
@@ -423,6 +519,9 @@ class TestGetRecordingTranscriptBlock:
         payload = json.loads(result["content"][0]["text"])
         assert "transaction_polish" in payload["note"]
         assert "Available blocks: transaction" in payload["note"]
+        # Missing is not "empty": no fingerprint for a block that does not exist.
+        assert payload["transcript_fingerprint"] is None
+        assert payload["transcript_has_more"] is False
 
     def test_untranscribed_recording_points_at_process_recording(self):
         mock_client = MagicMock()
