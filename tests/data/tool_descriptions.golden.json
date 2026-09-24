@@ -42,14 +42,15 @@
     "name": "browse_recordings"
   },
   {
-    "description": "Fetch full detail for one recording. Transcripts are returned a page of utterances at a time \u2014 check transcript_truncated and follow transcript_next_after to read the rest.",
+    "description": "Fetch full detail for one recording. Transcripts are paged: while transcript_has_more, call again with transcript_after=transcript_next_after. A changed transcript_fingerprint between pages means it was edited; restart from 0.",
     "inputSchema": {
       "properties": {
         "include": {
-          "description": "Large or extra fields to include: transcript, speakers, summary, audio_url",
+          "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",
           "items": {
             "enum": [
               "transcript",
+              "segments",
               "speakers",
               "summary",
               "audio_url"
@@ -78,7 +79,7 @@
         },
         "transcript_limit": {
           "default": 200,
-          "description": "Max utterances to return (default 200). When more remain, the response sets transcript_truncated=true and transcript_next_after.",
+          "description": "Max utterances per page (default 200)",
           "maximum": 1000,
           "minimum": 1,
           "type": "integer"

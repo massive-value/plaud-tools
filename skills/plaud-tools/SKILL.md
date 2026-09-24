@@ -11,13 +11,32 @@ PlaudTools tray app, not here — there is no login tool, by design.
 ## The three things that go wrong most
 
 **1. Transcripts are paginated.** `get_recording(include=["transcript"])` returns
-`transcript_limit` utterances (default 200), not the whole thing. Check
-`transcript_truncated`; if it's `true`, call again with
-`transcript_after` set to the returned `transcript_next_after` and keep going
-until there's no cursor. **Summarizing a `transcript_truncated: true` response as
-if it were the full meeting is the single worst failure mode here** — you will
-confidently summarize the first third of a call. `transcript_utterance_count`
-tells you the total up front.
+`transcript_limit` utterances (default 200), not the whole thing. While
+`transcript_has_more` is `true`, call again with `transcript_after` set to the
+returned `transcript_next_after`. At the end `transcript_has_more` is `false` and
+`transcript_next_after` is `null`. **Summarizing a partial page as if it were the
+full meeting is the single worst failure mode here** — you will confidently
+summarize the first third of a call. `transcript_truncated: true` means "this
+page is not the whole transcript" (a last page is still truncated), so don't use
+it to decide whether to keep paging. `transcript_utterance_count` gives the
+total up front, and `transcript_page_start`/`transcript_page_end` (end-exclusive)
+say which utterances you got.
+
+Every page carries `transcript_fingerprint`, a hash of the whole transcript. If
+it changes between pages, someone edited the transcript mid-read. Start over
+from `transcript_after=0` rather than stitching two versions together.
+Utterance indexes only hold within one fingerprint.
+
+Need to cite where something was said? Add `"segments"` to `include` to get
+`transcript_segments`: each utterance's absolute `index`, `speaker`, verbatim
+`text`, and `start_ms`/`end_ms` (milliseconds from recording start, `null` when
+Plaud has no timing). `transcript_block="transaction"` (default) is the raw
+transcript; `"transaction_polish"` is Plaud's cleaned-up pass, and the two have
+different fingerprints. If the requested block doesn't exist, the response
+has `transcript_fingerprint: null` and a `note` naming the blocks that do.
+
+For a full export to disk, use the CLI instead of paging through MCP:
+`plaud-tools transcript <id> --segments > file.json` (see docs/CLI.md).
 
 **2. Preview text edits with `dry_run`.** `edit_transcript(action="correct")` and
 `edit_summary(action="correct")` are literal, case-sensitive find-and-replace
@@ -33,7 +52,7 @@ page through everything and filter yourself.
 | Tool | Notes |
 |---|---|
 | `browse_recordings` | Filters: `query` (title substring), `since`/`until` (ISO 8601), `folder`, `trash`. Paginate with `after` ← `next_after`. |
-| `get_recording` | `include=["transcript","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
+| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
 | `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |

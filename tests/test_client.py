@@ -1707,6 +1707,36 @@ class TestNonJsonBodyOnSuccess:
         assert not isinstance(exc_info.value, json.JSONDecodeError)
         assert exc_info.value.http_status == 200
 
+    def test_transcript_data_link_http_error_raises_instead_of_reading_empty(self, tmp_path):
+        """#210: a finished block that fails to download is not an empty transcript."""
+        manager, _ = make_manager(tmp_path)
+        detail_response = HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "status": 0,
+                    "data": {
+                        "file_id": "rec1",
+                        "content_list": [
+                            {
+                                "data_type": "transaction",
+                                "task_status": 1,
+                                "data_link": "https://s3.fake/transcript.json",
+                            }
+                        ],
+                    },
+                }
+            ).encode(),
+            {},
+        )
+        transport = StubTransport([detail_response, HttpResponse(403, b"<Error>AccessDenied</Error>", {})])
+
+        client = PlaudClient(manager, transport=transport)
+        with pytest.raises(PlaudApiError) as exc_info:
+            client.get_recording("rec1", include_transcript=True)
+
+        assert exc_info.value.http_status == 403
+
 
 class TestTranscriptBlockSelection:
     """get_recording must fetch the requested transcript block, not always the raw one."""
