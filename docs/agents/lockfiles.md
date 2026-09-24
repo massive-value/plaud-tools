@@ -17,12 +17,13 @@ macOS and Linux omit it until the bundle port lands (D2 roadmap).
 
 ## How to refresh (upgrade all pins)
 
-`.github/workflows/constraints-refresh.yml` runs this automatically every
-week and opens a PR if anything changed — Dependabot's `pip` ecosystem
-doesn't understand these hand-compiled per-platform files, so this is how
-they stay current without a human remembering to run the commands below.
-Trigger it early with `gh workflow run constraints-refresh.yml`, or run the
-commands yourself:
+This is a manual step — Dependabot's `pip` ecosystem doesn't discover these
+hand-compiled per-platform files, and a scheduled GitHub Actions workflow
+can't substitute for a human here: this repo doesn't allow Actions to open
+PRs, and a PR opened with the default `GITHUB_TOKEN` wouldn't trigger CI
+even if it could. **Regenerating constraints is part of the pre-release
+checklist** (see "When to refresh" below) — run it before cutting a release
+if the last refresh is more than 4 weeks old.
 
 Requires: `uv` on PATH (`pip install uv`).  Run from repo root.  Network access required.
 
@@ -51,12 +52,15 @@ verify each file is installable on its native runner before merge.
 
 ## When to refresh
 
-- After any `pyproject.toml` dependency change (bounds or new deps) — the
-  weekly workflow won't pick up a bound change on its own schedule fast
-  enough to unblock you, so refresh by hand in the same PR.
-- Otherwise the weekly scheduled workflow handles the regular cadence.
-- Before a new release if the last refresh was more than 4 weeks ago and the
-  scheduled workflow hasn't run (check for an open refresh PR first).
+- After any `pyproject.toml` dependency change (bounds or new deps) — refresh
+  by hand in the same PR.
+- **Pre-release checklist step:** before cutting a release, check the
+  `Provenance` date below (or `git log -1 -- constraints/`); if it's more
+  than 4 weeks old, run the refresh commands and open a PR with the updated
+  files first. The `constraints-install` and `test-windows-constraints` CI
+  jobs validate it before merge.
+- On a regular cadence otherwise (e.g. monthly) to pick up security patches,
+  even between releases.
 
 ## How the constraints are used
 

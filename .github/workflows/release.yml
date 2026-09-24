@@ -47,19 +47,20 @@ jobs:
   ffmpeg-pin:
     uses: ./.github/workflows/ffmpeg-pin.yml
 
-  # Wave 0 / CI-CD 1 (hardened) — this job never gets `contents: write`. It
-  # only builds and uploads a workflow artifact; a separate, minimal job
-  # (publish-github-release) is the only one trusted to write to the repo.
-  # persist-credentials: false on checkout means even a compromised build
-  # step (pyinstaller, ffmpeg download, etc.) has no git-push-capable token
+  # Wave 0 / CI-CD 1 (hardened) — this job never gets `contents: write`, nor
+  # `id-token`/`attestations` (those are scoped to the separate `attest` job
+  # below — GitHub Actions grants permissions for a job's whole duration,
+  # not per step, so keeping them here would hand every pyinstaller/ffmpeg
+  # step in this job access it doesn't need). This job only builds and
+  # uploads a workflow artifact; `publish-github-release` is the only job
+  # trusted to write to the repo. persist-credentials: false on checkout
+  # means even a compromised build step has no git-push-capable token
   # sitting in the workspace to exfiltrate.
   build:
     needs: [version-check, ci-gate, ffmpeg-pin]
     runs-on: windows-latest
     permissions:
       contents: read
-      id-token: write
-      attestations: write
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,17 +161,6 @@ jobs:
           "$hash  PlaudTools.zip" | Set-Content SHA256SUMS
           Write-Host "SHA256SUMS: $hash  PlaudTools.zip"
 
-      # Cryptographically attests that this exact workflow run produced
-      # PlaudTools.zip (SLSA-style build provenance via Sigstore), so anyone
-      # downloading the release asset can verify it wasn't tampered with
-      # between build and publish. Requires its own elevated permissions,
-      # scoped to only this step.
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        id: attest
-        with:
-          subject-path: PlaudTools.zip
-
       - name: Upload release bundle artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -180,6 +170,26 @@ jobs:
             SHA256SUMS
             constraints/windows.txt
           retention-days: 7
+
+  # Attests build provenance for PlaudTools.zip (SLSA-style, via Sigstore) in
+  # its own job, isolated from the build job above so the id-token /
+  # attestations permissions it needs are never held by the pyinstaller /
+  # ffmpeg build steps.
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: PlaudTools.zip
 
   # Wave 0 / CI-CD 1 (hardened) — the only job in this workflow with
   # `contents: write`. It does nothing but download the artifact `build`
@@ -204,8 +214,12 @@ jobs:
             constraints/windows.txt
           generate_release_notes: true
 
+  # needs both build (obviously) and publish-github-release: PyPI must never
+  # ship a version before the GitHub release (and its assets, incl. the
+  # tray bundle the in-app updater fetches) exists, or the updater would see
+  # a PyPI version with no matching bundle to download.
   publish:
-    needs: build
+    needs: [build, publish-github-release]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
