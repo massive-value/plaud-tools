@@ -20,7 +20,6 @@ from ..core.appdata import tray_log as _log_path
 from ..core.errors import PlaudSessionExpiredError
 from ..core.layout import InstallLayout
 from ..core.session import SessionManager, SessionStore
-from .process_probe import active_enumerator_name
 
 # ---------------------------------------------------------------------------
 # Install-dir / executable resolution (delegated to InstallLayout)
@@ -178,9 +177,6 @@ def run_doctor(store: SessionStore | None = None) -> dict[str, Any]:
         "session": _session_section(store),
         "ai_clients": _ai_clients_section(),
         "log_path": str(_log_path()),
-        "mcp_lifecycle": {
-            "enumerator": active_enumerator_name(),
-        },
     }
 
 

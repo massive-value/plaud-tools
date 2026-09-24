@@ -37,7 +37,7 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     # mcp and its heavy async stack are not needed for the CLI
-    excludes=['mcp', 'anyio', 'starlette', 'pydantic', 'httpx', 'uvicorn'],
+    excludes=['mcp', 'anyio', 'starlette', 'pydantic', 'httpx2', 'httpcore2', 'uvicorn'],
     cipher=block_cipher,
     noarchive=False,
 )

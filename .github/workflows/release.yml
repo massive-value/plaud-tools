@@ -134,21 +134,13 @@ jobs:
       - name: Smoke test MCP executable
         run: out\plaud-tray\PlaudTools\mcp\plaud-mcp.exe --version
 
-      # Wave 0 / CI-CD 2 — the tray exe itself was never executed at release
-      # (only the two CLI/MCP --version smokes above). Run the same
-      # frozen-import proof ci.yml's bundle-smoke job runs, but against the
-      # actual assembled release layout (out\plaud-tray\PlaudTools\), which
-      # is a distinct build+assembly path from the CI bundle-smoke job.
-      - name: Diagnose-enum proof on assembled release bundle
-        shell: pwsh
-        run: |
-          $output = & "out\plaud-tray\PlaudTools\PlaudTools.exe" --diagnose-enum
-          Write-Host "diagnose-enum output: $output"
-          if ($output -notmatch "enumerator=psutil") {
-            Write-Error "[RELEASE-GATE] psutil is NOT the active enumerator in the assembled release bundle. Output: $output"
-            exit 1
-          }
-          Write-Host "[RELEASE-GATE] psutil confirmed as active enumerator in the assembled release bundle."
+      # The --diagnose-enum frozen-import proof that used to run here was
+      # removed along with the dead psutil process-enumerator (see
+      # docs/adr/003-mcp-process-lifecycle.md's 2026-09-24 amendment). That
+      # was also the only place the assembled PlaudTools.exe itself got
+      # executed at release (only the two CLI/MCP --version smokes above
+      # run); reintroducing a real health-check flag for the tray exe is a
+      # candidate follow-up, tracked as a gap rather than solved here.
 
       # Wave 0 / CI-CD 2 (continued) — exercise the *shipped* mcp\ffmpeg.exe
       # in the assembled layout, not just a PATH-resolved ffmpeg. transcode.py

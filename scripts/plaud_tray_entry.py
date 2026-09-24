@@ -1,47 +1,6 @@
 import sys
 
 # ---------------------------------------------------------------------------
-# --diagnose-enum: frozen-import proof for Wave 2 / C4 (psutil in bundle).
-#
-# When this flag is present the entry point imports plaud_tools.cli.process_probe
-# and reports which process enumerator is active (psutil vs PowerShell
-# fallback), then exits 0 WITHOUT importing pystray / PIL / tkinter or
-# launching any GUI.  This is intentional: CI runners have no display, so
-# we must avoid any GUI import under this flag.
-#
-# Output format (one line to stdout):
-#   enumerator=psutil
-#   enumerator=powershell_fallback
-#
-# The bundle-smoke CI step asserts the output contains "enumerator=psutil".
-# ---------------------------------------------------------------------------
-if "--diagnose-enum" in sys.argv:
-    import importlib.util
-
-    _psutil_available = importlib.util.find_spec("psutil") is not None
-    if _psutil_available:
-        # Confirm the import actually works (not just that the spec exists).
-        try:
-            import psutil as _psutil  # noqa: F401
-
-            _psutil_available = True
-        except Exception:
-            _psutil_available = False
-
-    _enumerator = "psutil" if _psutil_available else "powershell_fallback"
-    print(f"enumerator={_enumerator}", flush=True)
-
-    # Also import process_probe to ensure its full import chain resolves
-    # in the frozen build (exercises the hiddenimport entries in the spec).
-    try:
-        import plaud_tools.cli.process_probe as _ml  # noqa: F401
-    except Exception as _exc:
-        print(f"process_probe import failed: {_exc}", flush=True)
-        sys.exit(1)
-
-    sys.exit(0)
-
-# ---------------------------------------------------------------------------
 # Normal tray startup path.
 # ---------------------------------------------------------------------------
 
