@@ -171,6 +171,7 @@ class StubClient:
         self, recording_id, template_type=None, language=None, diarization=None, llm=None
     ):
         self.transcribe_call = (recording_id, template_type, language, diarization, llm)
+        return True
 
     def get_task_status(self, recording_id=None):
         self.status_call = recording_id
@@ -967,6 +968,32 @@ def test_cli_login_uses_auth_and_returns_stored_shape(tmp_path: Path):
     }
 
 
+def test_cli_login_wrong_password_exits_1_without_refresh_hint(monkeypatch, tmp_path: Path, capsys):
+    """Live shape (2026-09-24): wrong credentials are HTTP 200 + status -2.
+    That is bad input (exit 1), not an expired session (exit 2 + 'refresh')."""
+    import plaud_tools.cli.cli as cli_mod
+    from plaud_tools.core.auth import PlaudAuth
+    from plaud_tools.core.transport import HttpResponse
+
+    reply = json.dumps({"status": -2, "msg": "wrong account or password", "access_token": ""}).encode()
+
+    class OneShot:
+        def request(self, method, url, headers, body=None, **kwargs):
+            return HttpResponse(200, reply, {})
+
+    monkeypatch.setattr(cli_mod, "PlaudAuth", lambda store: PlaudAuth(store, transport=OneShot()))
+    store = SessionStore(tmp_path / "s.json", service_name="plaud-tools-test-badpw", account_name="session")
+    monkeypatch.setattr(cli_mod, "SessionStore", lambda *a, **k: store)
+
+    code = main(["login", "--email", "user@example.com", "--password", "nope"])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "wrong account or password" in err
+    assert "refresh" not in err
+    assert store.load() is None
+
+
 def test_cli_refresh_uses_stored_email_and_region(tmp_path: Path):
     """`refresh` reuses the already-stored email/region instead of requiring them again."""
     store = SessionStore(
@@ -1574,6 +1601,7 @@ class UploadStubClient(StubClient):
 
     def transcribe_and_summarize(self, recording_id, **kwargs):
         self.transcribe_call = recording_id
+        return True
 
     def wait_for_transcription(self, recording_id, **kwargs):
         self.wait_call = recording_id
@@ -1699,6 +1727,7 @@ class MutateStub(StubClient):
 
     def transcribe_and_summarize(self, recording_id, **kwargs):
         self.transcribe_call = recording_id
+        return True
 
     def wait_for_transcription(self, recording_id, **kwargs):
         self.wait_call = recording_id
@@ -1791,6 +1820,31 @@ def test_mcp_process_recording_rejects_unknown_wait_mode():
     assert result["isError"] is True
     payload = json.loads(result["content"][0]["text"])
     assert "wait must be one of" in payload["error"]
+
+
+@pytest.mark.parametrize(
+    ("is_trans", "is_summary", "expected"),
+    [
+        (True, True, "already has a transcript and summary"),
+        (True, False, "no finished summary"),
+        (False, False, "probably still processing"),
+    ],
+)
+def test_mcp_process_recording_already_processed_reports_real_state(is_trans, is_summary, expected):
+    """When Plaud starts no new job, the message comes from the recording's
+    actual state, not from Plaud's status-1 reply alone."""
+    client = MutateStub()
+    client.transcribe_and_summarize = lambda recording_id, **kwargs: False
+    client.get_recording = lambda recording_id, **kwargs: RecordingDetail(
+        id=recording_id, filename="m", is_trans=is_trans, is_summary=is_summary
+    )
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", template_type="MEETING", wait="summary")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["already_processed"] is True
+    assert (payload["is_trans"], payload["is_summary"]) == (is_trans, is_summary)
+    assert expected in payload["message"]
+    assert client.wait_call is None
 
 
 def test_mcp_merge_recordings_returns_slim_summary():

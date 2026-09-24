@@ -267,6 +267,13 @@ class TestGoogleSsoHint:
         assert "Forgot password" in message
         assert "web.plaud.ai" in message
 
+    def test_hint_appended_for_plaud_wrong_credentials_status(self):
+        """The real wrong-password reply is HTTP 200 + status -2, not a 401."""
+        error = PlaudApiError("wrong account or password", plaud_code=-2)
+        message = login_mod._error_message_with_hints(error)
+        assert message.startswith("wrong account or password")
+        assert "Forgot password" in message
+
     def test_hint_not_appended_for_other_errors(self):
         message = login_mod._error_message_with_hints(PlaudApiError("bad credentials"))
         assert message == "bad credentials"

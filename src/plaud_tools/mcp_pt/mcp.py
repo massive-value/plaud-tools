@@ -15,6 +15,7 @@ from ..core.client import (
     TRANSCRIPT_BLOCKS,
     PlaudClient,
     PlaudRecordingQuery,
+    describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.query import (
@@ -748,13 +749,28 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     error_code="validation",
                     retryable=False,
                 )
-            client.transcribe_and_summarize(
+            started = client.transcribe_and_summarize(
                 recording_id,
                 template_type=template_type,
                 language=language,
                 diarization=diarization,
                 llm=llm,
             )
+            if not started:
+                # Plaud keeps the existing output and ignores the new options,
+                # so say so instead of implying a fresh run happened.
+                detail = client.get_recording(recording_id)
+                return _json_result(
+                    {
+                        "ok": True,
+                        "recording_id": recording_id,
+                        "already_processed": True,
+                        "is_trans": detail.is_trans,
+                        "is_summary": detail.is_summary,
+                        "message": describe_unstarted_process(detail)
+                        + " Use get_recording to read it, or edit_summary to change the summary.",
+                    }
+                )
             if wait == "none":
                 return _json_result(
                     {

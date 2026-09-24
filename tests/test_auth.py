@@ -64,6 +64,33 @@ def test_login_raises_on_bad_credentials_without_storing(tmp_path):
     assert store.load() is None
 
 
+def test_login_follows_region_redirect_and_stores_new_region(tmp_path):
+    """Plaud answers a login sent to the wrong region with status -302 and the
+    right API host; login re-posts there once and stores that region."""
+    transport = StubTransport(
+        [
+            HttpResponse(
+                200,
+                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
+                {},
+            ),
+            HttpResponse(200, json.dumps({"status": 0, "access_token": "header.payload.sig"}).encode(), {}),
+        ]
+    )
+    store = SessionStore(
+        tmp_path / "session.json", service_name="plaud-tools-test-auth-redirect", account_name="session"
+    )
+    session = PlaudAuth(store, transport=transport).login("user@example.com", "pw", "us")
+
+    assert [call["url"] for call in transport.calls] == [
+        "https://api.plaud.ai/auth/access-token",
+        "https://api-euc1.plaud.ai/auth/access-token",
+    ]
+    assert transport.calls[1]["body"] == transport.calls[0]["body"]
+    assert session.region == "eu"
+    assert store.load().region == "eu"
+
+
 def test_login_raises_clean_error_on_http_failure(tmp_path):
     transport = StubTransport([HttpResponse(502, b"", {})])
     auth = PlaudAuth(

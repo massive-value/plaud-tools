@@ -16,6 +16,7 @@ from ..core.client import (
     DEFAULT_TRANSCRIPT_BLOCK,
     PlaudClient,
     PlaudRecordingQuery,
+    describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.query import (
@@ -809,13 +810,28 @@ def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
-    client.transcribe_and_summarize(
+    started = client.transcribe_and_summarize(
         args.recording_id,
         template_type=args.template,
         language=args.language,
         diarization=args.diarization,
         llm=args.llm,
     )
+    if not started:
+        # Plaud started no new job; report what the recording actually has.
+        detail = client.get_recording(args.recording_id)
+        return json.dumps(
+            {
+                "accepted": False,
+                "recording_id": args.recording_id,
+                "already_processed": True,
+                "is_trans": detail.is_trans,
+                "is_summary": detail.is_summary,
+                "message": describe_unstarted_process(detail)
+                + " Use 'set-summary' or 'correct-summary' to change the summary text.",
+            },
+            indent=2,
+        )
     result: dict[str, Any] = {
         "accepted": True,
         "recording_id": args.recording_id,

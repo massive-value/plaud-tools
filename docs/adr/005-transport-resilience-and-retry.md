@@ -45,6 +45,12 @@ second `-302` on the retry raises `PlaudApiError("region redirect loop")`
 immediately. Infinite recursion is therefore impossible. The body is
 forwarded through the redirect on POST/PATCH/DELETE.
 
+The new region comes from `data.domains.api` in the `-302` payload. A
+known host maps to its `BASE_URLS` key (`us`, `eu`); any other
+`*.plaud.ai` host is stored as the bare host and used directly. A host
+outside `plaud.ai` is refused so the bearer token never leaves Plaud.
+`PlaudAuth.login` follows the same redirect once for the login POST.
+
 ### Retry / backoff (Wave 2 / C5)
 
 `_request_json` wraps the transport call in a retry loop with these

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `process_recording` / `plaud-tools transcribe` on an already-processed
+  recording no longer fails with "Plaud API error: success". Plaud keeps the
+  existing transcript and summary and ignores the new template; the result now
+  says so with `already_processed: true`.
+- Login follows Plaud's `-302` region redirect to the API host Plaud names and
+  stores that region. Region redirects on normal API calls also use the
+  returned host instead of assuming "not EU means US".
+- The tray sign-in window shows the Google sign-in hint on Plaud's real
+  wrong-password reply (HTTP 200, status -2), not only on an HTTP 401.
+
 ## [0.10.0] - 2026-09-24
 
 Audit remediation across the whole stack: core and MCP (#212), CLI (#213),
