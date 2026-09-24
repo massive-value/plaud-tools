@@ -8,7 +8,7 @@ transitive dependency to a specific version for reproducible builds.
 
 | File | Platform | Extras | Used by |
 |---|---|---|---|
-| `constraints/windows.txt` | Windows x86_64, Python 3.12 | `[tray,dev]` | `release.yml` build job; CI `constraints-install` job |
+| `constraints/windows.txt` | Windows x86_64, Python 3.14 | `[tray,dev]` | `release.yml` build job; CI `constraints-install` job |
 | `constraints/macos.txt` | macOS (aarch64), Python 3.12 | `[dev]` | CI `constraints-install` job; future macOS bundle (D2) |
 | `constraints/linux.txt` | Linux x86_64, Python 3.12 | `[dev]` | CI `constraints-install` job; future Linux bundle (D2) |
 
@@ -30,7 +30,7 @@ Requires: `uv` on PATH (`pip install uv`).  Run from repo root.  Network access 
 ```sh
 # Windows — includes [tray] extras
 uv pip compile --upgrade \
-    --python-platform windows --python-version 3.12 \
+    --python-platform windows --python-version 3.14 \
     --extra tray --extra dev \
     pyproject.toml -o constraints/windows.txt
 

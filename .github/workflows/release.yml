@@ -69,7 +69,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14'
           cache: pip
 
       - name: Sync pyproject version to release tag
@@ -89,7 +89,7 @@ jobs:
       - name: Install dependencies
         # -c pins every transitive dep to the audited windows constraint file (Wave 2 / C3).
         # Regenerate constraints/windows.txt via: uv pip compile --upgrade --python-platform windows
-        #   --python-version 3.12 --extra tray --extra dev pyproject.toml -o constraints/windows.txt
+        #   --python-version 3.14 --extra tray --extra dev pyproject.toml -o constraints/windows.txt
         run: pip install -c constraints/windows.txt ".[tray,dev]"
 
       - name: Generate Windows PE version info

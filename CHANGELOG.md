@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sometimes hit the Windows thread pool's own handle. The MCP server now
   keeps `platform` off WMI.
 
+### Changed
+
+- The Windows bundles (MCP server, CLI, tray) now run on Python 3.14
+  instead of 3.12, which also carries the upstream fix for the WMI bug
+  above. The tray and CLI bundles get the same WMI guard.
+- The bundles no longer ship setuptools, mypy or pytest, and the MCP and
+  CLI bundles no longer ship Pillow. The MCP bundle drops from 64 MB to
+  46 MB.
+
 ## [0.10.0] - 2026-09-24
 
 Audit remediation across the whole stack: core and MCP (#212), CLI (#213),

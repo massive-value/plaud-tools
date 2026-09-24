@@ -13,8 +13,12 @@
 # AI clients call the server as:
 #   path.join(process.resourcesPath, 'plaud-mcp', 'plaud-mcp', 'plaud-mcp.exe')
 
+import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import copy_metadata
+
+sys.path.insert(0, SPECPATH)
+from _bundle_common import DEV_ONLY_EXCLUDES, WMI_RUNTIME_HOOK  # noqa: E402
 
 block_cipher = None
 src = Path(SPECPATH).parent / 'src'
@@ -49,9 +53,9 @@ a = Analysis(
         'pywintypes',
     ],
     hookspath=[],
-    # Must run before pyi_rth_setuptools, which calls platform.system() at startup.
-    runtime_hooks=[str(Path(SPECPATH) / 'rth_disable_wmi.py')],
-    excludes=[],
+    runtime_hooks=[WMI_RUNTIME_HOOK],
+    # PIL arrives only through pygments' optional image formatter; the MCP server never draws.
+    excludes=[*DEV_ONLY_EXCLUDES, 'PIL'],
     cipher=block_cipher,
     noarchive=False,
 )
