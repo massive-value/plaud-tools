@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-24
+
+Three fixes since 0.10.0: two live-tested login/processing bugs (#225) and a
+CPU-spin bug in the MCP server (#226), plus the Windows bundles moving to
+Python 3.14 (#227), which also picks up the real upstream fix for the CPU
+bug.
+
 ### Fixed
 
 - `process_recording` / `plaud-tools transcribe` on an already-processed
@@ -1776,7 +1783,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/massive-value/plaud-tools/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/massive-value/plaud-tools/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/massive-value/plaud-tools/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/massive-value/plaud-tools/compare/v0.8.1...v0.8.2
