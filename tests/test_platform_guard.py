@@ -11,9 +11,8 @@ import plaud_tools.mcp_pt.server as server_mod
 from plaud_tools.core.platform_guard import disable_wmi_queries
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="_wmi exists only on Windows")
 def test_platform_answers_without_wmi(monkeypatch):
-    import _wmi
+    _wmi = pytest.importorskip("_wmi")  # Windows, Python 3.12+
 
     queries = []
     monkeypatch.setattr(_wmi, "exec_query", lambda query: queries.append(query) or "")
