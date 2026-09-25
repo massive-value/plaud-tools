@@ -12,6 +12,7 @@ from ..core.appdata import events_path as _events_path
 from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
+    SEARCH_RESULT_CAP,
     TRANSCRIPT_BLOCKS,
     PlaudClient,
     PlaudRecordingQuery,
@@ -26,6 +27,7 @@ from ..core.query import (
     format_transcript,
     parse_isoish,
     structured_segments,
+    summarize_match,
     summarize_recording,
     transcript_fingerprint,
 )
@@ -404,6 +406,53 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     "next_after": next_after,
                 }
             )
+
+        return _call(get_client, inner)
+
+    def search_recordings(
+        query: str,
+        limit: int = SEARCH_RESULT_CAP,
+        after: int = 0,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        # Plaud answers one search with its SEARCH_RESULT_CAP best matches and
+        # no server paging, so after/limit page over that fixed list.  Each
+        # page re-runs the search; the ranking is stable between calls.
+        if not query or not query.strip():
+            return _error_result("query must not be empty", error_code="validation", retryable=False)
+        if not 1 <= limit <= SEARCH_RESULT_CAP:
+            return _error_result(
+                f"limit must be between 1 and {SEARCH_RESULT_CAP}",
+                error_code="validation",
+                retryable=False,
+            )
+        if after < 0:
+            return _error_result(
+                "after must be a non-negative integer (>= 0)",
+                error_code="validation",
+                retryable=False,
+            )
+
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            matches = client.search_content(
+                query.strip(),
+                since_ms=parse_isoish(since, "since") if since else None,
+                until_ms=parse_isoish(until, "until", end_of_day=True) if until else None,
+            )
+            page = matches[after : after + limit]
+            end = after + len(page)
+            payload: dict[str, Any] = {
+                "items": [summarize_match(match) for match in page],
+                "next_after": end if end < len(matches) else None,
+                "capped": len(matches) >= SEARCH_RESULT_CAP,
+            }
+            if payload["capped"]:
+                payload["notes"] = [
+                    f"Plaud returns only its {SEARCH_RESULT_CAP} best matches, so other recordings may "
+                    "also mention this. Narrow since/until to find them."
+                ]
+            return _json_result(payload)
 
         return _call(get_client, inner)
 
@@ -980,6 +1029,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
     return {
         "browse_recordings": browse_recordings,
+        "search_recordings": search_recordings,
         "get_recording": get_recording,
         "mutate_recording": mutate_recording,
         "delete_recording": delete_recording,

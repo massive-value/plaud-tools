@@ -122,6 +122,8 @@ must carry explicit evidence of consent through the call.
 
 **Incremental filtered browse.** `browse_recordings` / CLI `list`/`search` page the upstream API with `skip`/`limit`, filter each page, and stop once enough matches are collected to answer `has_more` honestly. The entire library is never pulled into memory.
 
+**Content search.** `search_recordings` / CLI `search --content` call Plaud's global search (`POST /gsearch/v1/search`) rather than scanning transcripts client-side. Plaud answers with its 20 best matches, one chunk each from either the transcript or the summary, and ignores paging parameters. We page over that fixed list with `after`/`limit` and set `capped` when all 20 came back. A date window (`since`/`until`) is the only way to reach matches past the cap.
+
 **Streaming disk-chunked uploads.** `upload_recording` reads 5 MiB chunks from disk per multipart part; transcoding writes the MP3 directly to a temp file (`transcode_to_mp3_path`). Large recordings do not scale memory with file size. The presign → multipart → complete protocol is unchanged.
 
 ## Supply-chain integrity

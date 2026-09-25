@@ -156,6 +156,17 @@ plaud-tools search "tax" --since 2025-01-01
 
 Shorthand for `list --query QUERY` — identical filtering, just with `query` as a positional argument instead of a flag. No separate ranking.
 
+Add `--content` to search what was said instead of titles:
+
+```
+plaud-tools search --content "rollover"
+plaud-tools search --content "roth conversion" --since 2026-01-01 --until 2026-03-31
+```
+
+This uses Plaud's own full-text search over transcripts and summaries. Each result has a `snippet` around the hit, a `source` (`transcript` or `summary`), and `start_ms`, the hit's position in the audio (transcript hits only). Results come best match first. Plaud stems words ("retire" also finds "retirement") and does not match exact phrases.
+
+Plaud returns 20 matches at most. If you get exactly 20, older or less relevant recordings may match too. Narrow `--since`/`--until` to see them. `--folder-id` and `--unfiled` don't work with `--content`.
+
 ### `show`
 
 ```

@@ -14,7 +14,7 @@ $_plaud_tools_subcommands = @(
 
 $_plaud_tools_flags = @{
     'list'                = @('--limit', '--all', '--since', '--until', '--query', '--folder-id', '--unfiled', '--help')
-    'search'              = @('--limit', '--all', '--since', '--until', '--folder-id', '--unfiled', '--help')
+    'search'              = @('--content', '--limit', '--all', '--since', '--until', '--folder-id', '--unfiled', '--help')
     'detail'              = @('--include-transcript', '--help')
     'show'                = @('--help')
     'transcript'          = @('--polish', '--segments', '--help')

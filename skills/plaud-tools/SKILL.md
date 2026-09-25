@@ -1,6 +1,6 @@
 ---
 name: plaud-tools
-description: Read this before using the PlaudTools MCP (browse_recordings, get_recording, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
+description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
 ---
 
 # plaud-tools
@@ -45,13 +45,18 @@ A find string like `"the"` matches hundreds of times; that is rarely intended.
 
 **3. Don't pull the library to search it.** `browse_recordings` filters
 server-side-ish (`query`, `since`, `until`, `folder`). Use the filters. Do not
-page through everything and filter yourself.
+page through everything and filter yourself. To find what was *said* ("the
+meeting where we covered the Johnson rollover"), call `search_recordings`
+instead of opening recordings one by one. It returns 20 matches at most. When
+`capped` is true, other recordings may match too, so run it again over a
+narrower `since`/`until` window.
 
 ## Tools
 
 | Tool | Notes |
 |---|---|
 | `browse_recordings` | Filters: `query` (title substring), `since`/`until` (ISO 8601), `folder`, `trash`. Paginate with `after` ← `next_after`. |
+| `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
 | `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
 | `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |

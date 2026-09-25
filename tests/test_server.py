@@ -15,6 +15,7 @@ from plaud_tools.mcp_pt.server import _TOOLS, _make_server, _mcp_log_path, _setu
 
 _EXPECTED_TOOL_NAMES = {
     "browse_recordings",
+    "search_recordings",
     "get_recording",
     "mutate_recording",
     "delete_recording",

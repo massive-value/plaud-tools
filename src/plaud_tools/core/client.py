@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from .errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from .models import (
     BROWSER_USER_AGENT,
+    ContentMatch,
     FileTag,
     Recording,
     RecordingDetail,
@@ -23,7 +24,7 @@ from .models import (
     redirect_api_domain,
     region_for_api_domain,
 )
-from .query import format_transcript
+from .query import content_snippet, format_transcript
 from .session import SessionManager
 from .transport import HttpResponse, Transport, UrllibTransport
 
@@ -97,6 +98,11 @@ DEFAULT_TRANSCRIPT_BLOCK = "transaction"
 # `Expires` parameter observed across captures.  Notably shorter than the 24h
 # the official Plaud developer API hands out, which is why nothing caches these.
 AUDIO_URL_TTL_S = 3600
+
+# Most recordings one full-text search returns.  Observed, not documented:
+# every broad query against a library of hundreds of recordings came back with
+# exactly 20, and no paging parameter changed that (see PlaudClient.search_content).
+SEARCH_RESULT_CAP = 20
 
 
 _T = TypeVar("_T")
@@ -219,6 +225,55 @@ class PlaudClient:
         if include_summary and detail.is_summary and not detail.ai_content:
             detail.ai_content = self._fetch_summary_from_data_link(raw)
         return detail
+
+    def search_content(
+        self,
+        query: str,
+        *,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+    ) -> list[ContentMatch]:
+        """Full-text search over transcripts and summaries, best match first.
+
+        ``POST /gsearch/v1/search`` is the web app's global search box.  It
+        answers the ``SEARCH_RESULT_CAP`` most relevant recordings with one
+        matching chunk each and ignores every paging parameter we tried
+        (limit, size, page, skip, offset), so the cap is all there is; a date
+        window is the only way to reach other matches.  Matching is keyword
+        based with stemming, not an exact phrase.  Trashed recordings are not
+        returned.  ``from`` is a recording-source filter in the web app; empty
+        means all sources.
+        """
+        body = {"query": query, "date_from": since_ms, "date_to": until_ms, "from": ""}
+        data = self._request_json("POST", "/gsearch/v1/search", strict=True, body=body).get("data") or {}
+        keywords = [str(word) for word in data.get("keywords") or []]
+        return [self._normalize_content_match(item, query, keywords) for item in data.get("list") or []]
+
+    def _normalize_content_match(self, item: dict[str, Any], query: str, keywords: list[str]) -> ContentMatch:
+        """Flatten one search hit; transcript hits carry ``trans_chunks``, summary hits ``notes``."""
+        if item.get("trans_chunks"):
+            source = "transcript"
+            chunk = item["trans_chunks"][0]
+            starts = [
+                s["start_time"] for s in chunk.get("speakers") or [] if isinstance(s.get("start_time"), int)
+            ]
+            start_ms = min(starts) if starts else None
+        else:
+            source = "summary"
+            chunks = [c for note in item.get("notes") or [] for c in note.get("chunks") or []]
+            chunk = chunks[0] if chunks else {}
+            start_ms = None
+        return ContentMatch(
+            id=str(item.get("id") or ""),
+            title=str(item.get("title") or ""),
+            start_time=int(item.get("start_time") or 0),
+            source=source,
+            snippet=content_snippet(
+                str(chunk.get("content") or ""), query, keywords, mid_text=bool(chunk.get("offset"))
+            ),
+            start_ms=start_ms,
+            raw=item,
+        )
 
     def get_audio_url(self, recording_id: str) -> str | None:
         """Return a temporary download URL for a recording's audio, or None.

@@ -68,6 +68,7 @@ _plaud_tools() {
                     ;;
                 search)
                     _arguments \
+                        '--content[Search transcripts and summaries, not titles]' \
                         '--limit[Max results to return]:limit' \
                         '--all[Page through the whole library]' \
                         '--since[ISO 8601 start-date filter]:date' \
