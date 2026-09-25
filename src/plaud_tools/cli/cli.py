@@ -14,6 +14,7 @@ from ..core.auth import PlaudAuth
 from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
+    SEARCH_RESULT_CAP,
     PlaudClient,
     PlaudRecordingQuery,
     describe_unstarted_process,
@@ -26,6 +27,7 @@ from ..core.query import (
     folder_dict,
     parse_isoish,
     structured_segments,
+    summarize_match,
     summarize_recording,
     transcript_fingerprint,
 )
@@ -50,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Shorthand for 'list --query QUERY' (identical filtering, positional query arg).",
     )
     search_cmd.add_argument("query")
+    search_cmd.add_argument(
+        "--content",
+        action="store_true",
+        help=(
+            "Search transcripts and summaries instead of titles, with a snippet per hit. "
+            f"Plaud returns at most {SEARCH_RESULT_CAP} matches; narrow --since/--until for others."
+        ),
+    )
     _add_limit_or_all(search_cmd)
     search_cmd.add_argument("--since")
     search_cmd.add_argument("--until")
@@ -507,7 +517,10 @@ def _handle_list_or_search(args: argparse.Namespace, client: PlaudClient) -> str
     positional argument instead of a flag (see `_list_recordings_filtered`'s
     docstring) — both subparsers land the query in ``args.query``, so
     dispatch never needs to know which subcommand it was called for.
+    `search --content` goes to Plaud's full-text search instead.
     """
+    if getattr(args, "content", False):
+        return _content_search(args, client)
     recordings = _list_recordings_filtered(
         client,
         limit=None if args.all else args.limit,
@@ -518,6 +531,25 @@ def _handle_list_or_search(args: argparse.Namespace, client: PlaudClient) -> str
         unfiled=args.unfiled,
     )
     return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+
+
+def _content_search(args: argparse.Namespace, client: PlaudClient) -> str:
+    """`search --content`: transcript/summary matches with snippets, best first.
+
+    Plaud has no folder filter on this endpoint, so --folder-id/--unfiled are
+    refused rather than silently ignored.  --all returns every match Plaud
+    sent, which is still at most SEARCH_RESULT_CAP.
+    """
+    if args.folder_id or args.unfiled:
+        raise ValueError("--content search cannot filter by folder; drop --folder-id/--unfiled")
+    matches = client.search_content(
+        args.query,
+        since_ms=parse_isoish(args.since, "--since") if args.since else None,
+        until_ms=parse_isoish(args.until, "--until", end_of_day=True) if args.until else None,
+    )
+    if not args.all:
+        matches = matches[: args.limit]
+    return json.dumps([summarize_match(match) for match in matches], indent=2, ensure_ascii=False)
 
 
 def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:

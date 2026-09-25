@@ -254,6 +254,63 @@ def detail_summary_dict(detail: Any) -> dict[str, Any]:
     }
 
 
+SNIPPET_CHARS = 240
+
+
+def content_snippet(
+    text: str,
+    query: str,
+    keywords: list[str],
+    *,
+    mid_text: bool = False,
+    width: int = SNIPPET_CHARS,
+) -> str:
+    """Cut a short, whitespace-collapsed window of *text* around the first hit.
+
+    Plaud's search chunks run 1-2k characters, far more than a caller needs
+    to judge a match.  The hit is located by the caller's own query words
+    first, then by Plaud's stemmed ``keywords`` (``"retir"`` for
+    "retirement"), because a short stem can also match inside an unrelated
+    word.  With no hit the window starts at the top of the chunk.  Cuts land
+    on word boundaries and are marked with an ellipsis.  ``mid_text`` says the
+    chunk itself begins partway through the document (Plaud sends an
+    ``offset``), often mid-word, so its start is treated as a cut too.
+    """
+    flat = " ".join(text.split())
+    lower = flat.lower()
+    hit = 0
+    for terms in (query.split(), keywords):
+        positions = [lower.find(term.lower()) for term in terms if term]
+        found = [pos for pos in positions if pos >= 0]
+        if found:
+            hit = min(found)
+            break
+    start = max(0, hit - width // 3)
+    end = min(len(flat), start + width)
+    if start > 0 or mid_text:
+        space = flat.find(" ", start, hit)
+        if space != -1:
+            start = space + 1
+    if end < len(flat):
+        space = flat.rfind(" ", hit, end)
+        if space != -1:
+            end = space
+    snippet = flat[start:end]
+    return f"{'…' if start > 0 or mid_text else ''}{snippet}{'…' if end < len(flat) else ''}"
+
+
+def summarize_match(match: Any) -> dict[str, Any]:
+    """Produce the standard dict for a ContentMatch (CLI and MCP content search)."""
+    return {
+        "id": match.id,
+        "title": match.title,
+        "date": datetime.fromtimestamp(match.start_time / 1000).isoformat()[:16],
+        "source": match.source,
+        "snippet": match.snippet,
+        "start_ms": match.start_ms,
+    }
+
+
 def summarize_recording(item: Any) -> dict[str, Any]:
     """Produce the standard summary dict for a Recording.
 

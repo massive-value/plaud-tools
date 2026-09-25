@@ -62,7 +62,7 @@ In Claude, paste:
 List the MCP tools you have available for Plaud.
 ```
 
-You should see eleven tools: `browse_recordings`, `get_recording`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `merge_recordings`, `edit_summary`, and `mutate_folder`.
+You should see twelve tools: `browse_recordings`, `search_recordings`, `get_recording`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `merge_recordings`, `edit_summary`, and `mutate_folder`.
 
 ---
 
@@ -159,6 +159,7 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | Tool | What it does |
 |---|---|
 | `browse_recordings` | List and filter recordings by date, title, folder, or trash status |
+| `search_recordings` | Find recordings whose transcript or summary mentions a phrase, with a snippet per hit. Plaud returns at most 20 matches per search |
 | `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary / audio download URL |
 | `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`) |
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |

@@ -2117,3 +2117,60 @@ def test_region_redirect_to_unlisted_plaud_host_uses_that_host(tmp_path):
 )
 def test_region_for_api_domain_accepts_only_clean_plaud_hosts(domain, expected):
     assert region_for_api_domain(domain) == expected
+
+
+def test_search_content_posts_query_and_flattens_transcript_and_summary_hits(tmp_path):
+    manager, _ = make_manager(tmp_path, region="us")
+    response = {
+        "status": 0,
+        "data": {
+            "query": "rollover",
+            "keywords": ["rollover", "rol"],
+            "list": [
+                {
+                    "id": "rec-t",
+                    "title": "Transcript hit",
+                    "start_time": 1_750_000_000_000,
+                    "trans_chunks": [
+                        {
+                            "content": "[Advisor]Let's plan the rollover.\n[Client]Sounds good.",
+                            "offset": 0,
+                            "speakers": [
+                                {"name": "Advisor", "start_time": 61_000, "end_time": 64_000},
+                                {"name": "Client", "start_time": 64_500, "end_time": 65_000},
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "id": "rec-s",
+                    "title": "Summary hit",
+                    "start_time": 1_740_000_000_000,
+                    "notes": [
+                        {"id": "auto_sum:x", "chunks": [{"content": "ext rollover next steps", "offset": 90}]}
+                    ],
+                },
+            ],
+        },
+    }
+    transport = StubTransport([HttpResponse(200, json.dumps(response).encode(), {})])
+    client = PlaudClient(manager, transport=transport)
+
+    matches = client.search_content("rollover", since_ms=1, until_ms=2)
+
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api.plaud.ai/gsearch/v1/search"
+    assert json.loads(call["body"]) == {"query": "rollover", "date_from": 1, "date_to": 2, "from": ""}
+    transcript, summary = matches
+    assert (transcript.id, transcript.source, transcript.start_ms) == ("rec-t", "transcript", 61_000)
+    assert transcript.snippet == "[Advisor]Let's plan the rollover. [Client]Sounds good."
+    assert (summary.id, summary.source, summary.start_ms) == ("rec-s", "summary", None)
+    assert summary.snippet == "…rollover next steps"
+
+
+def test_search_content_with_no_hits_returns_empty_list(tmp_path):
+    manager, _ = make_manager(tmp_path)
+    body = {"status": 0, "data": {"query": "x", "keywords": ["x"]}}
+    transport = StubTransport([HttpResponse(200, json.dumps(body).encode(), {})])
+    assert PlaudClient(manager, transport=transport).search_content("x") == []

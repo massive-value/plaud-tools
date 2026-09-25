@@ -20,7 +20,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from .. import __version__
 from ..core.appdata import mcp_log as _mcp_log_path
-from ..core.client import DEFAULT_TRANSCRIPT_BLOCK, TRANSCRIPT_BLOCKS, PlaudClient
+from ..core.client import DEFAULT_TRANSCRIPT_BLOCK, SEARCH_RESULT_CAP, TRANSCRIPT_BLOCKS, PlaudClient
 from ..core.platform_guard import disable_wmi_queries
 from ..core.session import SessionManager, SessionStore
 from .mcp import (
@@ -118,6 +118,31 @@ _BROWSE_OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["items", "next_after"],
 }
 
+_SEARCH_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "date": {"type": "string"},
+                    "source": {"type": "string", "enum": ["transcript", "summary"]},
+                    "snippet": {"type": "string"},
+                    "start_ms": _NULLABLE_INT,
+                },
+                "required": ["id", "title", "source", "snippet"],
+            },
+        },
+        "next_after": _NULLABLE_INT,
+        "capped": {"type": "boolean"},
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["items", "next_after", "capped"],
+}
+
 _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -213,6 +238,48 @@ _TOOLS: list[types.Tool] = [
         # inherently idempotent; stating it again adds noise without value).
         annotations=types.ToolAnnotations(
             title="Browse recordings",
+            read_only_hint=True,
+            open_world_hint=True,
+        ),
+    ),
+    types.Tool(
+        name="search_recordings",
+        description=f"Find recordings whose transcript or summary mentions something, with a snippet around each hit. Keyword match with stemming, best match first. Plaud returns at most {SEARCH_RESULT_CAP} matches per search (capped=true when that limit was hit); narrow since/until to reach others.",  # noqa: E501
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words to find in transcripts and summaries",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": SEARCH_RESULT_CAP,
+                    "minimum": 1,
+                    "maximum": SEARCH_RESULT_CAP,
+                    "description": "Max results per page",
+                },
+                "after": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Cursor from next_after of a previous response",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO 8601 start-date filter",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "ISO 8601 end-date filter",
+                },
+            },
+            "required": ["query"],
+        },
+        output_schema=_SEARCH_OUTPUT_SCHEMA,
+        # Pure read — same rationale as browse_recordings.
+        annotations=types.ToolAnnotations(
+            title="Search recordings",
             read_only_hint=True,
             open_world_hint=True,
         ),

@@ -44,6 +44,44 @@
     "name": "browse_recordings"
   },
   {
+    "description": "Find recordings whose transcript or summary mentions something, with a snippet around each hit. Keyword match with stemming, best match first. Plaud returns at most 20 matches per search (capped=true when that limit was hit); narrow since/until to reach others.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "default": 0,
+          "description": "Cursor from next_after of a previous response",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max results per page",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Words to find in transcripts and summaries",
+          "type": "string"
+        },
+        "since": {
+          "description": "ISO 8601 start-date filter",
+          "type": "string"
+        },
+        "until": {
+          "description": "ISO 8601 end-date filter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search_recordings"
+  },
+  {
     "description": "Fetch full detail for one recording. Transcripts are paged: while transcript_has_more, call again with transcript_after=transcript_next_after. A changed transcript_fingerprint between pages means it was edited; restart from 0.",
     "inputSchema": {
       "additionalProperties": false,

@@ -9,7 +9,7 @@ import pytest
 
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
-from plaud_tools.core.models import FileTag, Recording, RecordingDetail
+from plaud_tools.core.models import ContentMatch, FileTag, Recording, RecordingDetail
 from plaud_tools.core.session import PlaudSession, SessionStore
 from plaud_tools.mcp_pt.mcp import build_handlers
 
@@ -2467,3 +2467,76 @@ def test_stub_client_signature_is_compatible_with_plaud_client(method_name: str)
         f"PlaudClient.{method_name}{inspect.signature(real)} does not accept -- "
         f"the stub has drifted from the real client."
     )
+
+
+# --- content search (search_recordings MCP / search --content CLI) ---
+
+
+class SearchStubClient:
+    """Answers search_content with a fixed ranked list, like Plaud's capped search."""
+
+    def __init__(self, count):
+        self.calls = []
+        self._matches = [
+            ContentMatch(
+                id=f"m{i}",
+                title=f"Meeting {i}",
+                start_time=1_750_000_000_000,
+                source="summary",
+                snippet="…hit…",
+            )
+            for i in range(count)
+        ]
+
+    def search_content(self, query, *, since_ms=None, until_ms=None):
+        self.calls.append((query, since_ms, until_ms))
+        return self._matches
+
+
+def test_mcp_search_recordings_pages_over_the_capped_result_list():
+    client = SearchStubClient(20)
+    handlers = build_handlers(lambda: client)
+
+    first = json.loads(handlers["search_recordings"](query="rollover", limit=15)["content"][0]["text"])
+    assert [item["id"] for item in first["items"]] == [f"m{i}" for i in range(15)]
+    assert first["next_after"] == 15
+    assert first["capped"] is True
+    assert "since/until" in first["notes"][0]
+
+    rest = json.loads(handlers["search_recordings"](query="rollover", after=15)["content"][0]["text"])
+    assert [item["id"] for item in rest["items"]] == [f"m{i}" for i in range(15, 20)]
+    assert rest["next_after"] is None
+    assert set(rest["items"][0]) == {"id", "title", "date", "source", "snippet", "start_ms"}
+
+
+def test_mcp_search_recordings_uncapped_result_has_no_note_and_passes_dates():
+    client = SearchStubClient(3)
+    result = build_handlers(lambda: client)["search_recordings"](
+        query="ira", since="2026-04-01", until="2026-04-30"
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["capped"] is False
+    assert "notes" not in payload
+    _, since_ms, until_ms = client.calls[0]
+    assert since_ms is not None and until_ms > since_ms
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"query": "  "}, {"query": "x", "limit": 21}, {"query": "x", "after": -1}]
+)
+def test_mcp_search_recordings_rejects_bad_input(kwargs):
+    result = build_handlers(lambda: SearchStubClient(1))["search_recordings"](**kwargs)
+    assert result["isError"] is True
+    assert json.loads(result["content"][0]["text"])["error_code"] == "validation"
+
+
+def test_cli_search_content_returns_snippets_and_honors_limit():
+    output = run_cli(["search", "--content", "rollover", "--limit", "2"], SearchStubClient(5))
+    items = json.loads(output)
+    assert [item["id"] for item in items] == ["m0", "m1"]
+    assert items[0]["snippet"] == "…hit…"
+
+
+def test_cli_search_content_refuses_folder_filters():
+    with pytest.raises(ValueError, match="folder"):
+        run_cli(["search", "--content", "rollover", "--unfiled"], SearchStubClient(1))

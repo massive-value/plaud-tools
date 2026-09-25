@@ -54,7 +54,11 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # merge_recordings) now say that a still_processing result must be polled, not
 # re-called, since a re-call starts a duplicate job; upload_recording says it
 # returns the recording_id.  Budget set to ~5% over the new count.
-_TOKEN_BUDGET_WORDS = 565
+#
+# #217: 565 -> 635.  New search_recordings tool (~67 words, 603 total).  Its
+# description has to state Plaud's 20-result cap and the since/until way
+# around it, or an agent reads a capped list as the complete answer.
+_TOKEN_BUDGET_WORDS = 635
 
 
 def _serialize_tools() -> str:

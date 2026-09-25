@@ -5,6 +5,7 @@ Coverage:
 - filter_recordings: date range, query/text match, folder_id, unfiled=True,
   combined filters, sort order, empty list
 - summarize_recording: shape and field values for a representative Recording
+- content_snippet: window placement, word-boundary cuts, ellipsis markers
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from datetime import UTC, datetime
 import pytest
 
 from plaud_tools.core.models import Recording
-from plaud_tools.core.query import filter_recordings, parse_isoish, summarize_recording
+from plaud_tools.core.query import content_snippet, filter_recordings, parse_isoish, summarize_recording
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -390,3 +391,27 @@ class TestSummarizeRecording:
         date_early = summarize_recording(rec_early)["date"]
         date_late = summarize_recording(rec_late)["date"]
         assert date_late > date_early
+
+
+class TestContentSnippet:
+    TEXT = ("filler " * 60) + "we discussed the rollover of her old plan " + ("more " * 60)
+
+    def test_window_is_centered_on_the_query_word_with_cut_markers(self):
+        snippet = content_snippet(self.TEXT, "rollover", ["rol"], width=80)
+        assert "rollover" in snippet
+        assert snippet.startswith("…") and snippet.endswith("…")
+        assert "filler more" not in snippet  # cut near the hit, not at the edges
+        assert snippet[1:].split()[0] in {"filler", "we", "discussed", "the"}  # whole word
+
+    def test_query_word_wins_over_a_stem_that_matches_earlier(self):
+        text = "control of costs came up first, then the rollover itself"
+        snippet = content_snippet(text, "rollover", ["rol"], width=20)
+        assert "rollover" in snippet
+        assert "control" not in snippet
+
+    def test_mid_text_chunk_drops_the_partial_first_word(self):
+        snippet = content_snippet("tiate the rollover online", "rollover", [], mid_text=True)
+        assert snippet == "…the rollover online"
+
+    def test_no_hit_starts_at_the_top_and_collapses_whitespace(self):
+        assert content_snippet("line one\n\nline   two", "absent", []) == "line one line two"

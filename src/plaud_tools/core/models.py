@@ -106,6 +106,25 @@ class RecordingDetail:
 
 
 @dataclass(slots=True)
+class ContentMatch:
+    """One recording returned by Plaud's full-text search, with its best hit.
+
+    Plaud returns a single best-scoring chunk per recording, taken from either
+    the transcript or the AI summary; ``source`` says which.  ``start_ms`` is
+    where a transcript hit begins, in ms from the start of the recording
+    (``None`` for summary hits, which have no timing).
+    """
+
+    id: str
+    title: str
+    start_time: int = 0
+    source: str = ""
+    snippet: str = ""
+    start_ms: int | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class FileTag:
     id: str
     name: str = ""

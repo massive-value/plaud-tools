@@ -25,7 +25,7 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "--limit --all --since --until --query --folder-id --unfiled --help" -- "$cur"))
             ;;
         search)
-            COMPREPLY=($(compgen -W "--limit --all --since --until --folder-id --unfiled --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--content --limit --all --since --until --folder-id --unfiled --help" -- "$cur"))
             ;;
         detail)
             COMPREPLY=($(compgen -W "--include-transcript --help" -- "$cur"))

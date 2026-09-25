@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Search inside recordings (#217). New MCP tool `search_recordings` and CLI
+  `search --content` find recordings whose transcript or summary mentions a
+  phrase, using Plaud's own full-text search. Each hit has a snippet, a
+  `source` (`transcript` or `summary`), and `start_ms` for transcript hits.
+  Plaud returns 20 matches at most, so `capped: true` tells the caller to
+  narrow `since`/`until` for the rest. MCP tool count goes from 11 to 12.
+
 ## [0.10.1] - 2026-09-24
 
 Three fixes since 0.10.0: two live-tested login/processing bugs (#225) and a
