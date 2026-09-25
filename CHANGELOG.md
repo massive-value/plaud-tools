@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-24
+
+Agents and the CLI can now search what was said in a recording, not just its
+title.
+
 ### Added
 
 - Search inside recordings (#217). New MCP tool `search_recordings` and CLI
@@ -1792,7 +1797,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/massive-value/plaud-tools/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/massive-value/plaud-tools/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/massive-value/plaud-tools/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/massive-value/plaud-tools/compare/v0.8.2...v0.9.0
