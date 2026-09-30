@@ -4,7 +4,7 @@
 #   . "<path-to-this-file>"
 
 $_plaud_tools_subcommands = @(
-    'list', 'search', 'detail', 'show', 'transcript', 'summary', 'audio',
+    'list', 'search', 'detail', 'show', 'transcript', 'summary', 'audio', 'export',
     'rename', 'folders', 'folder', 'move', 'move-to-folder', 'rename-speaker',
     'correct-transcript', 'correct-summary', 'set-summary', 'transcribe',
     'status', 'trash', 'restore', 'delete', 'trash-move', 'trash-restore',
@@ -20,6 +20,7 @@ $_plaud_tools_flags = @{
     'transcript'          = @('--polish', '--segments', '--help')
     'summary'             = @('--help')
     'audio'               = @('-o', '--output', '--help')
+    'export'              = @('-f', '--format', '-o', '--output', '--overwrite', '--polish', '--no-speakers', '--no-timestamps', '--expect-fingerprint', '--help')
     'rename'              = @('--help')
     'folders'             = @('--help')
     'folder'              = @('create', 'edit', 'delete', '--help')

@@ -61,17 +61,26 @@ def structured_segments(segments: list[dict[str, Any]], start: int = 0) -> list[
     ]
 
 
-def transcript_fingerprint(segments: list[dict[str, Any]]) -> str:
+def transcript_fingerprint(segments: list[dict[str, Any]], block: str) -> str:
     """Content fingerprint of a whole transcript block: ``"sha256:<hex>"``.
 
-    Hashes every utterance field as Plaud returned it (text, speakers,
-    timings), so any edit — a corrected word, a renamed speaker — changes it,
-    and an unchanged block hashes identically on every read. Paging callers
-    compare it across pages to detect an edit mid-read and restart instead of
-    splicing two versions. This is our hash of the content, not a Plaud
-    revision number; Plaud exposes none.
+    Hashes the block name plus every utterance field as Plaud returned it
+    (text, speakers, timings), in order, so any edit — a corrected word, a
+    renamed speaker — changes it, and an unchanged block hashes identically
+    on every read. The block name is in the input so a raw and a polished
+    transcript that happen to match never share a fingerprint. Paging
+    callers compare it across pages to detect an edit mid-read and restart
+    instead of splicing two versions; ``export_transcript`` stamps it into
+    the exported file. This is our hash of the content, not a Plaud revision
+    number; Plaud exposes none.
+
+    Algorithm: SHA-256 of the UTF-8 bytes of
+    ``json.dumps({"block": block, "segments": segments}, sort_keys=True,
+    ensure_ascii=False, separators=(",", ":"))``.
     """
-    canonical = json.dumps(segments, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    canonical = json.dumps(
+        {"block": block, "segments": segments}, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

@@ -17,6 +17,7 @@ _EXPECTED_TOOL_NAMES = {
     "browse_recordings",
     "search_recordings",
     "get_recording",
+    "export_transcript",
     "mutate_recording",
     "delete_recording",
     "edit_transcript",

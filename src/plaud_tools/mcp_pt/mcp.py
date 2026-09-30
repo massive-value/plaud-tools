@@ -19,6 +19,8 @@ from ..core.client import (
     describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
+from ..core.export import TranscriptExportError
+from ..core.export import export_transcript as _export_transcript
 from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
@@ -531,7 +533,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 # version; None when the requested block does not exist.
                 block_available = transcript_block in (detail.transcript_blocks_available or [])
                 output["transcript_fingerprint"] = (
-                    transcript_fingerprint(segments) if block_available else None
+                    transcript_fingerprint(segments, transcript_block) if block_available else None
                 )
                 note = _transcript_unavailable_note(detail, transcript_block)
                 if note is not None:
@@ -861,6 +863,37 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def export_transcript(
+        recording_id: str,
+        format: str = "json",  # noqa: A002 — the public MCP parameter name
+        transcript_block: str = DEFAULT_TRANSCRIPT_BLOCK,
+        with_speakers: bool = True,
+        with_timestamps: bool = True,
+        expected_transcript_fingerprint: str | None = None,
+        output_path: str | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        # The response carries file metadata only: the transcript itself is
+        # written to disk in code so it never has to pass through the model.
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            try:
+                result = _export_transcript(
+                    client,
+                    recording_id,
+                    fmt=format,
+                    block=transcript_block,
+                    with_speakers=with_speakers,
+                    with_timestamps=with_timestamps,
+                    expected_fingerprint=expected_transcript_fingerprint,
+                    output_path=output_path,
+                    overwrite=overwrite,
+                )
+            except TranscriptExportError as exc:
+                return _error_result(str(exc), error_code=exc.code, retryable=False)
+            return _json_result(result)
+
+        return _call(get_client, inner)
+
     def list_folders() -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             tags = client.list_file_tags()
@@ -1031,6 +1064,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "browse_recordings": browse_recordings,
         "search_recordings": search_recordings,
         "get_recording": get_recording,
+        "export_transcript": export_transcript,
         "mutate_recording": mutate_recording,
         "delete_recording": delete_recording,
         "edit_transcript": edit_transcript,
