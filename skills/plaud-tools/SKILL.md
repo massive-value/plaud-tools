@@ -1,6 +1,6 @@
 ---
 name: plaud-tools
-description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
+description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
 ---
 
 # plaud-tools
@@ -58,6 +58,7 @@ narrower `since`/`until` window.
 | `browse_recordings` | Filters: `query` (title substring), `since`/`until` (ISO 8601), `folder`, `trash`. Paginate with `after` ← `next_after`. |
 | `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
 | `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
+| `export_transcript` | Whole transcript to a file. `format=` json / txt / srt / docx / pdf. Returns the path, not the text. |
 | `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |
@@ -70,6 +71,23 @@ narrower `since`/`until` window.
 
 To move a recording into a folder, use `mutate_recording(action="move")` — not
 `mutate_folder`.
+
+## Saving a transcript as a file
+
+When the user wants a transcript saved, filed or archived, call
+`export_transcript`. Don't page through `get_recording` and write the file
+yourself. Retyping hundreds of utterances drops and rewords lines, and the
+export tool writes the exact text in code.
+
+- It returns `file.path`, `byte_size` and `sha256`. Move or copy that file
+  as-is, for example with a shell copy into a synced folder. Never re-create
+  it from the transcript text.
+- If you or the user reviewed the transcript first, pass its
+  `transcript_fingerprint` as `expected_transcript_fingerprint`. A
+  `revision_conflict` error means it was edited since. Review it again.
+- `output_path` takes a file or a folder. An existing file there is kept, and
+  the call fails with `file_exists`, unless `overwrite=true`. Ask before
+  overwriting.
 
 ## Confirm gates
 
@@ -102,7 +120,11 @@ message:
 | `validation` / `invalid_arguments` | Your arguments were wrong. Read `error` and correct them; don't retry unchanged. |
 | `not_found` | Bad recording/folder ID. Don't retry. |
 | `transient` | `retryable: true` — retry once or twice with a pause. |
-| `io_error` | Local filesystem problem (usually `upload_recording`). |
+| `io_error` | Local filesystem problem (usually `upload_recording` or `export_transcript`). |
+| `transcript_unavailable` | `export_transcript`: no transcript, or not the block you asked for. Don't retry with the other block unless the user agrees. |
+| `revision_conflict` | `export_transcript`: the transcript changed since the fingerprint you passed. |
+| `file_exists` | `export_transcript`: `output_path` already exists. Ask before retrying with `overwrite=true`. |
+| `invalid_source` | `export_transcript`: Plaud sent data that can't be exported faithfully (bad timing, broken file). Tell the user. |
 | `internal` | A bug in the server. Tell the user; details are in the plaud-mcp log. |
 
 A response with `status: "still_processing"` is not an error: a transcribe,

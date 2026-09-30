@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "source": "plaud",
+  "recording_id": "0123456789abcdef0123456789abcdef",
+  "portion_id": "full",
+  "title": "Sample, Jim & Jane: Annual Review",
+  "recorded_at": "2026-09-30T15:00:00Z",
+  "transcript_block": "transaction",
+  "transcript_fingerprint": "sha256:a350d1841f6b2085591ebf9ce7c89d4c69248ce974f51d1c7e19ba43401d3ff6",
+  "segments": [
+    {
+      "index": 0,
+      "speaker": "Advisor",
+      "speaker_id": "Speaker 1",
+      "text": "Thanks for coming in. Let's start with the withdrawal plan.",
+      "start_ms": 1000,
+      "end_ms": 6500
+    },
+    {
+      "index": 1,
+      "speaker": "Jim Sample",
+      "speaker_id": "Speaker 2",
+      "text": "Sounds good.\nWe had a question about the RMD, too.",
+      "start_ms": 6200,
+      "end_ms": 9800
+    },
+    {
+      "index": 2,
+      "speaker": "Jim Sample",
+      "speaker_id": "Speaker 2",
+      "text": "Sounds good.",
+      "start_ms": 9900,
+      "end_ms": 10600
+    },
+    {
+      "index": 3,
+      "speaker": null,
+      "speaker_id": null,
+      "text": "[inaudible]",
+      "start_ms": null,
+      "end_ms": null
+    }
+  ]
+}

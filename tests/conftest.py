@@ -85,6 +85,12 @@ def _block_real_session_path(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _block_real_exports_dir(monkeypatch, tmp_path):
+    """Keep ``export_transcript`` out of the user's real %LOCALAPPDATA%\\PlaudTools\\exports."""
+    monkeypatch.setattr("plaud_tools.core.appdata.exports_dir", lambda: tmp_path / "exports")
+
+
+@pytest.fixture(autouse=True)
 def _fake_keyring_backend(monkeypatch):
     """Never let a test touch the real OS credential store.
 

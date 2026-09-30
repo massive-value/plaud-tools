@@ -26,6 +26,7 @@ _plaud_tools() {
                 'transcript:Fetch full transcript'
                 'summary:Fetch AI summary'
                 'audio:Get or download a recording audio file'
+                'export:Save a whole transcript as JSON, TXT, SRT, Word or PDF'
                 'rename:Rename a recording'
                 'folders:List folders'
                 'folder:Create, edit, or delete a folder'
@@ -87,6 +88,9 @@ _plaud_tools() {
                 audio)
                     _arguments '-o+[Download to this path instead of printing the URL]:output:_files' \
                         '--output+[Download to this path instead of printing the URL]:output:_files'
+                    ;;
+                export)
+                    _arguments '-f+[File format]:format:(json txt srt docx pdf)'                         '--format+[File format]:format:(json txt srt docx pdf)'                         '-o+[File or directory to save to]:output:_files'                         '--output+[File or directory to save to]:output:_files'                         '--overwrite[Replace an existing file at --output]'                         '--polish[Export the AI-cleaned transcript]'                         '--no-speakers[Leave out speaker labels]'                         '--no-timestamps[Leave out timestamps]'                         '--expect-fingerprint+[Refuse if the transcript changed]:fingerprint:'
                     ;;
                 folder)
                     local -a folder_cmds

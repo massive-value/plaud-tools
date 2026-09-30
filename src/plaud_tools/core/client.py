@@ -320,6 +320,50 @@ class PlaudClient:
         destination.write_bytes(response.body)
         return destination
 
+    def render_transcript_document(
+        self,
+        detail: RecordingDetail,
+        segments: list[dict[str, Any]],
+        to_format: str,
+        *,
+        with_speaker: bool,
+        with_timestamp: bool,
+    ) -> bytes:
+        """Have Plaud render *segments* as a TXT/SRT/DOCX/PDF file; return its bytes.
+
+        The web app's Export button: ``POST /file/document/export`` carries the
+        utterances themselves (``trans_content``) and answers with a presigned
+        S3 link to the rendered file, which is fetched without an auth header.
+        Rendering is read-only toward the recording.  Plaud rejects formats it
+        does not know (``MD`` answered "export failed" when probed).
+        """
+        data = self._request_json(
+            "POST",
+            "/file/document/export",
+            strict=True,
+            body={
+                "file_id": detail.id,
+                "prompt_type": "trans",
+                "to_format": to_format,
+                "title": detail.filename,
+                # Local wall-clock time, formatted the way the web app sends it.
+                "create_time": datetime.fromtimestamp(detail.start_time / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+                "with_speaker": int(with_speaker),
+                "with_timestamp": int(with_timestamp),
+                "trans_content": segments,
+                "language": "",
+            },
+        )
+        url = data.get("data")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise PlaudApiError("Plaud document export returned no download link")
+        response = self._transport.request(method="GET", url=url, headers={"User-Agent": BROWSER_USER_AGENT})
+        if response.status_code < 200 or response.status_code >= 300:
+            raise PlaudApiError(
+                f"document download failed (HTTP {response.status_code})", http_status=response.status_code
+            )
+        return response.body
+
     def get_user_info(self) -> dict[str, Any]:
         data = self._request_json("GET", "/user/me", strict=True)
         return data.get("data_user") or data.get("data") or data

@@ -134,6 +134,65 @@
     "name": "get_recording"
   },
   {
+    "description": "Save a recording's whole transcript to a file and return its path, size and SHA-256 (not the transcript). json is the archive format; txt/srt/docx/pdf are Plaud's own exports. Copy the file as-is, never retype it. Pass the reviewed transcript_fingerprint as expected_transcript_fingerprint to refuse later edits.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_transcript_fingerprint": {
+          "description": "transcript_fingerprint from get_recording; a mismatch returns revision_conflict",
+          "type": "string"
+        },
+        "format": {
+          "default": "json",
+          "enum": [
+            "json",
+            "txt",
+            "srt",
+            "docx",
+            "pdf"
+          ],
+          "type": "string"
+        },
+        "output_path": {
+          "description": "File path, or folder to save <recording_id>.<block>.<format> in. Default: the app's exports folder",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "description": "Replace an existing file at output_path",
+          "type": "boolean"
+        },
+        "recording_id": {
+          "type": "string"
+        },
+        "transcript_block": {
+          "default": "transaction",
+          "description": "'transaction' (raw) or 'transaction_polish'; never falls back to the other",
+          "enum": [
+            "transaction",
+            "transaction_polish"
+          ],
+          "type": "string"
+        },
+        "with_speakers": {
+          "default": true,
+          "description": "Speaker labels (txt/srt/docx/pdf; json always has them)",
+          "type": "boolean"
+        },
+        "with_timestamps": {
+          "default": true,
+          "description": "Timestamps (txt/docx/pdf; json and srt always have them)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "recording_id"
+      ],
+      "type": "object"
+    },
+    "name": "export_transcript"
+  },
+  {
     "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",
     "inputSchema": {
       "additionalProperties": false,

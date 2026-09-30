@@ -58,7 +58,12 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # #217: 565 -> 635.  New search_recordings tool (~67 words, 603 total).  Its
 # description has to state Plaud's 20-result cap and the since/until way
 # around it, or an agent reads a capped list as the complete answer.
-_TOKEN_BUDGET_WORDS = 635
+#
+# 635 -> 730.  New export_transcript tool (~89 words, 692 total).  Its
+# description has to say the file must be copied as-is rather than retyped,
+# and how to pin the reviewed revision, or an agent re-serializes the
+# transcript itself — the exact failure the tool exists to prevent.
+_TOKEN_BUDGET_WORDS = 730
 
 
 def _serialize_tools() -> str:

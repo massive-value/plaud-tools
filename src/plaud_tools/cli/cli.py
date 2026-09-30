@@ -20,6 +20,7 @@ from ..core.client import (
     describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
+from ..core.export import EXPORT_FORMATS, TranscriptExportError, export_transcript
 from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
@@ -106,6 +107,36 @@ def build_parser() -> argparse.ArgumentParser:
             "Download the audio to this path instead of printing the URL. "
             "Pass a directory to use '<recording-id>.mp3' inside it."
         ),
+    )
+
+    export_cmd = sub.add_parser(
+        "export", help="Save a recording's whole transcript as a JSON, TXT, SRT, Word or PDF file."
+    )
+    export_cmd.add_argument("recording_id")
+    export_cmd.add_argument(
+        "-f",
+        "--format",
+        choices=list(EXPORT_FORMATS),
+        default="json",
+        help="json is the archive format; txt/srt/docx/pdf are Plaud's own exports (default: json)",
+    )
+    export_cmd.add_argument(
+        "-o",
+        "--output",
+        help=(
+            "File path, or a directory to save '<recording-id>.<block>.<format>' in. "
+            "Default: the PlaudTools exports folder."
+        ),
+    )
+    export_cmd.add_argument("--overwrite", action="store_true", help="Replace an existing file at --output.")
+    export_cmd.add_argument("--polish", action="store_true", help="Export Plaud's AI-cleaned transcript.")
+    export_cmd.add_argument("--no-speakers", action="store_true", help="Leave out speaker labels (not json).")
+    export_cmd.add_argument(
+        "--no-timestamps", action="store_true", help="Leave out timestamps (not json or srt)."
+    )
+    export_cmd.add_argument(
+        "--expect-fingerprint",
+        help="Refuse to export if the transcript's fingerprint (from transcript --segments) has changed.",
     )
 
     rename_cmd = sub.add_parser("rename")
@@ -927,13 +958,31 @@ def _handle_transcript(args: argparse.Namespace, client: PlaudClient) -> str:
                 "recording_id": args.recording_id,
                 "transcript_block": block,
                 "utterance_count": len(segments),
-                "fingerprint": transcript_fingerprint(segments),
+                "fingerprint": transcript_fingerprint(segments, block),
                 "segments": structured_segments(segments),
             },
             indent=2,
             ensure_ascii=False,
         )
     return detail.transcript
+
+
+def _handle_export(args: argparse.Namespace, client: PlaudClient) -> str:
+    try:
+        result = export_transcript(
+            client,
+            args.recording_id,
+            fmt=args.format,
+            block="transaction_polish" if args.polish else DEFAULT_TRANSCRIPT_BLOCK,
+            with_speakers=not args.no_speakers,
+            with_timestamps=not args.no_timestamps,
+            expected_fingerprint=args.expect_fingerprint,
+            output_path=args.output,
+            overwrite=args.overwrite,
+        )
+    except TranscriptExportError as exc:
+        raise ValueError(str(exc)) from exc
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 def _handle_audio(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -1012,6 +1061,7 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "dump": _handle_dump,
     "transcript": _handle_transcript,
     "audio": _handle_audio,
+    "export": _handle_export,
     "ping": _handle_ping,
 }
 

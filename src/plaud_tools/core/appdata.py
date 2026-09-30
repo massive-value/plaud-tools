@@ -18,6 +18,7 @@ mcp_log()              -> Path   # mcp.log inside data_dir()
 events_path()          -> Path   # events.jsonl inside data_dir()
 session_path()         -> Path   # session.json inside data_dir()
 dpapi_shadow_path()    -> Path | None  # session.dat on Windows; None elsewhere
+exports_dir()          -> Path   # exports/ inside data_dir() (export_transcript files)
 """
 
 from __future__ import annotations
@@ -71,3 +72,12 @@ def dpapi_shadow_path() -> Path | None:
     if sys.platform != "win32":
         return None
     return data_dir() / "session.dat"
+
+
+def exports_dir() -> Path:
+    """Return the directory ``export_transcript`` writes transcript files into.
+
+    One file per recording and block, overwritten on re-export, so it holds at
+    most one copy of each transcript rather than growing with every export.
+    """
+    return data_dir() / "exports"

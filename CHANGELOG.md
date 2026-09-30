@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Transcript export. New MCP tool `export_transcript` and CLI `export` save a
+  recording's whole transcript to a file and return its path, byte size,
+  SHA-256 and transcript fingerprint, not the text. `json` is a versioned
+  archive format for SWIRL (see docs/transcript-export.md). `txt`, `srt`,
+  `docx` and `pdf` come from Plaud's own exporter, with optional speaker
+  labels and timestamps. Pass a reviewed fingerprint to refuse a transcript
+  edited since, and an output path to choose where the file goes. An existing
+  file there is only replaced with `overwrite`. MCP tool count goes from 12
+  to 13.
+
+### Changed
+
+- `transcript_fingerprint` (MCP `get_recording`, CLI `transcript --segments`)
+  now hashes the block name along with the utterances, so a raw and a polished
+  transcript never share a fingerprint. Every fingerprint value changes once.
+
 ## [0.11.0] - 2026-09-24
 
 Agents and the CLI can now search what was said in a recording, not just its

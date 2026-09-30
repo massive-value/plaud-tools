@@ -93,7 +93,7 @@ Plaud now ships its own MCP server and CLI (`@plaud-ai/mcp`, `@plaud-ai/cli`). T
 
 **They are read-only.** The official developer API behind them exposes three endpoints — list recordings, get one recording, get the current user. There are no write endpoints, so the official tools cannot change anything in your Plaud account. That's the difference between the two projects, and it isn't a gap that closes with their next release.
 
-PlaudTools drives Plaud's web API instead, which is how it can write. 8 of our 12 tools have no official equivalent:
+PlaudTools drives Plaud's web API instead, which is how it can write. Most of our 13 tools have no official equivalent:
 
 | | PlaudTools | Official |
 |---|---|---|

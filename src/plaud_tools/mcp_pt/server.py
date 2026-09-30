@@ -21,6 +21,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from .. import __version__
 from ..core.appdata import mcp_log as _mcp_log_path
 from ..core.client import DEFAULT_TRANSCRIPT_BLOCK, SEARCH_RESULT_CAP, TRANSCRIPT_BLOCKS, PlaudClient
+from ..core.export import EXPORT_FORMATS
 from ..core.platform_guard import disable_wmi_queries
 from ..core.session import SessionManager, SessionStore
 from .mcp import (
@@ -167,6 +168,42 @@ _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
         "notes": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["id"],
+}
+
+_EXPORTED_FILE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string"},
+        "uri": {"type": "string"},
+        "mime_type": {"type": "string"},
+        "byte_size": {"type": "integer"},
+        "sha256": {"type": "string"},
+    },
+    "required": ["path", "uri", "mime_type", "byte_size", "sha256"],
+}
+
+_EXPORT_TRANSCRIPT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "recording_id": {"type": "string"},
+        "portion_id": {"type": "string"},
+        "format": {"type": "string"},
+        "transcript_block": {"type": "string"},
+        "transcript_fingerprint": {"type": "string"},
+        "segment_count": {"type": "integer"},
+        "title": _NULLABLE_STRING,
+        "recorded_at": _NULLABLE_STRING,
+        "file": _EXPORTED_FILE_SCHEMA,
+    },
+    "required": [
+        "recording_id",
+        "portion_id",
+        "format",
+        "transcript_block",
+        "transcript_fingerprint",
+        "segment_count",
+        "file",
+    ],
 }
 
 _LIST_FOLDERS_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -326,6 +363,57 @@ _TOOLS: list[types.Tool] = [
         annotations=types.ToolAnnotations(
             title="Get recording",
             read_only_hint=True,
+            open_world_hint=True,
+        ),
+    ),
+    types.Tool(
+        name="export_transcript",
+        description="Save a recording's whole transcript to a file and return its path, size and SHA-256 (not the transcript). json is the archive format; txt/srt/docx/pdf are Plaud's own exports. Copy the file as-is, never retype it. Pass the reviewed transcript_fingerprint as expected_transcript_fingerprint to refuse later edits.",  # noqa: E501
+        input_schema={
+            "type": "object",
+            "properties": {
+                "recording_id": {"type": "string"},
+                "format": {"type": "string", "enum": list(EXPORT_FORMATS), "default": "json"},
+                "transcript_block": {
+                    "type": "string",
+                    "enum": list(TRANSCRIPT_BLOCKS),
+                    "default": DEFAULT_TRANSCRIPT_BLOCK,
+                    "description": "'transaction' (raw) or 'transaction_polish'; never falls back to the other",  # noqa: E501
+                },
+                "with_speakers": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Speaker labels (txt/srt/docx/pdf; json always has them)",
+                },
+                "with_timestamps": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Timestamps (txt/docx/pdf; json and srt always have them)",
+                },
+                "expected_transcript_fingerprint": {
+                    "type": "string",
+                    "description": "transcript_fingerprint from get_recording; a mismatch returns revision_conflict",  # noqa: E501
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "File path, or folder to save <recording_id>.<block>.<format> in. Default: the app's exports folder",  # noqa: E501
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Replace an existing file at output_path",
+                },
+            },
+            "required": ["recording_id"],
+        },
+        output_schema=_EXPORT_TRANSCRIPT_OUTPUT_SCHEMA,
+        # Read-only toward Plaud, but it writes a local file (and can replace
+        # one when overwrite=true), so it claims neither read-only nor
+        # idempotent.
+        annotations=types.ToolAnnotations(
+            title="Export transcript",
+            read_only_hint=False,
+            destructive_hint=False,
             open_world_hint=True,
         ),
     ),

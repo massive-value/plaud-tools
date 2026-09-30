@@ -276,6 +276,35 @@ With `-o`, downloads the audio to that path instead. Pass a directory to save as
 `<recording-id>.mp3` inside it. Errors if Plaud has no audio for the recording,
 which usually means it hasn't finished syncing from the device.
 
+### `export`
+
+```
+plaud-tools export <recording-id>
+plaud-tools export <recording-id> -f pdf -o ./meetings/
+plaud-tools export <recording-id> -f docx --no-timestamps -o "Annual Review.docx"
+```
+
+Saves the whole transcript as a file and prints its path, byte size, SHA-256
+and the transcript fingerprint. It doesn't print the transcript itself.
+
+`-f/--format` picks the file type. `json` (the default) is the archive format
+described in [transcript-export.md](transcript-export.md). `txt`, `srt`, `docx`
+and `pdf` are the same files the Export button in Plaud's web app makes,
+rendered by Plaud.
+
+- `--no-speakers` and `--no-timestamps` drop speaker labels or times from
+  the Plaud formats. JSON always keeps both. SRT always keeps timestamps,
+  because Plaud writes every cue as `00:00:00,000` without them.
+- `--polish` exports the AI-cleaned transcript. It errors if the recording
+  has none and never falls back to the raw one.
+- `-o/--output` takes a file path, or a directory (one that exists, or has a
+  trailing slash) to save `<recording-id>.<block>.<format>` in. Without it the
+  file goes to `%LOCALAPPDATA%\PlaudTools\exports\`, where the next export
+  of the same recording and format replaces it.
+- An existing file at `-o` is never replaced unless you add `--overwrite`.
+- `--expect-fingerprint` refuses the export if the transcript changed since
+  you read that fingerprint from `transcript --segments`.
+
 ---
 
 ## Folders
