@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-30
+
+Agents and the CLI can now save a whole transcript as a file without the
+model retyping it.
+
 ### Added
 
-- Transcript export. New MCP tool `export_transcript` and CLI `export` save a
+- Transcript export (#237). New MCP tool `export_transcript` and CLI `export` save a
   recording's whole transcript to a file and return its path, byte size,
   SHA-256 and transcript fingerprint, not the text. `json` is a versioned
   archive format for SWIRL (see docs/transcript-export.md). `txt`, `srt`,
@@ -1815,7 +1820,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/massive-value/plaud-tools/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/massive-value/plaud-tools/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/massive-value/plaud-tools/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/massive-value/plaud-tools/compare/v0.9.0...v0.10.0
