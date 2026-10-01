@@ -16,6 +16,12 @@ from plaud_tools.tray.ps1_templates import (
     scripts_dir,
 )
 
+# Generous on purpose. Windows PowerShell can stall for minutes while it starts,
+# before running a line of the script: measured on a dev machine running
+# Defender for Endpoint, ~2% of starts took over 20 s and the worst took 122 s.
+# A tight timeout turns that stall into a false test failure.
+_PS_TIMEOUT_S = 300
+
 # ---------------------------------------------------------------------------
 # scripts_dir — must resolve to a real directory containing the PS1 files
 # ---------------------------------------------------------------------------
@@ -377,7 +383,7 @@ Write-Host "RESULT=$result KILLS=$script:killCount"
         ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(harness)],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
     assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
     assert "RESULT=True" in result.stdout
@@ -717,7 +723,7 @@ def test_bom_dispatcher_parses_under_windows_powershell_51(tmp_path, render_fn, 
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
     assert result.returncode == 0, f"powershell invocation failed:\n{result.stdout}\n{result.stderr}"
     assert result.stdout.strip() == "", f"PS 5.1 parse errors:\n{result.stdout}"
@@ -777,7 +783,7 @@ def _run_update_ps1(tmp_path, install, zip_path, *extra: str):  # type: ignore[n
         ],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=_PS_TIMEOUT_S,
         env=env,
     )
     return result, temp
@@ -847,7 +853,7 @@ def _run_uninstall_ps1(tmp_path, install, log_dir, dispatcher):  # type: ignore[
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=_PS_TIMEOUT_S,
     )
 
 
@@ -1042,7 +1048,7 @@ def test_update_dispatcher_falls_back_only_when_new_script_never_starts(tmp_path
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
-        timeout=60,
+        timeout=_PS_TIMEOUT_S,
         env={**os.environ, "TEMP": str(temp), "TMP": str(temp)},
     )
 

@@ -12,6 +12,12 @@ from pathlib import Path
 
 import pytest
 
+# Generous on purpose. Windows PowerShell can stall for minutes while it starts,
+# before running a line of the script: measured on a dev machine running
+# Defender for Endpoint, ~2% of starts took over 20 s and the worst took 122 s.
+# A tight timeout turns that stall into a false test failure.
+_PS_TIMEOUT_S = 300
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -187,7 +193,7 @@ def test_install_ps1_syntax_valid():
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
     assert result.returncode == 0, f"pwsh syntax check failed:\n{result.stdout}\n{result.stderr}"
 
@@ -208,7 +214,7 @@ def _run_install_functions(tmp_path: Path, names: list[str], body: str, exe: str
         [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=_PS_TIMEOUT_S,
     )
 
 
@@ -310,7 +316,7 @@ def _run_hash_check(  # type: ignore[type-arg]
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
 
 
@@ -442,7 +448,7 @@ def _run_version_compare(tmp_path: Path, installed: str, latest: str) -> subproc
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
 
 
@@ -536,7 +542,7 @@ def _run_version_branch(tmp_path: Path, installed: str, latest: str, force: bool
     ]
     if force:
         args.append("-Force")
-    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(args, capture_output=True, text=True, timeout=_PS_TIMEOUT_S)
     assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
     return result.stdout.strip()
 
