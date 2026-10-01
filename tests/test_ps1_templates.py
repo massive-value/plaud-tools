@@ -16,6 +16,12 @@ from plaud_tools.tray.ps1_templates import (
     scripts_dir,
 )
 
+# Generous on purpose. Windows PowerShell can stall for minutes while it starts,
+# before running a line of the script: measured on a dev machine running
+# Defender for Endpoint, ~2% of starts took over 20 s and the worst took 122 s.
+# A tight timeout turns that stall into a false test failure.
+_PS_TIMEOUT_S = 300
+
 # ---------------------------------------------------------------------------
 # scripts_dir — must resolve to a real directory containing the PS1 files
 # ---------------------------------------------------------------------------
@@ -377,7 +383,7 @@ Write-Host "RESULT=$result KILLS=$script:killCount"
         ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(harness)],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
     assert result.returncode == 0, f"harness failed:\n{result.stdout}\n{result.stderr}"
     assert "RESULT=True" in result.stdout
@@ -717,7 +723,7 @@ def test_bom_dispatcher_parses_under_windows_powershell_51(tmp_path, render_fn, 
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PS_TIMEOUT_S,
     )
     assert result.returncode == 0, f"powershell invocation failed:\n{result.stdout}\n{result.stderr}"
     assert result.stdout.strip() == "", f"PS 5.1 parse errors:\n{result.stdout}"
@@ -777,7 +783,7 @@ def _run_update_ps1(tmp_path, install, zip_path, *extra: str):  # type: ignore[n
         ],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=_PS_TIMEOUT_S,
         env=env,
     )
     return result, temp
@@ -847,7 +853,7 @@ def _run_uninstall_ps1(tmp_path, install, log_dir, dispatcher):  # type: ignore[
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=_PS_TIMEOUT_S,
     )
 
 
@@ -976,3 +982,81 @@ def test_update_ps1_forced_item_swap_succeeds(tmp_path):
     assert "item by item" in result.stdout
     assert (install / "PlaudTools.exe").read_text(encoding="ascii") == "2.0.0"
     assert (temp / "plaud_just_updated.txt").read_bytes() == b"2.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Update dispatcher — runs the new release's update.ps1, falls back to the
+# bundled one only when the new copy never starts. Real PowerShell 5.1.
+# ---------------------------------------------------------------------------
+
+# Stand-ins for update.ps1. Like the real script they are "advanced" scripts
+# (a [Parameter(Mandatory)] param), so unknown or missing arguments fail to bind.
+_FAKE_PARAMS = (
+    "param([Parameter(Mandatory)][int]$TrayPid, [string]$InstallDir, [string]$ZipPath,"
+    " [string]$ExtractDir, [string]$DispatcherPath, [string]$NewVersion{extra})\n"
+)
+_FAKE_BUNDLED = _FAKE_PARAMS.format(extra="") + (
+    "Set-Content -LiteralPath (Join-Path $env:TEMP 'bundled_ran.txt') -Value $env:PLAUD_UPDATE_FALLBACK\n"
+)
+_NEXT_SCRIPTS = {
+    "starts": _FAKE_PARAMS.format(extra="")
+    + 'Set-Content -LiteralPath (Join-Path $env:TEMP "plaud_update_$TrayPid.alive.txt") -Value alive\n'
+    + "Set-Content -LiteralPath (Join-Path $env:TEMP 'next_ran.txt') -Value ran\n",
+    "parse_error": _FAKE_PARAMS.format(extra="") + '$broken = "unclosed\n',
+    "rejects_args": _FAKE_PARAMS.format(extra=", [Parameter(Mandatory)][string]$FutureParam")
+    + "Write-Output ran\n",
+}
+
+
+@_needs_ps51
+@pytest.mark.parametrize("next_kind", sorted(_NEXT_SCRIPTS))
+def test_update_dispatcher_falls_back_only_when_new_script_never_starts(tmp_path, monkeypatch, next_kind):
+    import os
+
+    bundled_dir = tmp_path / "bundled"
+    bundled_dir.mkdir()
+    (bundled_dir / "update.ps1").write_text(_FAKE_BUNDLED, encoding="ascii")
+    monkeypatch.setattr("plaud_tools.tray.ps1_templates.scripts_dir", lambda: bundled_dir)
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    next_script = temp / "plaud_update_7.next.ps1"
+    next_script.write_text(_NEXT_SCRIPTS[next_kind], encoding="ascii")
+    dispatcher = temp / "plaud_update_7.ps1"
+    dispatcher.write_text(
+        render_update_ps1(
+            tray_pid=7,
+            install_dir=r"C:\Programs\PlaudTools",
+            zip_path=r"C:\Temp\update.zip",
+            extract_dir=r"C:\Programs",
+            dispatcher_path=str(dispatcher),
+            new_version="2.0.0",
+            next_script=str(next_script),
+        ),
+        encoding="utf-8-sig",
+    )
+
+    subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(dispatcher),
+        ],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=_PS_TIMEOUT_S,
+        env={**os.environ, "TEMP": str(temp), "TMP": str(temp)},
+    )
+
+    if next_kind == "starts":
+        assert (temp / "next_ran.txt").exists()
+        assert not (temp / "bundled_ran.txt").exists()
+    else:
+        assert not (temp / "next_ran.txt").exists()
+        fallback = (temp / "bundled_ran.txt").read_text(encoding="utf-8-sig")
+        assert "used the installed one" in fallback
+    assert not next_script.exists()

@@ -13,6 +13,7 @@ import threading
 import tkinter as tk
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from tkinter import ttk
 from typing import TYPE_CHECKING
@@ -45,11 +46,16 @@ _ALLOWED_UPDATE_HOSTS: frozenset[str] = frozenset(
 # Name of the release asset whose line we read from SHA256SUMS.
 _ZIP_ASSET_NAME = "PlaudTools.zip"
 
+# Where the new release's update.ps1 sits inside PlaudTools.zip.
+_ZIP_UPDATE_SCRIPT = "PlaudTools/_internal/scripts/update.ps1"
+
 # How long the tray waits for update.ps1's heartbeat file before giving up and
 # reporting failure (instead of quitting into a half-applied update). The
 # updater writes the heartbeat as its very first action, so this only needs to
-# cover PowerShell cold-start (slow under Defender/enterprise scanning).
-_UPDATER_HEARTBEAT_TIMEOUT_S: float = 20.0
+# cover PowerShell startup. That is usually under a second, but Defender for
+# Endpoint can stall it: on one work machine 4 of 205 starts took over 20 s and
+# the worst took 122 s. A 20 s limit failed about 1 in 50 healthy updates.
+_UPDATER_HEARTBEAT_TIMEOUT_S: float = 150.0
 
 
 def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
@@ -71,6 +77,26 @@ def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
         str(ps_path),
     ]
     return launch_hidden_powershell(args, cwd=tempfile.gettempdir(), breakaway=True)
+
+
+def _extract_update_script(zip_path: Path, dest: Path) -> bool:
+    """Copy the new release's update.ps1 out of the verified zip to *dest*.
+
+    Called only after the zip's SHA256 has been checked, so the script is as
+    trusted as the rest of the update. Returns False (and the dispatcher runs
+    the bundled copy) when the zip has no update.ps1 or cannot be read.
+    """
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                if info.filename.replace("\\", "/") == _ZIP_UPDATE_SCRIPT:
+                    dest.write_bytes(zf.read(info))
+                    return True
+    except (OSError, zipfile.BadZipFile):
+        logging.warning("in-app update: could not read update.ps1 from %s", zip_path, exc_info=True)
+        return False
+    logging.warning("in-app update: %s has no %s; using the bundled updater", zip_path, _ZIP_UPDATE_SCRIPT)
+    return False
 
 
 def _check_download_host(url: str) -> None:
@@ -527,6 +553,8 @@ class UpdateDialog:
             # the tray's exit on this file's appearance (see below).
             alive_path = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.alive.txt"
             alive_path.unlink(missing_ok=True)  # clear any stale heartbeat from a prior run
+            next_script = Path(tempfile.gettempdir()) / f"plaud_update_{tray_pid}.next.ps1"
+            has_next_script = _extract_update_script(zip_path, next_script)
 
             update_info = self._app._update_info
             new_version = update_info[0] if update_info else "unknown"
@@ -543,6 +571,7 @@ class UpdateDialog:
                 extract_dir=str(install_dir.parent),
                 dispatcher_path=str(ps_path),
                 new_version=new_version,
+                next_script=str(next_script) if has_next_script else None,
             )
             # utf-8-sig (BOM) so Windows PowerShell 5.1 -- which treats a
             # BOM-less file as the system ANSI codepage, not UTF-8 -- reliably
@@ -556,16 +585,18 @@ class UpdateDialog:
             if self._cancel.is_set():
                 logging.info("in-app update: cancelled by user before launch")
                 ps_path.unlink(missing_ok=True)
+                next_script.unlink(missing_ok=True)
                 _discard_download(zip_path)
                 self._in_progress.clear()
                 return
 
             logging.info(
-                "in-app update: launching updater for v%s (tray_pid=%s zip=%s dispatcher=%s)",
+                "in-app update: launching updater for v%s (tray_pid=%s zip=%s dispatcher=%s new_script=%s)",
                 new_version,
                 tray_pid,
                 zip_path,
                 ps_path,
+                has_next_script,
             )
 
             proc = _launch_updater(ps_path)
@@ -592,6 +623,7 @@ class UpdateDialog:
                     # Updater exited before writing a heartbeat → it never ran.
                     self._record_launch_failure(fail_sentinel, ps_path, tray_pid, rc)
                     _discard_download(zip_path)
+                    next_script.unlink(missing_ok=True)
                     _on_error(
                         RuntimeError(
                             f"The updater exited (code {rc}) before it could start. "
@@ -615,6 +647,7 @@ class UpdateDialog:
                 )
             self._record_launch_failure(fail_sentinel, ps_path, tray_pid, None)
             _discard_download(zip_path)
+            next_script.unlink(missing_ok=True)
             _on_error(
                 RuntimeError(
                     "The updater did not start within the expected time. "
