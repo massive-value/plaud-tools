@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-01
+
+In-app updates are harder to break: the tray now runs the updater that ships
+with the new version, and it no longer gives up on a slow PowerShell start.
+
+### Fixed
+
+- The tray waited only 20 seconds for the updater's PowerShell to start, then
+  killed it and reported "The updater did not start within the expected
+  time." Defender for Endpoint can hold PowerShell startup for up to two
+  minutes, so about 1 in 50 healthy updates on work machines failed this way.
+  The wait is now 150 seconds (#239).
+
+### Changed
+
+- The in-app updater runs the `update.ps1` from the new release, copied out of
+  the checksum-verified zip, instead of the copy bundled with the installed
+  version. Fixes to the updater now apply on the same update they ship in. If
+  the new copy cannot start, the installed copy runs, and the update log shows
+  a `Fallback = ...` line with the reason (#239). This starts with updates
+  made from 0.12.1. Updating to 0.12.1 still uses the installed updater.
+- Docs: new troubleshooting entry for "Could not extract update zip" when
+  updating from 0.9.x or earlier (fix: re-run the installer with `-Repair`).
+
 ## [0.12.0] - 2026-09-30
 
 Agents and the CLI can now save a whole transcript as a file without the
