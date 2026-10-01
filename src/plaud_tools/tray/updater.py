@@ -52,8 +52,10 @@ _ZIP_UPDATE_SCRIPT = "PlaudTools/_internal/scripts/update.ps1"
 # How long the tray waits for update.ps1's heartbeat file before giving up and
 # reporting failure (instead of quitting into a half-applied update). The
 # updater writes the heartbeat as its very first action, so this only needs to
-# cover PowerShell cold-start (slow under Defender/enterprise scanning).
-_UPDATER_HEARTBEAT_TIMEOUT_S: float = 20.0
+# cover PowerShell startup. That is usually under a second, but Defender for
+# Endpoint can stall it: on one work machine 4 of 205 starts took over 20 s and
+# the worst took 122 s. A 20 s limit failed about 1 in 50 healthy updates.
+_UPDATER_HEARTBEAT_TIMEOUT_S: float = 150.0
 
 
 def _launch_updater(ps_path: Path) -> subprocess.Popen[bytes]:
