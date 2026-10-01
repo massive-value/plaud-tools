@@ -31,6 +31,13 @@
     The tray is restarted in a `finally` block, so the user is never stranded
     without a tray icon - even when the update itself fails.
 
+    Which copy runs: the tray copies THIS file out of the new release's zip
+    into %TEMP% and runs it, so an updater fix applies on the same update it
+    ships in. Older trays (and the fallback) run the copy bundled with the
+    installed version instead. Either way, keep accepting every parameter
+    older trays pass: if this script rejects them, the dispatcher falls back
+    to the installed (older) copy. Do not rely on $PSScriptRoot.
+
 .PARAMETER TrayPid
     PID of the running PlaudTools.exe (tray app) to wait for.
 
@@ -352,6 +359,9 @@ try {
     Write-Host "  ZipPath        = $ZipPath"
     Write-Host "  StagingDir     = $stagingDir"
     Write-Host "  DispatcherPath = $DispatcherPath"
+    if ($env:PLAUD_UPDATE_FALLBACK) {
+        Write-Host "  Fallback       = $env:PLAUD_UPDATE_FALLBACK"
+    }
 
     # 1. Wait for the tray to exit, with a timeout. If it never exits, give up
     #    WITHOUT installing: installing later, after the tray already told the

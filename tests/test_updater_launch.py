@@ -216,3 +216,36 @@ def test_only_one_install_at_a_time():
     dialog = _make_dialog()
     assert dialog._try_begin_install() is True
     assert dialog._try_begin_install() is False
+
+
+# ---------------------------------------------------------------------------
+# The new release's update.ps1 is copied out of the verified zip
+# ---------------------------------------------------------------------------
+
+
+def test_extract_update_script_copies_new_release_script(tmp_path):
+    import zipfile
+
+    zip_path = tmp_path / "PlaudTools.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("PlaudTools/PlaudTools.exe", b"exe")
+        zf.writestr(updater._ZIP_UPDATE_SCRIPT, b"# new updater\r\n")
+    dest = tmp_path / "plaud_update_1.next.ps1"
+
+    assert updater._extract_update_script(zip_path, dest) is True
+    assert dest.read_bytes() == b"# new updater\r\n"
+
+
+def test_extract_update_script_missing_or_bad_zip_uses_bundled(tmp_path):
+    import zipfile
+
+    no_script = tmp_path / "no_script.zip"
+    with zipfile.ZipFile(no_script, "w") as zf:
+        zf.writestr("PlaudTools/PlaudTools.exe", b"exe")
+    not_a_zip = tmp_path / "not_a_zip.zip"
+    not_a_zip.write_bytes(b"garbage")
+    dest = tmp_path / "plaud_update_1.next.ps1"
+
+    assert updater._extract_update_script(no_script, dest) is False
+    assert updater._extract_update_script(not_a_zip, dest) is False
+    assert not dest.exists()

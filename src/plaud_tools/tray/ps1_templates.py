@@ -9,9 +9,10 @@ Public API
 ``scripts_dir()``
     Return the directory that contains the bundled ``.ps1`` scripts.
 
-``render_update_ps1(tray_pid, install_dir, zip_path, extract_dir)``
+``render_update_ps1(tray_pid, install_dir, zip_path, extract_dir, ...)``
     Return a PowerShell dispatcher string that invokes ``update.ps1`` with the
-    given arguments.
+    given arguments: the new release's copy when one is supplied, with the
+    bundled copy as the fallback.
 
 ``render_uninstall_ps1(tray_pid, install_dir, log_dir, dispatcher_path)``
     Return a PowerShell dispatcher string that invokes ``uninstall.ps1`` with
@@ -70,13 +71,22 @@ def render_update_ps1(
     extract_dir: str,
     dispatcher_path: str | None = None,
     new_version: str | None = None,
+    next_script: str | None = None,
 ) -> str:
-    """Return a PS1 dispatcher that calls the bundled update.ps1 with the given args.
+    """Return a PS1 dispatcher that runs update.ps1 with the given args.
 
-    The dispatcher is a small self-contained script that:
-    - Determines the scripts directory at runtime (handles _MEIPASS path).
-    - Invokes ``update.ps1`` with the supplied parameters.
-    - Exits immediately so the caller (the tray process) can quit.
+    Without ``next_script`` the dispatcher is one line that calls the bundled
+    update.ps1 (the copy shipped with the running, older version).
+
+    With ``next_script`` (the new release's update.ps1, copied out of the
+    verified zip) the dispatcher runs that copy first, so updater fixes take
+    effect on the same update they ship in. If the new copy never starts (it
+    fails to parse, or rejects the arguments this tray passes), it writes no
+    heartbeat file, and the dispatcher falls back to the bundled copy. The
+    reason is handed to the bundled copy in ``$env:PLAUD_UPDATE_FALLBACK`` so
+    it lands in the update log. Once the new copy has written its heartbeat,
+    it owns the update and the fallback never runs, so two updaters can never
+    act on the same install.
 
     Parameters
     ----------
@@ -94,33 +104,49 @@ def render_update_ps1(
         run. Optional for backwards compatibility with older callers.
     new_version:
         The version being installed (e.g. ``"0.3.3"``). Passed to update.ps1
-        as ``-NewVersion`` so it can (a) prune stale ``plaud_tools-*.dist-info``
-        directories left behind by the overlay extraction — otherwise
-        ``importlib.metadata.version`` resolves the OLD version and the tray
-        keeps reporting the pre-update version — and (b) write the
-        ``plaud_just_updated.txt`` success sentinel only AFTER a successful
-        extraction. Optional for backwards compatibility with older callers.
+        as ``-NewVersion`` so it writes the ``plaud_just_updated.txt`` success
+        sentinel only AFTER a successful swap. Optional for backwards
+        compatibility with older callers.
+    next_script:
+        Absolute path to the new release's update.ps1, already extracted from
+        the checksum-verified zip. The dispatcher deletes it when done.
     """
-    scripts = scripts_dir()
-    ps1 = scripts / "update.ps1"
-    safe_ps1 = _ps_escape(str(ps1))
-    safe_install = _ps_escape(install_dir)
-    safe_zip = _ps_escape(zip_path)
-    safe_extract = _ps_escape(extract_dir)
-    line = (
-        f"& '{safe_ps1}'"
+    args = (
         f" -TrayPid {tray_pid}"
-        f" -InstallDir '{safe_install}'"
-        f" -ZipPath '{safe_zip}'"
-        f" -ExtractDir '{safe_extract}'"
+        f" -InstallDir '{_ps_escape(install_dir)}'"
+        f" -ZipPath '{_ps_escape(zip_path)}'"
+        f" -ExtractDir '{_ps_escape(extract_dir)}'"
     )
     if dispatcher_path:
-        safe_dispatcher = _ps_escape(dispatcher_path)
-        line += f" -DispatcherPath '{safe_dispatcher}'"
+        args += f" -DispatcherPath '{_ps_escape(dispatcher_path)}'"
     if new_version:
-        safe_version = _ps_escape(new_version)
-        line += f" -NewVersion '{safe_version}'"
-    return line + "\n"
+        args += f" -NewVersion '{_ps_escape(new_version)}'"
+    bundled = f"& '{_ps_escape(str(scripts_dir() / 'update.ps1'))}'{args}"
+    if not next_script:
+        return bundled + "\n"
+
+    # update.ps1 writes this heartbeat as its very first line (same path it
+    # builds from $env:TEMP and -TrayPid). Its absence after the call means
+    # the new copy never ran a line.
+    safe_next = _ps_escape(next_script)
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Continue'",
+            f"$alive = Join-Path $env:TEMP 'plaud_update_{tray_pid}.alive.txt'",
+            "$reason = 'it did not start'",
+            "try {",
+            f"    & '{safe_next}'{args}",
+            "} catch {",
+            "    $reason = $_.Exception.Message",
+            "}",
+            "if (-not (Test-Path -LiteralPath $alive)) {",
+            '    $env:PLAUD_UPDATE_FALLBACK = "New updater could not run ($reason); used the installed one."',
+            f"    {bundled}",
+            "}",
+            f"Remove-Item -LiteralPath '{safe_next}' -ErrorAction SilentlyContinue",
+            "",
+        ]
+    )
 
 
 def render_uninstall_ps1(

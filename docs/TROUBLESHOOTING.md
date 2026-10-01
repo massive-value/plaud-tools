@@ -116,6 +116,9 @@ The in-app updater extracts the new version next to your install (`PlaudTools.st
 - **"keeps respawning" or "a file is probably still in use"**: close Claude Desktop (and any other AI client that uses Plaud Tools) and run the update again.
 - **A leftover `PlaudTools.old` or `PlaudTools.staging` folder** next to your install: safe to delete. The next update also removes it.
 - **"could not be restored automatically"**: the previous version is in `PlaudTools.old`. Re-run the installer with `-Repair` (see [Broken or partial install](#broken-or-partial-install)).
+- **"Could not extract update zip" when updating from v0.9.x or earlier**: those versions unzip the update over the live install, so a file that is briefly locked or missing (often antivirus) stops the update halfway and leaves a mix of old and new files. Re-run the installer with `-Repair`. Updates after that use the staged swap above.
+
+Starting with the version after v0.12.0, the tray runs the `update.ps1` that ships inside the new release, so a fix to the updater applies on the same update it ships in. If that copy cannot start, the tray falls back to the installed copy, and the log shows a `Fallback = ...` line with the reason.
 
 ---
 

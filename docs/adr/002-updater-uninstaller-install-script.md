@@ -80,6 +80,8 @@ Every GitHub release now publishes a `SHA256SUMS` asset alongside `PlaudTools.zi
 
 **ffmpeg pin (Wave 0 / A3)** — the release pipeline downloads ffmpeg from a pinned versioned URL and verifies it against a hardcoded SHA-256 before bundling. GitHub Actions steps in both `ci.yml` and `release.yml` are pinned to full commit SHAs.
 
+**Amendment (after v0.12.0): run the new release's update.ps1.** Until v0.12.0 the tray ran the `update.ps1` bundled with the installed version, so every updater fix reached users one update late (v0.3.4, v0.4.1, and the overlay-extraction failure fixed in v0.10.0 all hit users this way). After the checksum passes, the tray now copies `PlaudTools/_internal/scripts/update.ps1` out of the verified zip into `%TEMP%` and the dispatcher runs that copy. It is covered by the same SHA-256 check as the rest of the update. If the new copy never writes its heartbeat file (it fails to parse, or rejects the arguments this tray passes), the dispatcher runs the bundled copy instead and records why in `$env:PLAUD_UPDATE_FALLBACK`, which update.ps1 prints into its log. Once the new copy writes its heartbeat it owns the update, so the fallback never runs on top of it. The rule for future update.ps1 changes is that every parameter older trays pass must still bind.
+
 ### Update host allowlist (Wave 3 / D6)
 
 Update downloads are restricted to an explicit allowlist: `github.com` and `objects.githubusercontent.com` (exact `hostname` match, not substring). `_check_download_host(url)` is called before any download begins in the updater worker; a host not in the allowlist raises `ValueError` and the download is refused. Redirects to off-allowlist hosts are therefore also refused at the point the redirect URL is resolved.
