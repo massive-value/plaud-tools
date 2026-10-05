@@ -28,7 +28,7 @@ colorama==0.4.6
     #   pytest
 comtypes==1.4.17
     # via plaud-tools (pyproject.toml)
-coverage==7.16.1
+coverage==7.16.2
     # via pytest-cov
 cryptography==50.0.1
     # via pyjwt
