@@ -187,198 +187,98 @@ def test_chunk_assembly_single_part(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_upload_presign_request_shape(tmp_path):
-    manager = _make_manager(tmp_path)
-    audio_data = b"a" * 1024
+def _created(*part_urls: str, upload_id: str = "uid") -> HttpResponse:
+    return _ok({"data": {"part_urls": list(part_urls) or ["https://s3.fake/p1"], "upload_id": upload_id}})
 
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "part_urls": ["https://s3.fake/p1"],
-                            "upload_id": "uid",
-                            "object_name": "obj.mp3",
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            _s3_ok(),
-            _ok({}),
-            _ok({"data": {"id": "r1", "filename": "rec"}}),
-        ]
+
+def _confirmed(file_id: str = "f_new") -> HttpResponse:
+    return _ok(
+        {"data": {"file_id": file_id, "node_id": "n_file", "folder_node_id": "n_wrap", "file_name": "rec"}}
     )
-    client = PlaudClient(manager, transport=transport)
-    client.upload_recording(_audio(tmp_path, audio_data), "my recording", "MP3")
-
-    presign_call = transport.calls[0]
-    assert presign_call["method"] == "POST"
-    assert presign_call["url"].endswith("/file/get_upload_presigned_url")
-    body = json.loads(presign_call["body"])
-    assert body == {"filesize": 1024, "file_type": "MP3"}
-    assert presign_call["headers"]["Authorization"].startswith("Bearer ")
 
 
-def test_upload_s3_put_shape(tmp_path):
-    """S3 PUT must use correct Content-Type and carry no Plaud auth header."""
-    manager = _make_manager(tmp_path)
-    audio_data = b"b" * 512
+def test_upload_create_request_shape(tmp_path):
+    transport = StubTransport([_created(), _s3_ok(), _ok({}), _confirmed()])
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    client.upload_recording(_audio(tmp_path, b"a" * 1024), "my recording", "MP3")
 
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "part_urls": ["https://s3.aws.fake/presigned"],
-                            "upload_id": "uid",
-                            "object_name": "obj.mp3",
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            _s3_ok("deadbeef"),
-            _ok({}),
-            _ok({"data": {"id": "r1", "filename": "rec"}}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.upload_recording(_audio(tmp_path, audio_data), "rec", "MP3")
+    create_call = transport.calls[0]
+    assert create_call["method"] == "POST"
+    assert create_call["url"].endswith("/file-app/v4/upload/create")
+    assert json.loads(create_call["body"]) == {
+        "file_name": "my recording",
+        "file_size": 1024,
+        "file_type": "audio/mpeg",
+        "file_extension": "mp3",
+    }
+    assert create_call["headers"]["Authorization"].startswith("Bearer ")
+
+
+def test_upload_s3_put_carries_no_headers(tmp_path):
+    """The presigned URL is signed without a Content-Type, so the PUT must send none."""
+    transport = StubTransport([_created("https://s3.aws.fake/presigned"), _s3_ok(), _ok({}), _confirmed()])
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    client.upload_recording(_audio(tmp_path, b"b" * 512), "rec", "MP3")
 
     s3_call = transport.calls[1]
     assert s3_call["method"] == "PUT"
     assert s3_call["url"] == "https://s3.aws.fake/presigned"
-    assert s3_call["headers"] == {"Content-Type": "application/x-www-form-urlencoded"}
-    assert "Authorization" not in s3_call["headers"]
-    assert s3_call["body"] == audio_data
+    assert s3_call["headers"] == {}
+    assert s3_call["body"] == b"b" * 512
 
 
-def test_upload_merge_multipart_request_shape(tmp_path):
-    """merge_multipart body must use Plaud's unusual casing: {Etag, PartNumber}."""
-    manager = _make_manager(tmp_path)
-    audio_data = b"c" * (7 * 1024 * 1024)
-
+def test_upload_merge_part_sends_unquoted_etags(tmp_path):
     transport = StubTransport(
         [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "part_urls": ["https://s3.fake/p1", "https://s3.fake/p2"],
-                            "upload_id": "uid-x",
-                            "object_name": "obj.mp3",
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
+            _created("https://s3.fake/p1", "https://s3.fake/p2", upload_id="uid-x"),
             _s3_ok("etag-1"),
             _s3_ok("etag-2"),
             _ok({}),
-            _ok({"data": {"id": "r1", "filename": "rec"}}),
+            _confirmed(),
         ]
     )
-    client = PlaudClient(manager, transport=transport)
-    client.upload_recording(_audio(tmp_path, audio_data), "rec", "MP3")
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    client.upload_recording(_audio(tmp_path, b"c" * (7 * 1024 * 1024)), "rec", "MP3")
 
     merge_call = transport.calls[3]
-    assert merge_call["url"].endswith("/file/merge_multipart")
-    body = json.loads(merge_call["body"])
-    assert body["upload_id"] == "uid-x"
-    assert body["object_name"] == "obj.mp3"
-    assert body["parts"] == [
-        {"Etag": "etag-1", "PartNumber": 1},
-        {"Etag": "etag-2", "PartNumber": 2},
-    ]
+    assert merge_call["url"].endswith("/file-app/v4/upload/merge-part")
+    assert json.loads(merge_call["body"]) == {
+        "upload_id": "uid-x",
+        "parts": [{"etag": "etag-1", "part_number": 1}, {"etag": "etag-2", "part_number": 2}],
+    }
 
 
 def test_upload_confirm_request_shape(tmp_path):
-    manager = _make_manager(tmp_path)
-    audio_data = b"d" * 512
-    fixed_start = 1_700_000_000_000
-
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "part_urls": ["https://s3.fake/p1"],
-                            "upload_id": "uid-y",
-                            "object_name": "obj.ogg",
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            _s3_ok("etag-only"),
-            _ok({}),
-            _ok({"data": {"id": "r2", "filename": "clip"}}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.upload_recording(
-        _audio(tmp_path, audio_data), "clip", "OGG", start_time=fixed_start, timezone_offset=-7.0
+    transport = StubTransport([_created(upload_id="uid-y"), _s3_ok(), _ok({}), _confirmed("f_abc")])
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    recording = client.upload_recording(
+        _audio(tmp_path, b"d" * 512),
+        "clip",
+        "OGG",
+        start_time=1_700_000_000_000,
+        timezone_offset=-7.0,
+        folder_id="n_folder",
     )
 
     confirm_call = transport.calls[3]
-    assert confirm_call["url"].endswith("/file/confirm_upload")
+    assert confirm_call["url"].endswith("/file-app/v4/upload/confirm-audio-web")
+    assert confirm_call["headers"]["x-timezone-iana"] == "Etc/GMT+7"
     body = json.loads(confirm_call["body"])
-    assert body["upload_id"] == "uid-y"
-    assert body["object_name"] == "obj.ogg"
-    assert body["file_type"] == "OGG"
-    assert body["filename"] == "clip"
-    assert body["start_time"] == fixed_start
-    assert body["session_id"] == fixed_start // 1000
-    assert body["timezone"] == -7.0
-    assert body["scene"] == 101
-    assert body["is_tmp"] == 0
-    assert body["support_mul_summ"] is True
-    assert "serial_number" in body
-
-
-def test_upload_strips_etag_quotes(tmp_path):
-    """S3 may return ETag with surrounding quotes — strip them."""
-    manager = _make_manager(tmp_path)
-    audio_data = b"e" * 100
-
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "part_urls": ["https://s3.fake/p1"],
-                            "upload_id": "uid",
-                            "object_name": "obj.mp3",
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, b"", {"etag": '"quoted-etag"'}),
-            _ok({}),
-            _ok({"data": {"id": "r1", "filename": "f"}}),
-        ]
+    assert body.pop("file_id").startswith("f_")
+    assert body == {
+        "upload_id": "uid-y",
+        "file_name": "clip",
+        "start_time": 1_700_000_000_000,
+        "scene_source": 101,
+        "conflict_strategy": "keep_both",
+        "target_node_id": "n_folder",
+    }
+    assert (recording.id, recording.node_id, recording.wrapper_id, recording.folder_id) == (
+        "f_abc",
+        "n_file",
+        "n_wrap",
+        "n_folder",
     )
-    client = PlaudClient(manager, transport=transport)
-    client.upload_recording(_audio(tmp_path, audio_data), "f", "MP3")
-
-    merge_body = json.loads(transport.calls[2]["body"])
-    assert merge_body["parts"][0]["Etag"] == "quoted-etag"
 
 
 def test_upload_rejects_blank_filename(tmp_path):
@@ -395,53 +295,27 @@ def test_upload_rejects_unknown_file_type(tmp_path):
         client.upload_recording(_audio(tmp_path, b"x"), "test", "FLAC")
 
 
-def test_upload_raises_on_missing_presign_fields(tmp_path):
-    manager = _make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            _ok({"data": {"upload_id": "uid"}}),  # missing part_urls and object_name
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(PlaudApiError, match="presign response missing fields"):
+def test_upload_raises_on_missing_create_fields(tmp_path):
+    transport = StubTransport([_ok({"data": {"upload_id": "uid"}})])  # no part_urls
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    with pytest.raises(PlaudApiError, match="upload/create response missing fields"):
         client.upload_recording(_audio(tmp_path, b"x"), "test", "MP3")
 
 
 def test_upload_raises_when_s3_returns_no_etag(tmp_path):
-    manager = _make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "part_urls": ["https://s3.fake/p1"],
-                            "upload_id": "uid",
-                            "object_name": "obj.mp3",
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, b"", {}),  # no etag header
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
+    transport = StubTransport([_created(), HttpResponse(200, b"", {})])
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
     with pytest.raises(PlaudApiError, match="no ETag for part 1"):
         client.upload_recording(_audio(tmp_path, b"data"), "test", "MP3")
 
 
 def test_upload_refuses_to_merge_when_file_outlasts_part_urls(tmp_path):
     """Fewer part URLs than chunks must fail, not store a truncated recording."""
-    manager = _make_manager(tmp_path)
-    presign = _ok({"data": {"part_urls": ["https://s3.fake/p1"], "upload_id": "uid", "object_name": "o.mp3"}})
-    transport = StubTransport([presign, _s3_ok("etag1")])
-    client = PlaudClient(manager, transport=transport)
+    transport = StubTransport([_created(), _s3_ok("etag1")])
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
     with pytest.raises(PlaudApiError, match="file has more data"):
         client.upload_recording(_audio(tmp_path, b"z" * (_CHUNK_SIZE + 1)), "big", "MP3")
-    assert not any("merge_multipart" in call["url"] for call in transport.calls)
+    assert not any("merge-part" in call["url"] for call in transport.calls)
 
 
 # ---------------------------------------------------------------------------
@@ -449,102 +323,70 @@ def test_upload_refuses_to_merge_when_file_outlasts_part_urls(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_merge_combine_request_shape(tmp_path):
-    manager = _make_manager(tmp_path)
+def _detail(file_id: str = "f_1", *, duration: int = 60_000, objects: list | None = None) -> HttpResponse:
+    """A minimal ``files/detail`` response: recording in folder n_fd inside container n_w."""
+    return _ok(
+        {
+            "data": {
+                "node": {
+                    "node_id": "n_file",
+                    "name": "Meeting",
+                    "version_ms": 1,
+                    "folder": {"folder_id": "n_w"},
+                    "display_folder": {"folder_id": "n_fd"},
+                },
+                "meta": {"file_id": file_id, "duration": duration},
+                "objects": objects or [],
+            }
+        }
+    )
+
+
+def _not_found() -> HttpResponse:
+    return HttpResponse(200, json.dumps({"status": -1800311, "msg": "file not found"}).encode(), {})
+
+
+def test_merge_request_shape(tmp_path):
+    transport = StubTransport(
+        [_detail("of_aa"), _ok({"data": {"task_id": "t1", "file_id": "f_m"}}), _detail("f_m")]
+    )
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    merged = client.merge_recordings(
+        ["d48edd585ca134b19580ce827752925b", "of_bb"], "Combined", poll_interval_s=0
+    )
+
+    merge_call = transport.calls[1]
+    assert merge_call["url"].endswith("/file-app/v4/tasks/audio-merge")
+    body = json.loads(merge_call["body"])
+    assert body["source_file_ids"] == ["of_d48edd585ca134b19580ce827752925b", "of_bb"]
+    assert body["target_node_id"] == "n_fd"
+    assert body["file_name"] == "Combined"
+    assert merged.id == "f_m"
+
+
+def test_merge_polls_until_merged_file_has_audio(tmp_path):
     transport = StubTransport(
         [
-            _ok({"task_id": "task-abc"}),
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "status": "success",
-                            "file": {"file_id": "merged1", "filename": "Combined"},
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
+            _detail("of_aa"),
+            _ok({"data": {"task_id": "t1", "file_id": "f_m"}}),
+            _not_found(),
+            _detail("f_m", duration=0),
+            _detail("f_m"),
         ]
     )
-    client = PlaudClient(manager, transport=transport)
-    client.merge_recordings(["r1", "r2"], "Combined", poll_interval_s=0)
-
-    combine_call = transport.calls[0]
-    assert combine_call["method"] == "POST"
-    assert combine_call["url"].endswith("/file/combine")
-    body = json.loads(combine_call["body"])
-    assert body == {"file_ids": ["r1", "r2"], "filename": "Combined"}
-
-
-def test_merge_polls_combine_tasks(tmp_path):
-    """Polling should hit /file/combine-tasks/{task_id} and return on success."""
-    manager = _make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            _ok({"task_id": "task-xyz"}),
-            # First poll: still pending
-            HttpResponse(
-                200,
-                json.dumps({"status": 0, "data": {"status": "pending"}}).encode(),
-                {},
-            ),
-            # Second poll: success
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "status": "success",
-                            "file": {"file_id": "merged2", "file_name": "Merged"},
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.merge_recordings(["r1", "r2"], "Merged", poll_interval_s=0)
-
-    assert detail.id == "merged2"
-    poll_urls = [c["url"] for c in transport.calls[1:]]
-    assert all("combine-tasks/task-xyz" in u for u in poll_urls)
-
-
-def test_merge_raises_on_error_status(tmp_path):
-    manager = _make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            _ok({"task_id": "task-err"}),
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {"status": "error", "error_message": "source file deleted"},
-                    }
-                ).encode(),
-                {},
-            ),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(PlaudApiError, match="source file deleted"):
-        client.merge_recordings(["r1", "r2"], "X", poll_interval_s=0)
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    assert client.merge_recordings(["of_aa", "of_bb"], "Merged", poll_interval_s=0).id == "f_m"
+    assert all(call["url"].endswith("/files/detail/f_m") for call in transport.calls[2:])
 
 
 def test_merge_timeout_carries_task_id(tmp_path):
     """A merge that outlives its budget reports Plaud's task id so nobody re-runs it."""
-    manager = _make_manager(tmp_path)
-    pending = _ok({"data": {"status": "pending"}})
-    transport = StubTransport([_ok({"task_id": "task-slow"}), pending])
-    client = PlaudClient(manager, transport=transport)
+    transport = StubTransport(
+        [_detail("of_aa"), _ok({"data": {"task_id": "task-slow", "file_id": "f_m"}}), _not_found()]
+    )
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
     with pytest.raises(PlaudWaitTimeoutError, match="timed out") as info:
-        client.merge_recordings(["r1", "r2"], "slow", poll_interval_s=0, timeout_s=0)
+        client.merge_recordings(["of_aa", "of_bb"], "slow", poll_interval_s=0, timeout_s=0)
     assert info.value.task_id == "task-slow"
 
 
@@ -562,51 +404,17 @@ def test_merge_rejects_blank_filename(tmp_path):
         client.merge_recordings(["r1", "r2"], "  ")
 
 
-def test_merge_raises_on_missing_task_id(tmp_path):
-    manager = _make_manager(tmp_path)
-    transport = StubTransport([_ok({})])  # no task_id in response
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(PlaudApiError, match="missing task_id"):
-        client.merge_recordings(["r1", "r2"], "title")
-
-
 # ---------------------------------------------------------------------------
 # Fixture-based tests: wait_for_transcription
 # ---------------------------------------------------------------------------
 
 
-def _make_detail_response(*, is_trans: bool) -> HttpResponse:
-    return HttpResponse(
-        200,
-        json.dumps(
-            {
-                "status": 0,
-                "data": {
-                    "file_id": "rec1",
-                    "file_name": "Meeting",
-                    "content_list": [
-                        {
-                            "data_type": "transaction",
-                            "task_status": 1 if is_trans else 0,
-                        }
-                    ],
-                },
-            }
-        ).encode(),
-        {},
-    )
-
-
 def test_wait_for_transcription_returns_when_done(tmp_path):
-    manager = _make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            _make_detail_response(is_trans=False),
-            _make_detail_response(is_trans=True),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.wait_for_transcription("rec1", poll_interval_s=0)
+    pending = {"object_type": "TRANSCRIPT", "task_status": 0}
+    done = {"object_type": "TRANSCRIPT", "task_status": 1, "content_url": "https://s3.fake/t"}
+    transport = StubTransport([_detail(objects=[pending]), _detail(objects=[done])])
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    client.wait_for_transcription("f_1", poll_interval_s=0)
     assert len(transport.calls) == 2
 
 
@@ -721,40 +529,17 @@ def test_upload_path_reads_from_disk(tmp_path):
             _s3_ok("etag1"),
             _s3_ok("etag2"),
             _ok({}),
-            _ok({"data": {"id": "rec1", "filename": "recording"}}),
+            _confirmed("f_rec1"),
         ]
     )
     client = PlaudClient(manager, transport=transport)
     recording = client.upload_recording(audio_file, "recording", "MP3")
 
-    assert recording.id == "rec1"
+    assert recording.id == "f_rec1"
     s3_calls = [c for c in transport.calls if "s3.fake" in c["url"]]
     assert len(s3_calls) == 2
     assert len(s3_calls[0]["body"]) == _CHUNK_SIZE  # 5 MiB
     assert len(s3_calls[1]["body"]) == 2 * 1024 * 1024  # 2 MiB remainder
-
-
-def test_upload_path_presign_uses_stat_filesize(tmp_path):
-    """Path variant: presign body must report the on-disk file size via stat()."""
-    manager = _make_manager(tmp_path)
-    audio_file = tmp_path / "clip.mp3"
-    file_content = b"Z" * 4321
-    audio_file.write_bytes(file_content)
-
-    transport = StubTransport(
-        [
-            _make_presign_response(1, object_name="clip.mp3"),
-            _s3_ok(),
-            _ok({}),
-            _ok({"data": {"id": "r1", "filename": "clip"}}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.upload_recording(audio_file, "clip", "MP3")
-
-    presign_call = transport.calls[0]
-    body = json.loads(presign_call["body"])
-    assert body["filesize"] == len(file_content)
 
 
 def test_upload_path_rejects_empty_file(tmp_path):
@@ -862,27 +647,22 @@ def test_transcode_to_mp3_path_raises_on_ffmpeg_failure(tmp_path, monkeypatch):
 
 
 class _FakeUploadClient:
-    """Minimal stand-in for PlaudClient's upload/folder-move surface."""
+    """Minimal stand-in for PlaudClient's upload surface."""
 
-    def __init__(self, *, folder_move_error: Exception | None = None):
+    def __init__(self):
         self.upload_calls: list[tuple] = []
-        self.folder_calls: list[tuple] = []
-        self._folder_move_error = folder_move_error
         self._next_id = 0
 
-    def upload_recording(self, data, filename, file_type, *, start_time=None, timezone_offset=None):
+    def upload_recording(
+        self, data, filename, file_type, *, start_time=None, timezone_offset=None, folder_id=None
+    ):
         from plaud_tools.core.models import Recording
 
         self._next_id += 1
         # Record whether *data* was a real on-disk path so tests can assert
         # the transcode branch swapped in the temp mp3 path.
-        self.upload_calls.append((data, filename, file_type, start_time, timezone_offset))
-        return Recording(id=f"rec{self._next_id}", filename=filename)
-
-    def set_recording_folder(self, recording_id, folder_id):
-        self.folder_calls.append((recording_id, folder_id))
-        if self._folder_move_error is not None:
-            raise self._folder_move_error
+        self.upload_calls.append((data, filename, file_type, start_time, timezone_offset, folder_id))
+        return Recording(id=f"rec{self._next_id}", filename=filename, folder_id=folder_id)
 
 
 def test_upload_with_transcode_native_format_skips_ffmpeg(tmp_path):
@@ -896,10 +676,7 @@ def test_upload_with_transcode_native_format_skips_ffmpeg(tmp_path):
 
     assert outcome.recording.id == "rec1"
     assert outcome.transcoded is False
-    assert outcome.folder_error is None
-    assert outcome.folder_id is None
     assert client.upload_calls[0][0] == audio  # uploaded straight from the source path
-    assert client.folder_calls == []
 
 
 def test_upload_with_transcode_transcodes_non_native_format(tmp_path, monkeypatch):
@@ -963,38 +740,17 @@ def test_upload_with_transcode_ffmpeg_failure_propagates_and_skips_upload(tmp_pa
     assert client.upload_calls == []
 
 
-def test_upload_with_transcode_folder_move_success(tmp_path):
+def test_upload_with_transcode_passes_folder_to_upload(tmp_path):
     from plaud_tools.core.transcode import upload_with_transcode
 
     audio = tmp_path / "audio.mp3"
     audio.write_bytes(b"fake mp3")
     client = _FakeUploadClient()
 
-    outcome = upload_with_transcode(client, audio, "title", folder_id="tag1")
+    outcome = upload_with_transcode(client, audio, "title", folder_id="n_folder")
 
-    assert outcome.folder_id == "tag1"
-    assert outcome.folder_error is None
-    assert client.folder_calls == [("rec1", "tag1")]
-
-
-def test_upload_with_transcode_folder_move_failure_is_partial_success(tmp_path):
-    """#149: a post-upload folder-move failure must not lose the recording —
-    the upload already succeeded, so the caller needs the id back to avoid
-    re-uploading a duplicate."""
-    from plaud_tools.core.errors import PlaudApiError
-    from plaud_tools.core.transcode import upload_with_transcode
-
-    audio = tmp_path / "audio.mp3"
-    audio.write_bytes(b"fake mp3")
-    client = _FakeUploadClient(folder_move_error=PlaudApiError("folder not found", http_status=404))
-
-    outcome = upload_with_transcode(client, audio, "title", folder_id="missing-folder")
-
-    # The recording must still be surfaced — this is the whole point of #149.
-    assert outcome.recording.id == "rec1"
-    assert outcome.folder_id is None
-    assert outcome.folder_error is not None
-    assert "folder not found" in outcome.folder_error
+    assert client.upload_calls[0][5] == "n_folder"
+    assert outcome.recording.folder_id == "n_folder"
 
 
 # ---------------------------------------------------------------------------

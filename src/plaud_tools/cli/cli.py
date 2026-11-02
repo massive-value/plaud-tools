@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     folder_create = folder_sub.add_parser("create")
     folder_create.add_argument("name")
-    folder_create.add_argument("--color", help="Hex color, e.g. '#4c8eff'")
+    folder_create.add_argument("--color", help="Plaud color name, e.g. 'folder-color-green'")
     folder_create.add_argument("--icon", help="Icon glyph codepoint, e.g. 'e627'")
 
     folder_edit = folder_sub.add_parser("edit")
@@ -257,7 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
             "automatically; a 13-digit value is treated as milliseconds."
         ),
     )
-    upload_cmd.add_argument("--timezone-offset", type=float, help="UTC offset in hours (e.g. -7.0)")
+    upload_cmd.add_argument(
+        "--timezone-offset",
+        type=float,
+        help="Whole-hour UTC offset (e.g. -7); defaults to this machine's timezone",
+    )
 
     merge_cmd = sub.add_parser("merge")
     merge_cmd.add_argument("recording_ids", nargs="+")
@@ -517,15 +521,7 @@ def _list_recordings_filtered(
     until_ms = parse_isoish(until, "--until", end_of_day=True) if until else None
     if has_filters:
         recordings, _ = collect_filtered_paged(
-            lambda skip, page_size: client.list_recordings(
-                PlaudRecordingQuery(
-                    skip=skip,
-                    limit=page_size,
-                    is_trash=0,
-                    sort_by="start_time",
-                    is_desc=True,
-                )
-            ),
+            lambda skip, page_size: client.list_recordings(PlaudRecordingQuery(skip=skip, limit=page_size)),
             BROWSE_PAGE_SIZE,
             since_ms=since_ms,
             until_ms=until_ms,
@@ -536,9 +532,7 @@ def _list_recordings_filtered(
             limit=limit,
         )
         return recordings
-    return client.list_recordings(
-        PlaudRecordingQuery(limit=limit, is_trash=0, sort_by="start_time", is_desc=True)
-    )
+    return client.list_recordings(PlaudRecordingQuery(limit=limit))
 
 
 def _handle_list_or_search(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -635,19 +629,18 @@ def _handle_rename(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_folders(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
-    tags = client.list_file_tags()
-    return json.dumps([folder_dict(tag) for tag in tags], indent=2)
+    return json.dumps([folder_dict(folder) for folder in client.list_folders()], indent=2)
 
 
 def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.folder_command == "create":
-        tag = client.create_folder(args.name, color=args.color, icon=args.icon)
-        return json.dumps({"ok": True, "action": "create", "folder": folder_dict(tag)}, indent=2)
+        folder = client.create_folder(args.name, color=args.color, icon=args.icon)
+        return json.dumps({"ok": True, "action": "create", "folder": folder_dict(folder)}, indent=2)
     if args.folder_command == "edit":
         if args.name is None and args.color is None and args.icon is None:
             raise ValueError("folder edit requires at least one of --name, --color, --icon")
-        tag = client.update_folder(args.folder_id, name=args.name, color=args.color, icon=args.icon)
-        return json.dumps({"ok": True, "action": "edit", "folder": folder_dict(tag)}, indent=2)
+        folder = client.update_folder(args.folder_id, name=args.name, color=args.color, icon=args.icon)
+        return json.dumps({"ok": True, "action": "edit", "folder": folder_dict(folder)}, indent=2)
     if args.folder_command == "delete":
         if not args.yes:
             raise ValueError(
@@ -823,10 +816,6 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
         "filename": recording.filename,
         "transcoded": outcome.transcoded,
     }
-    if outcome.folder_error is not None:
-        # #149: upload succeeded but the post-upload folder move failed — the
-        # recording id must still reach the caller so it isn't re-uploaded.
-        upload_result["folder_error"] = outcome.folder_error
     if not args.detach:
         # The recording already exists at this point; everything below is
         # just waiting on it. Print the id now, before the wait, so a
@@ -919,10 +908,7 @@ def _handle_status(args: argparse.Namespace, client: PlaudClient) -> str:
                 "file_id": task.file_id,
                 "task_id": task.task_id,
                 "task_type": task.task_type,
-                "task_status": task.task_status,
-                "is_complete": task.is_complete,
-                "sum_type": task.sum_type,
-                "sum_type_type": task.sum_type_type,
+                "stages": task.stages,
             }
             for task in tasks
         ],
@@ -986,6 +972,12 @@ def _handle_export(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_audio(args: argparse.Namespace, client: PlaudClient) -> str:
+    link = client.get_audio_link(args.recording_id)
+    if link is None:
+        raise ValueError(
+            f"recording {args.recording_id} has no downloadable audio "
+            "(it may not have finished syncing from the device)"
+        )
     if args.output:
         destination = Path(args.output)
         # `Path.is_dir()` is False for a directory that doesn't exist yet, so
@@ -996,8 +988,8 @@ def _handle_audio(args: argparse.Namespace, client: PlaudClient) -> str:
         # creates the parent directory either way.
         looks_like_dir = args.output.endswith(("/", "\\"))
         if destination.is_dir() or looks_like_dir:
-            destination = destination / f"{args.recording_id}.mp3"
-        saved = client.download_audio(args.recording_id, destination)
+            destination = destination / f"{args.recording_id}{link.extension}"
+        saved = client.download_audio(link, destination)
         return json.dumps(
             {
                 "ok": True,
@@ -1007,16 +999,11 @@ def _handle_audio(args: argparse.Namespace, client: PlaudClient) -> str:
             },
             indent=2,
         )
-    url = client.get_audio_url(args.recording_id)
-    if url is None:
-        raise ValueError(
-            f"recording {args.recording_id} has no downloadable audio "
-            "(it may not have finished syncing from the device)"
-        )
     return json.dumps(
         {
             "recording_id": args.recording_id,
-            "audio_url": url,
+            "audio_url": link.url,
+            "mime_type": link.mime_type,
             "expires_in_s": AUDIO_URL_TTL_S,
         },
         indent=2,

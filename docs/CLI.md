@@ -141,7 +141,7 @@ plaud-tools list --unfiled
 
 Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles.
 
-`--all` returns every matching recording instead of one page. It fetches the library 200 recordings per request and stops when Plaud returns a short page, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
+`--all` returns every matching recording instead of one page. It reads Plaud's list to the end, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
 
 ```
 plaud-tools list --all --folder-id <folder-id> > recordings.json
@@ -173,7 +173,7 @@ Plaud returns 20 matches at most. If you get exactly 20, older or less relevant 
 plaud-tools show <recording-id>
 ```
 
-Compact summary: title, date, duration, folder, speakers, headline.
+Compact summary: title, date, duration, folder, speakers.
 
 ### `detail`
 
@@ -248,7 +248,7 @@ plaud-tools transcript <recording-id> --segments > meeting.json
 To export a whole folder, list it with `--all` and loop over the IDs:
 
 ```
-plaud-tools list --all --folder-id <folder-id> | jq -r '.[] | select(.has_transcript) | .id' |
+plaud-tools list --all --folder-id <folder-id> | jq -r '.[].id' |
   while read -r id; do plaud-tools transcript "$id" --segments > "$id.json" || echo "failed: $id" >&2; done
 ```
 
@@ -272,8 +272,8 @@ Without `-o`, prints a temporary download URL for the recording's audio plus its
 lifetime in seconds. **The URL expires after one hour** — don't store it or reuse
 it later in a script; ask for a fresh one.
 
-With `-o`, downloads the audio to that path instead. Pass a directory to save as
-`<recording-id>.mp3` inside it. Errors if Plaud has no audio for the recording,
+With `-o`, downloads the audio to that path instead. Pass a directory to save it
+there as `<recording-id>` plus the audio's own extension (`.mp3` or `.ogg`). Errors if Plaud has no audio for the recording,
 which usually means it hasn't finished syncing from the device.
 
 ### `export`
@@ -321,13 +321,13 @@ Lists all folders with `id`, `name`, `color`, `icon`.
 
 ```
 plaud-tools folder create "Client Calls"
-plaud-tools folder create "Client Calls" --color "#4c8eff" --icon e627
+plaud-tools folder create "Client Calls" --color folder-color-green --icon e627
 plaud-tools folder edit <folder-id> --name "Renamed folder"
-plaud-tools folder edit <folder-id> --color "#4c8eff"
+plaud-tools folder edit <folder-id> --color folder-color-blue
 plaud-tools folder delete <folder-id> --yes
 ```
 
-`create` requires a name; `--color` (hex, e.g. `#4c8eff`) and `--icon` (glyph codepoint, e.g. `e627`) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `delete` is irreversible for the folder itself — recordings inside are kept but become unfiled — and requires `--yes`.
+`create` requires a name; `--color` (a Plaud color name, e.g. `folder-color-green`) and `--icon` (glyph codepoint, e.g. `e627`) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `delete` is irreversible for the folder itself — recordings inside are kept and move to Plaud's main Recordings list — and requires `--yes`.
 
 ### `move`
 
@@ -426,6 +426,8 @@ plaud-tools upload file.wav --start-time 2025-03-15T14:30 --timezone-offset -7
 
 Uploads a local audio file. Native formats: `.mp3`, `.opus`, `.ogg`, `.oga`. Other formats (`.m4a`, `.mp4`, `.wav`, `.aac`, `.flac`, `.wma`, `.amr`) are transcoded to MP3 via ffmpeg.
 
+`--timezone-offset` takes whole hours only. Without it the recording gets this machine's timezone. With `--folder-id` the recording goes straight into that folder; without it, Plaud puts it in its Import folder.
+
 By default the command waits for transcription and summary to finish. `--detach` returns immediately. `--skip-summary` waits for transcript only.
 
 ### `transcribe`
@@ -490,7 +492,7 @@ Hits Plaud's user-info endpoint and confirms the session is live.
 plaud-tools dump <recording-id>
 ```
 
-Prints the raw `/file/detail` API response. For debugging — not part of the stable interface.
+Prints the raw `files/detail` API response. For debugging — not part of the stable interface.
 
 ---
 

@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from plaud_tools.core.errors import PlaudApiError, PlaudWaitTimeoutError
-from plaud_tools.core.models import RecordingDetail
+from plaud_tools.core.models import AudioLink, RecordingDetail
 from plaud_tools.mcp_pt.mcp import _WAIT_TIMEOUT_S, build_handlers
 
 # ---------------------------------------------------------------------------
@@ -405,7 +405,9 @@ class TestGetRecordingAudioUrl:
     def test_audio_url_included_with_expiry(self):
         mock_client = MagicMock()
         mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting")
-        mock_client.get_audio_url.return_value = "https://s3.fake/audiofiles/r1.mp3?sig=x"
+        mock_client.get_audio_link.return_value = AudioLink(
+            url="https://s3.fake/audiofiles/r1.mp3?sig=x", mime_type="audio/mpeg"
+        )
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["get_recording"]("r1", include=["audio_url"])
@@ -413,12 +415,13 @@ class TestGetRecordingAudioUrl:
         payload = json.loads(result["content"][0]["text"])
         assert payload["audio_url"] == "https://s3.fake/audiofiles/r1.mp3?sig=x"
         # The URL expires in an hour; the caller needs to know not to store it.
+        assert payload["audio_mime_type"] == "audio/mpeg"
         assert payload["audio_url_expires_in_s"] == 3600
 
     def test_missing_audio_explains_itself(self):
         mock_client = MagicMock()
         mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting")
-        mock_client.get_audio_url.return_value = None
+        mock_client.get_audio_link.return_value = None
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["get_recording"]("r1", include=["audio_url", "transcript"])
@@ -437,7 +440,7 @@ class TestGetRecordingAudioUrl:
 
         handlers["get_recording"]("r1")
 
-        mock_client.get_audio_url.assert_not_called()
+        mock_client.get_audio_link.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

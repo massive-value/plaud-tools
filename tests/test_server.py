@@ -643,18 +643,26 @@ def test_read_tool_structured_content_matches_output_schema(monkeypatch):
     """structuredContent is sent alongside the text and satisfies outputSchema
     (the SDK client rejects a result that doesn't)."""
     import plaud_tools.mcp_pt.server as server_mod
-    from plaud_tools.core.models import FileTag
+    from plaud_tools.core.models import Folder
 
     class FolderClient:
-        def list_file_tags(self):
-            return [FileTag(id="tag1", name="Work", color="#191919", icon="e627")]
+        def list_folders(self):
+            return [Folder(id="tag1", name="Work", color="folder-color-green", icon="e627", parent_id="root")]
 
     monkeypatch.setattr(server_mod, "PlaudClient", lambda manager: FolderClient())
     result = _call_through_client(server_mod._make_server(), "list_folders", {})
 
     assert result.is_error is False
     assert result.structured_content == {
-        "folders": [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]
+        "folders": [
+            {
+                "id": "tag1",
+                "name": "Work",
+                "color": "folder-color-green",
+                "icon": "e627",
+                "parent_id": "root",
+            }
+        ]
     }
     assert json.loads(result.content[0].text) == result.structured_content
 

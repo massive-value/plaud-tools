@@ -65,14 +65,24 @@ BROWSER_USER_AGENT = (
 
 @dataclass(slots=True)
 class Recording:
+    """One recording as Plaud 4.0 lists it.
+
+    ``id`` is the 4.0 file id: ``of_<hex>`` for recordings made before the
+    account migrated, ``f_<hex>`` for newer ones.  Plaud files each recording
+    as a file node inside its own per-recording container folder
+    (``wrapper_id``), which in turn sits in a user or system folder.
+    ``folder_id`` is that user folder, or None when the recording sits in a
+    system folder (Recordings, Import), which is what "unfiled" means now.
+    """
+
     id: str
     filename: str
     start_time: int = 0
     duration: int = 0
-    is_trash: bool = False
-    is_trans: bool = False
-    is_summary: bool = False
-    filetag_id_list: list[str] = field(default_factory=list)
+    folder_id: str | None = None
+    node_id: str = ""
+    wrapper_id: str = ""
+    version_ms: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -86,7 +96,8 @@ class RecordingDetail:
     is_trash: bool = False
     is_trans: bool = False
     is_summary: bool = False
-    scene: int | None = None
+    # Transcript language Plaud recorded for this recording, when it has one.
+    language: str | None = None
     transcript: str = ""
     # The individual utterances behind ``transcript``, each a dict with
     # speaker/content/timestamps as Plaud returns them. Kept alongside the
@@ -101,7 +112,12 @@ class RecordingDetail:
     # *could* have asked for instead of an unexplained empty transcript.
     transcript_blocks_available: list[str] = field(default_factory=list)
     ai_content: str | None = None
-    extra_data: dict[str, Any] = field(default_factory=dict)
+    # Node bookkeeping for writes: the file node, its per-recording container
+    # (empty when the file sits directly in a folder), and the node version
+    # Plaud requires on every change.
+    node_id: str = ""
+    wrapper_id: str = ""
+    version_ms: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -125,25 +141,38 @@ class ContentMatch:
 
 
 @dataclass(slots=True)
-class FileTag:
+class Folder:
+    """A user folder in the Plaud 4.0 folder tree (system folders excluded)."""
+
     id: str
     name: str = ""
     color: str = ""
     icon: str = ""
+    parent_id: str = ""
+    version_ms: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
+class AudioLink:
+    """A presigned, short-lived download link for a recording's audio."""
+
+    url: str
+    mime_type: str = ""
+
+    @property
+    def extension(self) -> str:
+        """File extension matching the audio format, e.g. ``.mp3`` or ``.ogg``."""
+        return {"audio/ogg": ".ogg", "audio/opus": ".opus", "audio/wav": ".wav"}.get(self.mime_type, ".mp3")
+
+
+@dataclass(slots=True)
 class TaskStatus:
+    """One in-progress Plaud job on a recording (transcription, summary, ...)."""
+
     file_id: str
     task_id: str
     task_type: str
-    task_status: int
-    is_complete: bool
-    sum_type: str = ""
-    sum_type_type: str = ""
-    post_id: int = 0
-    ppc_status: int = 0
-    is_chatllm: bool = False
-    auto_save: bool = False
+    # Each stage as Plaud reports it, e.g. {"code": "TRANSCRIPT", "state": ...}.
+    stages: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)

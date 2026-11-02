@@ -1,11 +1,33 @@
+"""Plaud API client, speaking Plaud 4.0's ``/file-app/v4`` protocol.
+
+Plaud 4.0 (accounts migrated from 2026-11) stores everything as a tree of
+nodes.  Each recording is a *file node* (``on_f_…`` / ``n_…``) inside its own
+*container folder* (``on_w_…`` / ``n_…``), which sits in a user folder
+(``on_fd_…`` / ``n_…``) or a system folder (Recordings, Import, Trash).  The
+recording itself is addressed by its *file id*: ``of_<hex>`` for recordings
+made before migration, ``f_<hex>`` after.  The pre-4.0 bare 32-hex id still
+works everywhere here: ``to_file_id`` adds the ``of_`` prefix.
+
+Every write carries ``origin_version`` (the node's or content object's
+current ``version_ms``); Plaud rejects a missing or stale one with status
+-1800313.  So each write reads the current version immediately before
+writing.  See docs/adr/008-plaud-4-protocol.md.
+
+Three pre-4.0 endpoints still answer for migrated accounts and are kept:
+``/user/me``, ``/gsearch/v1/search`` (full-text search), and
+``/file/document/export`` (TXT/SRT/DOCX/PDF rendering).
+"""
+
 from __future__ import annotations
 
 import json
 import logging
 import random
+import re
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,8 +37,9 @@ from urllib.parse import urlencode
 from .errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from .models import (
     BROWSER_USER_AGENT,
+    AudioLink,
     ContentMatch,
-    FileTag,
+    Folder,
     Recording,
     RecordingDetail,
     TaskStatus,
@@ -30,17 +53,25 @@ from .transport import HttpResponse, Transport, UrllibTransport
 
 _log = logging.getLogger(__name__)
 
-_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MiB — matches Plaud web client chunk strategy
+_V4 = "/file-app/v4"
+
+# Upload chunk size when Plaud's upload/create reply does not name one.
+_CHUNK_SIZE = 5 * 1024 * 1024
+
+# Largest page Plaud's list endpoints accepted when probed (1000 returned a
+# whole 806-recording library in one ~0.3 s request).
+_LIST_PAGE_MAX = 1000
+# Safety stop for cursor walks: far beyond any real library.
+_MAX_LIST_PAGES = 200
+# Parallel requests per tree level in list_folders(); kept small so a large
+# library doesn't hit Plaud's rate limit.
+_FOLDER_WALK_WORKERS = 8
 
 # ---------------------------------------------------------------------------
-# Injectable sleep/jitter for tests (Wave 2 / C5 — polite retry)
-#
-# Tests monkeypatch these module-level names instead of patching time.sleep
-# globally, so the test harness can assert call counts and values without
-# wall-clock cost.  Production code calls these the same way it would call
-# time.sleep and random.uniform; the indirection is intentionally minimal.
+# Injectable sleep/jitter for tests.  Tests monkeypatch these module-level
+# names instead of patching time.sleep globally.
 # ---------------------------------------------------------------------------
-_sleep = time.sleep  # replaced in tests: monkeypatch.setattr(client, "_sleep", lambda s: None)
+_sleep = time.sleep
 
 
 def _jitter(lo: float, hi: float) -> float:
@@ -48,76 +79,94 @@ def _jitter(lo: float, hi: float) -> float:
     return random.uniform(lo, hi)
 
 
-# ---------------------------------------------------------------------------
-# Retry / backoff constants (Wave 2 / C5)
-#
-# _MAX_ATTEMPTS = 3 means 1 original attempt + 2 retries.
-#
-# Backoff formula (exponential with ±25 % full jitter):
-#   base_delay = _BACKOFF_BASE * (2 ** retry_index)   # 1 s, 2 s
-#   actual_delay = jitter(base_delay * 0.75, base_delay * 1.25)
-# First retry (retry_index 0)  → base 1 s → actual ∈ [0.75, 1.25] s
-# Second retry (retry_index 1) → base 2 s → actual ∈ [1.5, 2.5] s
-#
-# When Retry-After is present we sleep max(retry_after, computed_backoff).
-# Rationale: honour the server's instruction but never sleep *less* than our
-# own back-off to avoid hammering a server that forgot the header on a 503.
-# ---------------------------------------------------------------------------
+# Retry / backoff for idempotent GETs on 429 / 5xx / network blips:
+# 3 attempts, exponential backoff 1 s then 2 s, each with ±25 % jitter,
+# never shorter than a server-sent Retry-After.
 _MAX_ATTEMPTS = 3
-_BACKOFF_BASE = 1.0  # seconds — see formula above
+_BACKOFF_BASE = 1.0
 
-# Defaults for folder (filetag) creation.  The Plaud web client always sends an
-# icon and color when creating a folder; the API appears to require both.  These
-# mirror the values Plaud assigns to most existing folders (icon "e627" is the
-# common default folder glyph) so a folder created via the API is visually
-# indistinguishable from one created in the web app when the caller omits them.
+# Folder defaults the 4.0 web app sends when creating a folder.
 _DEFAULT_FOLDER_ICON = "e627"
-_DEFAULT_FOLDER_COLOR = "#4c8eff"
+_DEFAULT_FOLDER_COLOR = "folder-color-default"
 
-# Transcript blocks Plaud publishes in a recording's ``content_list``, each a
-# separate `data_type` with its own `data_link`:
+# Plaud's "system folder" types (``system_folder_type`` on a node).  0 is an
+# ordinary node; 1 is the default Recordings folder, where "unfiled"
+# recordings live.
+_SYSTEM_FOLDER_RECORDINGS = 1
+
+# Plaud status codes worth naming.
+_STATUS_FILE_NOT_FOUND = -1800311
+_STATUS_MIGRATED = -1800907
+
+# Transcript blocks, by the names this tool has always used, mapped to the
+# 4.0 content object that holds each:
 #
-#   transaction         raw diarized transcript — speaker + timestamps.  The
-#                       only editable block: rename_speaker / correct_transcript
-#                       PATCH `trans_result` back, so they must read what they
-#                       write.  Always the default.
-#   transaction_polish  Plaud's AI-cleaned pass over the same utterances (filler
-#                       words dropped, punctuation repaired), same per-utterance
-#                       shape, speaker + timestamps preserved.  Read-only here —
-#                       editing it is not a flow the web app exposes.
-#
-# Plaud also publishes an `outline` block, deliberately NOT listed: it is not an
-# utterance list, so format_transcript would render it as nonsense.  Supporting
-# it means a second parse+format path.
-# ponytail: add `outline` when something actually asks for a section outline —
-# the shape work is real and nothing needs it today.
+#   transaction         raw diarized transcript (TRANSCRIPT).  The only
+#                       editable block: speaker renames and text corrections
+#                       write it back, so they must read what they write.
+#   transaction_polish  Plaud's AI-cleaned pass (POLISHED_TRANSCRIPT), same
+#                       per-utterance shape.  Read-only here.
 TRANSCRIPT_BLOCKS = ("transaction", "transaction_polish")
 DEFAULT_TRANSCRIPT_BLOCK = "transaction"
+_BLOCK_OBJECT_TYPE = {"transaction": "TRANSCRIPT", "transaction_polish": "POLISHED_TRANSCRIPT"}
 
-# How long `/file/temp-url/{id}` presigned audio URLs stay valid, from the
-# `Expires` parameter observed across captures.  Notably shorter than the 24h
-# the official Plaud developer API hands out, which is why nothing caches these.
+# How long presigned content URLs (audio included) stay valid.
 AUDIO_URL_TTL_S = 3600
 
 # Most recordings one full-text search returns.  Observed, not documented:
-# every broad query against a library of hundreds of recordings came back with
-# exactly 20, and no paging parameter changed that (see PlaudClient.search_content).
+# no paging parameter changed it (see PlaudClient.search_content).
 SEARCH_RESULT_CAP = 20
 
+_LEGACY_ID = re.compile(r"[0-9a-f]{32}")
+
+# Upload formats Plaud accepts, as (MIME type, file extension).
+_UPLOAD_FORMATS = {"MP3": ("audio/mpeg", "mp3"), "OGG": ("audio/ogg", "ogg"), "OPUS": ("audio/ogg", "opus")}
 
 _T = TypeVar("_T")
 
 
-def _local_utc_offset_hours() -> float:
-    """This machine's UTC offset in hours, signed the way Plaud expects.
+def to_file_id(recording_id: str) -> str:
+    """Normalize any recording id a caller may hold to a Plaud 4.0 file id.
 
-    Plaud's web app sends the plain UTC offset: US Central (UTC-6) is ``-6``,
-    CET (UTC+1) is ``1``, as seen in HAR captures of both upload and
-    transcribe requests.  (JavaScript's ``getTimezoneOffset()`` has the
-    opposite sign; that is not what goes on the wire.)
+    Pre-4.0 ids (bare 32 hex, as older exports, notes and the search index
+    still carry) become ``of_<hex>``; so do the migrated node ids
+    ``on_f_<hex>`` / ``on_w_<hex>``.  Anything else passes through.
     """
-    offset = datetime.now().astimezone().utcoffset()
-    return offset.total_seconds() / 3600 if offset is not None else 0.0
+    rid = recording_id.strip()
+    for prefix in ("on_f_", "on_w_"):
+        if rid.startswith(prefix):
+            return "of_" + rid[len(prefix) :]
+    if _LEGACY_ID.fullmatch(rid):
+        return "of_" + rid
+    return rid
+
+
+def _local_timezone_name() -> str:
+    """This machine's IANA timezone name (``America/Denver``), or ``UTC``.
+
+    Plaud 4.0 wants the IANA name in an ``x-timezone-iana`` header (upload
+    confirm fails without it).  Windows has no IANA name of its own;
+    tzlocal maps the Windows zone to one.
+    """
+    try:
+        from tzlocal import get_localzone_name
+
+        return get_localzone_name() or "UTC"
+    except Exception:  # noqa: BLE001 — a missing zone must never block a request
+        return "UTC"
+
+
+def _timezone_for_offset(offset_hours: float) -> str:
+    """IANA name for a fixed whole-hour UTC offset (``-6`` → ``Etc/GMT+6``).
+
+    The ``Etc/GMT`` zones have the sign inverted by POSIX convention.  Plaud
+    4.0 takes only IANA names, so fractional offsets (India's +5.5) cannot be
+    expressed this way and are rejected.
+    """
+    if offset_hours != int(offset_hours):
+        raise ValueError("timezone_offset must be a whole number of hours")
+    hours = int(offset_hours)
+    return "UTC" if hours == 0 else f"Etc/GMT{-hours:+d}"
 
 
 def count_segment_matches(segments: list[dict[str, Any]], find: str) -> tuple[int, int]:
@@ -132,70 +181,99 @@ def count_segment_matches(segments: list[dict[str, Any]], find: str) -> tuple[in
 
 @dataclass(slots=True)
 class PlaudRecordingQuery:
+    """A newest-first window of the recording list (``skip`` then ``limit``)."""
+
     skip: int | None = None
     limit: int | None = None
     is_trash: int | None = None
-    sort_by: str | None = None
-    is_desc: bool | None = None
 
 
 def describe_unstarted_process(detail: RecordingDetail) -> str:
     """Explain why a process request started no new job, from the real state.
 
     Used by the MCP and CLI after ``transcribe_and_summarize`` returns False.
-    Plaud's status-1 reply was only observed on a fully processed recording,
-    so the wording comes from the recording's current state, not the reply.
     """
     if detail.is_trans and detail.is_summary:
         return (
             "This recording already has a transcript and summary. Plaud kept both and did "
             "not start a new run, so the requested options were not applied."
         )
-    if detail.is_trans:
-        return (
-            "This recording already has a transcript but no finished summary (it may still "
-            "be generating). Plaud did not start a new run, so the requested options were "
-            "not applied."
-        )
     return (
-        "Plaud did not start a new run and no transcript is ready yet, so the recording is "
-        "probably still processing. Check it again in a minute instead of re-running."
+        "Plaud is already processing this recording, so no new run was started. Check it "
+        "again in a minute instead of re-running."
     )
+
+
+def _object_done(obj: dict[str, Any] | None) -> bool:
+    """True when a content object has finished generating and can be downloaded.
+
+    Migrated objects report ``task_status`` null once done; generated ones 1.
+    """
+    return bool(obj and obj.get("content_url") and obj.get("task_status") in (None, 1))
+
+
+def _is_container(node: dict[str, Any]) -> bool:
+    """True for a per-recording container folder (as opposed to a user folder).
+
+    Container folders carry no icon; folders a person made always do.
+    """
+    return node.get("type") == 1 and not node.get("icon") and not node.get("system_folder_type")
+
+
+def _is_user_folder(node: dict[str, Any]) -> bool:
+    return node.get("type") == 1 and bool(node.get("icon")) and not node.get("system_folder_type")
 
 
 class PlaudClient:
     def __init__(self, session_manager: SessionManager, transport: Transport | None = None) -> None:
         self._session_manager = session_manager
         self._transport = transport or UrllibTransport()
+        self._timezone = _local_timezone_name()
 
     @property
     def session_manager(self) -> SessionManager:
         """The session manager this client authenticates through."""
         return self._session_manager
 
-    def list_recordings(self, query: PlaudRecordingQuery | None = None) -> list[Recording]:
-        params: dict[str, str] = {}
-        if query:
-            if query.skip is not None:
-                params["skip"] = str(query.skip)
-            if query.limit is not None:
-                params["limit"] = str(query.limit)
-            if query.is_trash is not None:
-                params["is_trash"] = str(query.is_trash)
-            if query.sort_by is not None:
-                params["sort_by"] = query.sort_by
-            if query.is_desc is not None:
-                params["is_desc"] = str(query.is_desc).lower()
+    # ------------------------------------------------------------------
+    # Reading recordings
+    # ------------------------------------------------------------------
 
-        path = "/file/simple/web"
-        if params:
-            path = f"{path}?{urlencode(params)}"
-        data = self._request_json("GET", path, strict=True)
-        items = data.get("data_file_list") or data.get("data") or []
-        records = [self._normalize_recording(item) for item in items]
-        if query is None or query.is_trash is None:
-            return [record for record in records if not record.is_trash]
-        return records
+    def list_recordings(self, query: PlaudRecordingQuery | None = None) -> list[Recording]:
+        """Recordings newest first, windowed by ``query.skip`` / ``query.limit``.
+
+        ``is_trash=1`` lists the trash instead.  The 4.0 list pages by cursor,
+        not offset, so a window is cut from the front of a cursor walk; at
+        ``_LIST_PAGE_MAX`` per page that is one request for most libraries.
+        """
+        q = query or PlaudRecordingQuery()
+        skip = q.skip or 0
+        want = None if q.limit is None else skip + q.limit
+        if q.is_trash:
+            return self.list_trash()[skip:want]
+        items = self._walk(f"{_V4}/recordings/all", {"sort_by": "created", "sort_order": "desc"}, want=want)
+        return [self._normalize_recording(item) for item in items][skip:want]
+
+    def list_trash(self) -> list[Recording]:
+        """Every recording in the trash, newest first.
+
+        The trash holds container folders (and any trashed user folders,
+        which are skipped).  A migrated container ``on_w_<hex>`` names its
+        recording directly; a newer one needs one lookup for its file.
+        """
+        items = self._walk(f"{_V4}/folders/content", {"scope": "trash"})
+        recordings: list[Recording] = []
+        for item in items:
+            if item.get("type") == 2 and item.get("file_id"):
+                recordings.append(self._normalize_trash_item(item, str(item["file_id"]), ""))
+            elif _is_container(item):
+                node_id = str(item.get("node_id") or "")
+                file_id = (
+                    to_file_id(node_id) if node_id.startswith("on_w_") else self._container_file_id(node_id)
+                )
+                if file_id:
+                    recordings.append(self._normalize_trash_item(item, file_id, node_id))
+        return recordings
 
     def get_recording(
         self,
@@ -209,10 +287,10 @@ class PlaudClient:
                 f"transcript_block must be one of {', '.join(TRANSCRIPT_BLOCKS)}; got {transcript_block!r}"
             )
         raw = self._get_detail_raw(recording_id)
-        detail = self._normalize_recording_detail(raw, recording_id)
+        detail = self._normalize_recording_detail(raw)
         if include_transcript:
             detail.transcript_blocks_available = self._available_transcript_blocks(raw)
-            segments = self._fetch_transcript_segments(raw, transcript_block)
+            segments = self._fetch_segments(self._object(raw, _BLOCK_OBJECT_TYPE[transcript_block]))
             detail.transcript_segments = segments
             detail.speakers = list(
                 dict.fromkeys(
@@ -222,9 +300,13 @@ class PlaudClient:
                 )
             )
             detail.transcript = format_transcript(segments)
-        if include_summary and detail.is_summary and not detail.ai_content:
-            detail.ai_content = self._fetch_summary_from_data_link(raw)
+        if include_summary and detail.is_summary:
+            detail.ai_content = self._fetch_text(self._object(raw, "SUMMARY"))
         return detail
+
+    def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
+        """Return the raw ``files/detail`` payload for debugging."""
+        return self._get_detail_raw(recording_id)
 
     def search_content(
         self,
@@ -237,17 +319,23 @@ class PlaudClient:
 
         ``POST /gsearch/v1/search`` is the web app's global search box.  It
         answers the ``SEARCH_RESULT_CAP`` most relevant recordings with one
-        matching chunk each and ignores every paging parameter we tried
-        (limit, size, page, skip, offset), so the cap is all there is; a date
-        window is the only way to reach other matches.  Matching is keyword
-        based with stemming, not an exact phrase.  Trashed recordings are not
-        returned.  ``from`` is a recording-source filter in the web app; empty
-        means all sources.
+        matching chunk each and ignores every paging parameter we tried, so a
+        date window is the only way to reach other matches.  Matching is
+        keyword based with stemming.  Trashed recordings are not returned.
+
+        The search index predates 4.0: it names a migrated recording by its
+        bare old hex id and a newer one by its container folder, so each hit
+        is mapped to the file id every other call takes.
         """
         body = {"query": query, "date_from": since_ms, "date_to": until_ms, "from": ""}
         data = self._request_json("POST", "/gsearch/v1/search", strict=True, body=body).get("data") or {}
         keywords = [str(word) for word in data.get("keywords") or []]
         return [self._normalize_content_match(item, query, keywords) for item in data.get("list") or []]
+
+    def _search_hit_file_id(self, hit_id: str) -> str:
+        if hit_id.startswith("n_"):
+            return self._container_file_id(hit_id) or hit_id
+        return to_file_id(hit_id)
 
     def _normalize_content_match(self, item: dict[str, Any], query: str, keywords: list[str]) -> ContentMatch:
         """Flatten one search hit; transcript hits carry ``trans_chunks``, summary hits ``notes``."""
@@ -264,7 +352,7 @@ class PlaudClient:
             chunk = chunks[0] if chunks else {}
             start_ms = None
         return ContentMatch(
-            id=str(item.get("id") or ""),
+            id=self._search_hit_file_id(str(item.get("id") or "")),
             title=str(item.get("title") or ""),
             start_time=int(item.get("start_time") or 0),
             source=source,
@@ -275,47 +363,26 @@ class PlaudClient:
             raw=item,
         )
 
-    def get_audio_url(self, recording_id: str) -> str | None:
-        """Return a temporary download URL for a recording's audio, or None.
+    def get_audio_link(self, recording_id: str) -> AudioLink | None:
+        """Return a presigned download link for a recording's audio, or None.
 
-        ``GET /file/temp-url/{id}`` answers ``{"status": 0, "temp_url": ...,
-        "temp_url_opus": ...}``.  The URL is a presigned S3 link to
-        ``audiofiles/{id}.mp3`` valid for ``AUDIO_URL_TTL_S`` — an hour, so it
-        is not worth caching or persisting anywhere; fetch it when needed.
-
-        ``temp_url_opus`` was null for every recording observed (device-recorded
-        and uploaded alike), so it is treated as a fallback rather than a
-        separate format choice.  Returns None when Plaud has no audio for the
-        recording (nothing synced from the device yet).
+        The link is the AUDIO content object's ``content_url``, valid for
+        about ``AUDIO_URL_TTL_S``.  Device recordings are often Ogg, not MP3;
+        ``AudioLink.extension`` names the right file suffix.  None when Plaud
+        has no audio yet (nothing synced from the device).
         """
-        data = self._request_json("GET", f"/file/temp-url/{recording_id}", strict=True)
-        url = data.get("temp_url") or data.get("temp_url_opus")
-        return str(url) if url else None
+        audio = self._object(self._get_detail_raw(recording_id), "AUDIO")
+        if not audio or not audio.get("content_url"):
+            return None
+        return AudioLink(url=str(audio["content_url"]), mime_type=str(audio.get("mime_type") or ""))
 
-    def download_audio(self, recording_id: str, destination: Path) -> Path:
-        """Download a recording's audio to *destination*, returning the path.
+    def download_audio(self, link: AudioLink, destination: Path) -> Path:
+        """Download the audio behind *link* to *destination*, returning the path.
 
-        Reads the whole response into memory before writing.  Plaud recordings
-        are mp3s of a meeting — single-digit MB in the captures — so streaming
-        to disk in chunks would add a code path for no practical gain.
-        ponytail: switch to chunked writes if multi-hour recordings turn out to
-        be hundreds of MB.
+        Reads the whole response into memory before writing: Plaud recordings
+        are tens of MB at most.
         """
-        url = self.get_audio_url(recording_id)
-        if url is None:
-            raise ValueError(f"recording {recording_id} has no downloadable audio")
-        # No Plaud auth header: the signature lives in the URL, same as the
-        # transcript data_link fetches and the multipart upload PUTs.
-        response = self._transport.request(
-            method="GET",
-            url=url,
-            headers={"User-Agent": BROWSER_USER_AGENT},
-        )
-        if response.status_code < 200 or response.status_code >= 300:
-            raise PlaudApiError(
-                f"audio download failed (HTTP {response.status_code})",
-                http_status=response.status_code,
-            )
+        response = self._get_presigned(link.url, what="audio download")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(response.body)
         return destination
@@ -331,11 +398,10 @@ class PlaudClient:
     ) -> bytes:
         """Have Plaud render *segments* as a TXT/SRT/DOCX/PDF file; return its bytes.
 
-        The web app's Export button: ``POST /file/document/export`` carries the
-        utterances themselves (``trans_content``) and answers with a presigned
-        S3 link to the rendered file, which is fetched without an auth header.
-        Rendering is read-only toward the recording.  Plaud rejects formats it
-        does not know (``MD`` answered "export failed" when probed).
+        ``POST /file/document/export`` predates 4.0 but still renders for
+        migrated accounts.  It carries the utterances themselves
+        (``trans_content``) and answers with a presigned link to the file.
+        Rendering is read-only toward the recording.
         """
         data = self._request_json(
             "POST",
@@ -357,16 +423,31 @@ class PlaudClient:
         url = data.get("data")
         if not isinstance(url, str) or not url.startswith("https://"):
             raise PlaudApiError("Plaud document export returned no download link")
-        response = self._transport.request(method="GET", url=url, headers={"User-Agent": BROWSER_USER_AGENT})
-        if response.status_code < 200 or response.status_code >= 300:
-            raise PlaudApiError(
-                f"document download failed (HTTP {response.status_code})", http_status=response.status_code
-            )
-        return response.body
+        return self._get_presigned(url, what="document download").body
 
     def get_user_info(self) -> dict[str, Any]:
         data = self._request_json("GET", "/user/me", strict=True)
         return data.get("data_user") or data.get("data") or data
+
+    def get_task_status(self, recording_id: str) -> list[TaskStatus]:
+        """Plaud jobs still running on a recording (empty when none are)."""
+        raw = self._get_detail_raw(recording_id)
+        file_id = str((raw.get("meta") or {}).get("file_id") or to_file_id(recording_id))
+        tasks = (raw.get("task") or {}).get("in_progress_tasks") or []
+        return [
+            TaskStatus(
+                file_id=file_id,
+                task_id=str(task.get("task_id") or ""),
+                task_type=str(task.get("task_type") or ""),
+                stages=list(task.get("task_stage") or []),
+                raw=task,
+            )
+            for task in tasks
+        ]
+
+    # ------------------------------------------------------------------
+    # Upload, processing, merge
+    # ------------------------------------------------------------------
 
     def upload_recording(
         self,
@@ -376,99 +457,97 @@ class PlaudClient:
         *,
         start_time: int | None = None,
         timezone_offset: float | None = None,
+        folder_id: str | None = None,
     ) -> Recording:
-        """4-step upload: presign → S3 multipart PUT → merge_multipart → confirm_upload.
+        """Upload an audio file: create → S3 multipart PUT → merge-part → confirm.
 
-        Reads *path* 5 MiB at a time, one chunk per presigned part URL, so a
-        large recording never sits in memory whole.
+        Reads *path* one chunk at a time, so a large recording never sits in
+        memory whole.  ``file_type`` must be "MP3", "OPUS", or "OGG"; transcode
+        anything else first (``transcode.upload_with_transcode`` does).
 
-        file_type must be "MP3", "OPUS", or "OGG". For other audio formats,
-        transcode to MP3 first using plaud_tools.transcode.transcode_to_mp3_path()
-        and pass the resulting path here.
-
-        start_time: millisecond epoch for the recording's date. Defaults to now.
-        Plaud respects whatever value the client sends — pass the original
-        recording's timestamp to preserve the date after re-upload.
+        ``start_time`` (ms epoch) is the recording's date, default now.
+        ``timezone_offset`` (whole hours) overrides this machine's timezone.
+        ``folder_id`` files it straight into that folder; without one Plaud
+        puts uploads in its Import folder.  A name already in use gets Plaud's
+        "keep both" treatment instead of failing.  Plaud starts transcription
+        and a summary on its own once the upload is confirmed.
 
         There is deliberately no overall deadline: an upload is an active
-        transfer, not a poll, and abandoning it midway leaves nothing to check
-        back on.  Each S3 PUT has its own 120 s ceiling (see ``_s3_put``).
+        transfer, and each S3 PUT has its own 120 s ceiling (see ``_s3_put``).
         """
         if not filename.strip():
             raise ValueError("filename cannot be empty")
-        if file_type not in ("MP3", "OPUS", "OGG"):
+        if file_type not in _UPLOAD_FORMATS:
             raise ValueError(f"file_type must be MP3, OPUS, or OGG — got {file_type!r}")
         filesize = path.stat().st_size
         if filesize == 0:
             raise ValueError("data cannot be empty")
+        mime_type, extension = _UPLOAD_FORMATS[file_type]
+        timezone = self._timezone if timezone_offset is None else _timezone_for_offset(timezone_offset)
 
-        start_time_ms = start_time if start_time is not None else int(time.time() * 1000)
-        tz = _local_utc_offset_hours() if timezone_offset is None else timezone_offset
-
-        presign = self._request_json(
-            "POST",
-            "/file/get_upload_presigned_url",
-            strict=True,
-            body={"filesize": filesize, "file_type": file_type},
+        created = (
+            self._request_json(
+                "POST",
+                f"{_V4}/upload/create",
+                strict=True,
+                body={
+                    "file_name": filename,
+                    "file_size": filesize,
+                    "file_type": mime_type,
+                    "file_extension": extension,
+                },
+            ).get("data")
+            or {}
         )
-        presign_data = presign.get("data") or {}
-        part_urls = presign_data.get("part_urls")
-        upload_id = presign_data.get("upload_id")
-        object_name = presign_data.get("object_name")
-        if (
-            not isinstance(part_urls, list)
-            or not part_urls
-            or not isinstance(upload_id, str)
-            or not isinstance(object_name, str)
-        ):
-            raise PlaudApiError("Plaud presign response missing fields")
+        part_urls = created.get("part_urls")
+        upload_id = created.get("upload_id")
+        if not isinstance(part_urls, list) or not part_urls or not isinstance(upload_id, str):
+            raise PlaudApiError("Plaud upload/create response missing fields")
+        chunk_size = int(created.get("chunk_size") or _CHUNK_SIZE)
 
-        # Upload chunks to S3. Content-Type matches the web client exactly —
-        # the presigned signature does not bind Content-Type, but mimicking
-        # the browser shields against any future tightening.
         parts: list[dict[str, Any]] = []
         with path.open("rb") as fh:
             for i, url in enumerate(part_urls):
-                chunk = fh.read(_CHUNK_SIZE)
+                chunk = fh.read(chunk_size)
                 if not chunk:
-                    # Presign returned more part URLs than the file has
-                    # chunks — treat as a protocol error rather than
-                    # silently uploading an empty part.
                     raise PlaudApiError(
-                        f"Presign returned {len(part_urls)} part URLs but file exhausted after {i} chunk(s)"
+                        f"Plaud returned {len(part_urls)} part URLs but the file ran out after {i} chunk(s)"
                     )
-                response = self._s3_put(str(url), chunk)
-                etag = response.headers.get("etag", "").replace('"', "")
+                etag = self._s3_put(str(url), chunk).headers.get("etag", "").replace('"', "")
                 if not etag:
                     raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
-                parts.append({"Etag": etag, "PartNumber": i + 1})
+                parts.append({"etag": etag, "part_number": i + 1})
             if fh.read(1):
-                # The opposite mismatch: fewer part URLs than chunks.  Merging
-                # now would store a silently truncated recording.
-                raise PlaudApiError(f"Presign returned {len(part_urls)} part URLs but the file has more data")
+                # Fewer part URLs than chunks: merging now would store a
+                # silently truncated recording.
+                raise PlaudApiError(f"Plaud returned {len(part_urls)} part URLs but the file has more data")
 
         self._request_json(
-            "POST",
-            "/file/merge_multipart",
-            strict=True,
-            body={"upload_id": upload_id, "object_name": object_name, "parts": parts},
+            "POST", f"{_V4}/upload/merge-part", strict=True, body={"upload_id": upload_id, "parts": parts}
         )
 
-        confirm_body = {
+        confirm_body: dict[str, Any] = {
+            # The client names the new recording's file id.
+            "file_id": f"f_{uuid.uuid4().hex}",
             "upload_id": upload_id,
-            "object_name": object_name,
-            "scene": 101,
-            "is_tmp": 0,
-            "support_mul_summ": True,
-            "file_type": file_type,
-            "filename": filename,
-            "start_time": start_time_ms,
-            "session_id": start_time_ms // 1000,
-            "serial_number": str(uuid.uuid4()),
-            "timezone": tz,
+            "file_name": filename,
+            "start_time": start_time if start_time is not None else int(time.time() * 1000),
+            "scene_source": 101,
+            "conflict_strategy": "keep_both",
         }
+        if folder_id:
+            confirm_body["target_node_id"] = folder_id
         try:
-            confirm = self._request_json("POST", "/file/confirm_upload", strict=True, body=confirm_body)
+            confirmed = (
+                self._request_json(
+                    "POST",
+                    f"{_V4}/upload/confirm-audio-web",
+                    strict=True,
+                    body=confirm_body,
+                    timezone=timezone,
+                ).get("data")
+                or {}
+            )
         except PlaudApiError as exc:
             if not exc.network_error:
                 raise
@@ -479,24 +558,75 @@ class PlaudClient:
                 f"{exc}. The upload may have completed anyway; check browse_recordings for "
                 f"{filename!r} before uploading again."
             ) from exc
-        return self._normalize_recording(confirm.get("data") or {})
+        return Recording(
+            id=str(confirmed.get("file_id") or confirm_body["file_id"]),
+            filename=str(confirmed.get("file_name") or confirmed.get("name") or filename),
+            start_time=int(confirm_body["start_time"]),
+            folder_id=folder_id,
+            node_id=str(confirmed.get("node_id") or ""),
+            wrapper_id=str(confirmed.get("folder_node_id") or ""),
+            version_ms=int(confirmed.get("version_ms") or 0),
+            raw=confirmed,
+        )
 
     def _s3_put(self, url: str, chunk: bytes) -> HttpResponse:
         """PUT a chunk to a presigned S3 URL. No Plaud auth — signature is in the URL.
 
-        S3 multipart chunks are up to 5 MiB (see _CHUNK_SIZE) and must fully
-        transfer before the presigned URL expires.  On a poor link this can
-        take well over the default 30 s transport budget, so we use a
-        dedicated 120 s ceiling here.  The longer timeout is scoped to this
-        call only — all other Plaud API traffic keeps the 30 s default.
+        Uses a dedicated 120 s ceiling: a 5 MiB chunk on a poor link can take
+        well over the default 30 s transport budget.
         """
-        return self._transport.request(
-            method="PUT",
-            url=url,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            body=chunk,
-            timeout=120.0,
+        return self._transport.request(method="PUT", url=url, headers={}, body=chunk, timeout=120.0)
+
+    def transcribe_and_summarize(
+        self,
+        recording_id: str,
+        *,
+        template_type: str | None = None,
+        language: str | None = None,
+        diarization: bool | None = None,
+        llm: str | None = None,
+    ) -> bool:
+        """Start whatever processing a recording is missing. False if nothing to do.
+
+        No transcript yet: transcription plus summary (``tasks/trans-sum``).
+        Transcript but no summary: summary only (``tasks/summary``).  Both
+        present, or a job already running: nothing starts and this returns
+        False.  Never re-transcribes a finished recording, since that wipes
+        speaker renames and edits.
+
+        ``template_type`` is a Plaud summary template id; "default" or None
+        lets Plaud choose.
+        """
+        raw = self._get_detail_raw(recording_id)
+        detail = self._normalize_recording_detail(raw)
+        if (raw.get("task") or {}).get("in_progress_tasks"):
+            return False
+        if detail.is_trans and detail.is_summary:
+            return False
+        body: dict[str, Any] = {
+            "file_id": detail.id,
+            "post_id": int(time.time() * 1000),
+            "ppc_status": 1,
+            "summary_verbosity": "medium",
+            "summary_language": "auto",
+            "summary_ai_model": llm or "auto",
+        }
+        if template_type and template_type.lower() not in ("default", "auto-select"):
+            body["template_id"] = template_type
+        if detail.is_trans:
+            self._request_json("POST", f"{_V4}/tasks/summary", strict=True, body=body)
+            return True
+        if language and "-" in language:
+            language = language.split("-")[0]
+        body.update(
+            {
+                "language": language or "auto",
+                "diarization": 0 if diarization is False else 1,
+                "force_reload": False,
+            }
         )
+        self._request_json("POST", f"{_V4}/tasks/trans-sum", strict=True, body=body)
+        return True
 
     def merge_recordings(
         self,
@@ -506,39 +636,58 @@ class PlaudClient:
         poll_interval_s: float = 3.0,
         timeout_s: float = 300.0,
     ) -> RecordingDetail:
-        """Merge recordings via /file/combine and poll /file/combine-tasks until done.
+        """Merge recordings into one new recording (``tasks/audio-merge``) and wait for it.
 
-        On timeout raises ``PlaudWaitTimeoutError`` carrying the combine
-        ``task_id``: the merge keeps running on Plaud, so re-running it would
-        create a duplicate.
+        Plaud only merges recordings that share a folder; the merged
+        recording lands in that folder and the originals are kept.  On
+        timeout raises ``PlaudWaitTimeoutError`` carrying Plaud's task id:
+        the merge keeps running, so re-running it would create a duplicate.
         """
         if len(ids) < 2:
             raise ValueError("merge requires at least 2 recording IDs")
         if not filename.strip():
             raise ValueError("filename cannot be empty")
-
-        start = self._request_json(
-            "POST",
-            "/file/combine",
-            strict=True,
-            body={"file_ids": ids, "filename": filename},
+        file_ids = [to_file_id(rid) for rid in ids]
+        first = self._normalize_recording_detail(self._get_detail_raw(file_ids[0]))
+        target = self._folder_node_of(first)
+        data = (
+            self._request_json(
+                "POST",
+                f"{_V4}/tasks/audio-merge",
+                strict=True,
+                body={
+                    "source_file_ids": file_ids,
+                    "target_node_id": target,
+                    "file_name": filename,
+                    "preserve_original_summaries": True,
+                    "regen_after_merge": False,
+                    "ppc_status": 1,
+                    "post_id": int(time.time() * 1000),
+                },
+            ).get("data")
+            or {}
         )
-        task_id = str(start.get("task_id") or "")
-        if not task_id:
-            raise PlaudApiError("Plaud combine response missing task_id")
+        task_id = str(data.get("task_id") or "")
+        merged_id = str(data.get("file_id") or data.get("target_file_id") or "")
 
         def check() -> RecordingDetail | None:
-            poll = self._request_json("GET", f"/file/combine-tasks/{task_id}", strict=False)
-            task = poll.get("data") or {}
-            if task.get("status") == "success":
-                file_raw = task.get("file") or {}
-                return self._normalize_recording_detail(file_raw, str(file_raw.get("file_id") or ""))
-            if task.get("status") == "error":
-                raise PlaudApiError(f"merge failed: {task.get('error_message') or 'unknown error'}")
+            if merged_id:
+                try:
+                    detail = self.get_recording(merged_id)
+                except PlaudApiError as exc:
+                    if exc.plaud_code == _STATUS_FILE_NOT_FOUND:
+                        return None
+                    raise
+                return detail if detail.duration else None
+            for item in self._walk(f"{_V4}/folders/content", {"node_id": target}):
+                if item.get("name") == filename and _is_container(item):
+                    file_id = self._container_file_id(str(item.get("node_id") or ""))
+                    if file_id:
+                        return self.get_recording(file_id)
             return None
 
         return self._poll_until(
-            check, what="merge", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id
+            check, what="merge", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id or None
         )
 
     def wait_for_transcription(
@@ -582,12 +731,11 @@ class PlaudClient:
     ) -> _T:
         """Call *check* until it returns non-None, sleeping between polls.
 
-        Shared by the transcription, summary, and merge waits.  *check* always
-        runs at least once, so a job that is already done is reported done
-        even with a zero budget.  A transient error (429 / 5xx / network blip)
-        counts as a skipped poll; anything else propagates.  When the budget
-        runs out this raises ``PlaudWaitTimeoutError`` (with *task_id*, if
-        any): the job is still running server-side.
+        *check* always runs at least once, so a job that is already done is
+        reported done even with a zero budget.  A transient error (429 / 5xx /
+        network blip) counts as a skipped poll; anything else propagates.
+        When the budget runs out this raises ``PlaudWaitTimeoutError`` (with
+        *task_id*, if any): the job is still running server-side.
         """
         deadline = time.monotonic() + timeout_s
         while True:
@@ -606,233 +754,64 @@ class PlaudClient:
                 raise PlaudWaitTimeoutError(f"{what} timed out after {int(timeout_s)}s", task_id=task_id)
             _sleep(min(poll_interval_s, remaining))
 
-    def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
-        """Return the raw /file/detail payload for debugging."""
-        return self._get_detail_raw(recording_id)
-
-    def _get_detail_raw(self, recording_id: str) -> dict[str, Any]:
-        """GET /file/detail/{id} and unwrap Plaud's ``data`` envelope."""
-        data = self._request_json("GET", f"/file/detail/{recording_id}", strict=True)
-        raw = data.get("data", data)
-        return raw if isinstance(raw, dict) else data
-
-    def edit_transcript(self, recording_id: str, segments: list[dict[str, Any]]) -> None:
-        self._request_json(
-            "PATCH",
-            f"/file/{recording_id}",
-            strict=True,
-            body={
-                "trans_result": segments,
-                "support_mul_summ": True,
-            },
-        )
+    # ------------------------------------------------------------------
+    # Recording writes
+    # ------------------------------------------------------------------
 
     def rename_recording(self, recording_id: str, filename: str) -> None:
+        """Rename a recording: its file node and, to match, its container folder."""
         if not filename.strip():
             raise ValueError("filename cannot be empty")
-        self._request_json(
-            "PATCH",
-            f"/file/{recording_id}",
-            strict=True,
-            body={"filename": filename},
-        )
-
-    def _normalize_file_tag(self, item: dict[str, Any]) -> FileTag:
-        return FileTag(
-            id=str(item.get("id") or item.get("filetag_id") or ""),
-            name=str(item.get("name") or ""),
-            color=str(item.get("color") or ""),
-            icon=str(item.get("icon") or ""),
-            raw=item,
-        )
-
-    def list_file_tags(self) -> list[FileTag]:
-        data = self._request_json("GET", "/filetag/", strict=True)
-        items = data.get("data_filetag_list") or data.get("data") or data.get("filetags") or []
-        return [self._normalize_file_tag(item) for item in items]
-
-    def create_folder(
-        self,
-        name: str,
-        *,
-        color: str | None = None,
-        icon: str | None = None,
-    ) -> FileTag:
-        """Create a new folder (filetag) and return it.
-
-        Mirrors the web client's ``POST /filetag/`` call.  ``color`` and ``icon``
-        default to Plaud's common folder defaults when omitted (see
-        ``_DEFAULT_FOLDER_*``).  A duplicate name is rejected by Plaud with
-        ``status:-2 msg:"filetag name existed"``, which surfaces here as a
-        ``PlaudApiError`` via the strict-status check in ``_request_json``.
-        """
-        if not name.strip():
-            raise ValueError("folder name cannot be empty")
-        data = self._request_json(
-            "POST",
-            "/filetag/",
-            strict=True,
-            body={
-                "name": name,
-                "icon": icon or _DEFAULT_FOLDER_ICON,
-                "color": color or _DEFAULT_FOLDER_COLOR,
-            },
-        )
-        return self._normalize_file_tag(data.get("data_filetag") or {})
-
-    def update_folder(
-        self,
-        folder_id: str,
-        *,
-        name: str | None = None,
-        color: str | None = None,
-        icon: str | None = None,
-    ) -> FileTag:
-        """Edit an existing folder's name, color, and/or icon (``PATCH /filetag/{id}``).
-
-        Only the supplied fields are sent; at least one of name/color/icon is
-        required.  Returns the updated folder as echoed back by Plaud.
-        """
-        if not folder_id:
-            raise ValueError("folder_id cannot be empty")
-        body: dict[str, Any] = {}
-        if name is not None:
-            if not name.strip():
-                raise ValueError("folder name cannot be empty")
-            body["name"] = name
-        if color is not None:
-            body["color"] = color
-        if icon is not None:
-            body["icon"] = icon
-        if not body:
-            raise ValueError("update_folder requires at least one of name, color, icon")
-        data = self._request_json("PATCH", f"/filetag/{folder_id}", strict=True, body=body)
-        return self._normalize_file_tag(data.get("data_filetag") or {})
-
-    def delete_folder(self, folder_id: str) -> None:
-        """Delete a folder (``DELETE /filetag/{id}``).
-
-        Deletes only the folder itself — recordings inside it are not deleted;
-        they lose the folder association and become unfiled.  There is no undo
-        for the folder, so callers should gate this behind an explicit
-        confirmation (the CLI ``--yes`` flag / the MCP ``confirm`` parameter).
-        """
-        if not folder_id:
-            raise ValueError("folder_id cannot be empty")
-        self._request_json("DELETE", f"/filetag/{folder_id}", strict=True)
-
-    def list_trash(self) -> list[Recording]:
-        return self.list_recordings(PlaudRecordingQuery(is_trash=1))
+        detail = self._normalize_recording_detail(self._get_detail_raw(recording_id))
+        self._rename_node(detail.node_id, filename, detail.version_ms)
+        if detail.wrapper_id:
+            container = self._container_node(detail)
+            self._rename_node(detail.wrapper_id, filename, int(container.get("version_ms") or 0))
 
     def set_recording_folder(self, recording_ids: str | list[str], folder_id: str | None) -> None:
         """Move one or more recordings into *folder_id* (``None`` unfiles them).
 
-        ``/file/update-tags`` takes a ``file_id_list``, so a batch is one request.
+        Each recording moves as its container folder, keeping its audio,
+        transcript and notes together.  "Unfiled" in 4.0 is Plaud's default
+        Recordings folder.
         """
         ids = [recording_ids] if isinstance(recording_ids, str) else list(recording_ids)
         if not ids:
             raise ValueError("recording_ids cannot be empty")
-        self._request_json(
-            "POST",
-            "/file/update-tags",
-            strict=True,
-            body={
-                "file_id_list": ids,
-                "filetag_id": folder_id or "",
-            },
-        )
+        target = folder_id or self._system_folder_id(_SYSTEM_FOLDER_RECORDINGS)
+        items = [self._movable_item(rid) for rid in ids]
+        self._node_batch("POST", "move", {"target_node_id": target, "items": items})
 
     def move_to_trash(self, recording_ids: str | list[str]) -> None:
         ids = [recording_ids] if isinstance(recording_ids, str) else list(recording_ids)
         if not ids:
             raise ValueError("recording_ids cannot be empty")
-        self._request_json("POST", "/file/trash/", strict=True, body=ids)
+        self._node_batch("DELETE", "trash", {"items": [self._movable_item(rid) for rid in ids]})
 
     def restore_from_trash(self, recording_ids: str | list[str]) -> None:
         ids = [recording_ids] if isinstance(recording_ids, str) else list(recording_ids)
         if not ids:
             raise ValueError("recording_ids cannot be empty")
-        self._request_json("POST", "/file/untrash/", strict=True, body=ids)
+        self._node_batch("POST", "restore", {"items": self._trash_items(ids)})
 
     def delete_recordings(self, recording_ids: str | list[str]) -> None:
+        """Permanently delete recordings.  Cannot be undone.
+
+        Plaud deletes only from the trash, so a recording not yet there is
+        trashed first.
+        """
         ids = [recording_ids] if isinstance(recording_ids, str) else list(recording_ids)
         if not ids:
             raise ValueError("recording_ids cannot be empty")
-        self._request_json("DELETE", "/file/", strict=True, body=ids)
+        trashed = {rec.id for rec in self.list_trash()}
+        live = [rid for rid in ids if to_file_id(rid) not in trashed]
+        if live:
+            self.move_to_trash(live)
+        self._node_batch("DELETE", "delete", {"items": self._trash_items(ids)})
 
-    def transcribe_and_summarize(
-        self,
-        recording_id: str,
-        *,
-        template_type: str | None = None,
-        language: str | None = None,
-        diarization: bool | None = None,
-        llm: str | None = None,
-    ) -> bool:
-        """Start transcription + summary. Returns False if already processed.
-
-        Plaud answers ``is_reload=0`` on a recording that already has a
-        transcript with ``status: 1, msg: "success"`` and the EXISTING
-        transcript/summary: no new job starts and the template is ignored
-        (verified live 2026-09-24). ``is_reload=1`` would re-transcribe and
-        replace the summary, wiping speaker renames and edits, so it is not
-        exposed.
-        """
-        if template_type and template_type.lower() == "default":
-            template_type = "AUTO-SELECT"
-        if language and "-" in language:
-            language = language.split("-")[0]
-        info = json.dumps(
-            {
-                "language": language or "auto",
-                "timezone": _local_utc_offset_hours(),
-                "diarization": 0 if diarization is False else 1,
-                "llm": llm or "auto",
-            }
-        )
-        payload = self._request_json(
-            "POST",
-            f"/ai/transsumm/{recording_id}",
-            strict=False,
-            body={
-                "is_reload": 0,
-                "summ_type": template_type or "AUTO-SELECT",
-                "summ_type_type": "system",
-                "info": info,
-                "support_mul_summ": True,
-            },
-        )
-        status = payload.get("status")
-        if status == 1:
-            return False
-        if status != 0:
-            raise PlaudApiError(f"Plaud API error: {payload.get('msg') or f'status {status}'}")
-        return True
-
-    def get_task_status(self, recording_id: str | None = None) -> list[TaskStatus]:
-        data = self._request_json("GET", "/ai/file-task-status", strict=True)
-        raw = (data.get("data") or {}).get("file_status_list")
-        items = raw if isinstance(raw, list) else []
-        tasks = [
-            TaskStatus(
-                file_id=str(item.get("file_id") or ""),
-                task_id=str(item.get("task_id") or ""),
-                task_type=str(item.get("task_type") or ""),
-                task_status=int(item.get("task_status") or 0),
-                is_complete=int(item.get("task_status") or 0) == 1,
-                sum_type=str(item.get("sum_type") or ""),
-                sum_type_type=str(item.get("sum_type_type") or ""),
-                post_id=int(item.get("post_id") or 0),
-                ppc_status=int(item.get("ppc_status") or 0),
-                is_chatllm=bool(item.get("is_chatllm")),
-                auto_save=bool(item.get("auto_save")),
-                raw=item,
-            )
-            for item in items
-        ]
-        if recording_id is not None:
-            return [task for task in tasks if task.file_id == recording_id]
-        return tasks
+    # ------------------------------------------------------------------
+    # Transcript and summary edits
+    # ------------------------------------------------------------------
 
     def rename_speaker(self, recording_id: str, original_label: str, new_name: str) -> dict[str, int]:
         if not original_label.strip():
@@ -840,17 +819,13 @@ class PlaudClient:
         if not new_name.strip():
             raise ValueError("new_name cannot be empty")
 
-        segments = self._editable_segments(recording_id)
+        obj, segments = self._editable_transcript(recording_id)
 
         # Match the label against BOTH the displayed `speaker` and the
         # `original_speaker` fields.  Plaud auto-resolves enrolled voices, so a
         # never-renamed segment can already show `speaker="Kadin Bullock"` while
-        # `original_speaker="Speaker 1"`.  Callers naturally pass whatever label
-        # they see in the transcript — the display name — so matching only
-        # `original_speaker` silently failed for every recording that had an
-        # enrolled or previously-renamed speaker.  Matching either field lets a
-        # caller rename by the current display name ("Benjamin Everitt") or by
-        # the generic original ("Speaker 1") interchangeably.
+        # `original_speaker="Speaker 1"`.  Callers pass whatever label they see
+        # in the transcript, so either field may be the one that matches.
         updated = 0
         next_segments: list[dict[str, Any]] = []
         for segment in segments:
@@ -863,26 +838,20 @@ class PlaudClient:
         if updated == 0:
             raise ValueError(f'no segments found for speaker "{original_label}"')
 
-        self.edit_transcript(recording_id, next_segments)
+        self._update_content(recording_id, obj, json.dumps(next_segments, ensure_ascii=False), speakers=True)
         return {"segments_updated": updated}
 
     def correct_transcript(self, recording_id: str, find: str, replace: str) -> dict[str, int]:
         """Find-and-replace literal text across all transcript segment content.
 
-        This is the same operation the Plaud web app performs for transcript
-        text corrections: it rewrites the `content` of every segment that
-        contains *find* and PATCHes the full ``trans_result`` back (see
-        ``edit_transcript``).  Matching is literal (not regex) and
-        case-sensitive, mirroring the web client.  Speaker labels are left
-        untouched — use ``rename_speaker`` for those.
-
-        Returns the number of individual occurrences replaced and the number of
-        segments that changed.
+        Matching is literal (not regex) and case-sensitive, mirroring the web
+        client.  Speaker labels are left untouched — use ``rename_speaker``.
+        Returns the occurrences replaced and the segments that changed.
         """
         if not find:
             raise ValueError("find text cannot be empty")
 
-        segments = self._editable_segments(recording_id)
+        obj, segments = self._editable_transcript(recording_id)
 
         replacements, segments_changed = count_segment_matches(segments, find)
         if replacements == 0:
@@ -894,99 +863,459 @@ class PlaudClient:
             else segment
             for segment in segments
         ]
-        self.edit_transcript(recording_id, next_segments)
+        self._update_content(recording_id, obj, json.dumps(next_segments, ensure_ascii=False))
         return {"replacements": replacements, "segments_changed": segments_changed}
 
     def count_transcript_matches(self, recording_id: str, find: str) -> int:
-        """Count what ``correct_transcript`` would replace, without editing.
-
-        Same block, same field (segment ``content`` only, never speaker
-        labels), same counting as the real edit, so a dry run's number
-        matches the real run's ``replacements``.
-        """
+        """Count what ``correct_transcript`` would replace, without editing."""
         if not find:
             raise ValueError("find text cannot be empty")
-        replacements, _ = count_segment_matches(self._editable_segments(recording_id), find)
+        _obj, segments = self._editable_transcript(recording_id)
+        replacements, _ = count_segment_matches(segments, find)
         return replacements
-
-    def _editable_segments(self, recording_id: str) -> list[dict[str, Any]]:
-        """The editable (``transaction``) transcript segments; ValueError if none."""
-        segments = self._fetch_transcript_segments(self._get_detail_raw(recording_id))
-        if not segments:
-            raise ValueError(f"recording {recording_id} has no transcript yet")
-        return segments
-
-    def _get_summary_note(self, recording_id: str) -> tuple[str, str]:
-        """Return ``(note_id, current_content)`` for a recording's AI summary.
-
-        The ``note_id`` is the ``data_id`` of the completed ``auto_sum_note``
-        entry in the detail's ``content_list`` — exactly what
-        ``/ai/update_note_info`` expects.  The current content is read inline
-        when present and otherwise fetched from the summary's ``data_link``.
-
-        Raises ``ValueError`` if the recording has no completed summary.
-        """
-        raw = self._get_detail_raw(recording_id)
-        note_id: str | None = None
-        for item in raw.get("content_list") or []:
-            if item.get("data_type") == "auto_sum_note" and item.get("task_status") == 1:
-                note_id = item.get("data_id")
-                break
-        if not note_id:
-            raise ValueError(f"recording {recording_id} has no summary yet")
-        content = self._extract_inline_summary(raw, note_id)
-        if content is None:
-            content = self._fetch_summary_from_data_link(raw)
-        return note_id, content or ""
-
-    def _update_summary_note(self, recording_id: str, note_id: str, content: str) -> None:
-        """POST the full summary body back to Plaud (``/ai/update_note_info``).
-
-        The web app replaces the entire ``note_content`` on every edit — there
-        is no partial-patch endpoint — so callers pass the complete new text.
-        """
-        self._request_json(
-            "POST",
-            "/ai/update_note_info",
-            strict=True,
-            body={
-                "file_id": recording_id,
-                "note_id": note_id,
-                "note_type": "auto_sum_note",
-                "note_content": content,
-            },
-        )
 
     def set_summary(self, recording_id: str, content: str) -> None:
         """Overwrite a recording's AI summary with ``content`` (full replace).
 
-        The recording must already have a generated summary — this edits the
-        existing note, it does not create one (use ``transcribe_and_summarize``
-        to generate a summary first).
+        The recording must already have a summary — this edits it, it does
+        not create one (``transcribe_and_summarize`` generates one).
         """
         if not content.strip():
             raise ValueError("summary content cannot be empty")
-        note_id, _ = self._get_summary_note(recording_id)
-        self._update_summary_note(recording_id, note_id, content)
+        obj, _current = self._summary(recording_id)
+        self._update_content(recording_id, obj, content)
 
     def correct_summary(self, recording_id: str, find: str, replace: str) -> dict[str, int]:
         """Find-and-replace literal text in a recording's AI summary.
 
-        The summary equivalent of ``correct_transcript`` — the intended use is
-        fixing a misspelled name or term in an otherwise-good summary.  Matching
-        is literal (not regex) and case-sensitive.  Returns the number of
-        occurrences replaced.  Raises ``ValueError`` if the text is not found.
+        Literal, case-sensitive.  Returns the occurrences replaced; raises
+        ``ValueError`` if the text is not found.
         """
         if not find:
             raise ValueError("find text cannot be empty")
-        note_id, content = self._get_summary_note(recording_id)
+        obj, content = self._summary(recording_id)
         if not content:
             raise ValueError(f"recording {recording_id} has no summary text to edit")
         count = content.count(find)
         if count == 0:
             raise ValueError(f'no occurrences of "{find}" found in summary')
-        self._update_summary_note(recording_id, note_id, content.replace(find, replace))
+        self._update_content(recording_id, obj, content.replace(find, replace))
         return {"replacements": count}
+
+    def _editable_transcript(self, recording_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """The editable transcript's content object and segments; ValueError if none."""
+        obj = self._object(self._get_detail_raw(recording_id), "TRANSCRIPT")
+        segments = self._fetch_segments(obj)
+        if obj is None or not segments:
+            raise ValueError(f"recording {recording_id} has no transcript yet")
+        return obj, segments
+
+    def _summary(self, recording_id: str) -> tuple[dict[str, Any], str]:
+        """The summary's content object and current text; ValueError if none."""
+        obj = self._object(self._get_detail_raw(recording_id), "SUMMARY")
+        if not _object_done(obj):
+            raise ValueError(f"recording {recording_id} has no summary yet")
+        assert obj is not None
+        return obj, self._fetch_text(obj) or ""
+
+    def _update_content(
+        self, recording_id: str, obj: dict[str, Any], content: str, *, speakers: bool = False
+    ) -> None:
+        """Replace one content object's whole body (``files/update/content``).
+
+        There is no partial patch: the web app sends the complete text every
+        time.  ``speakers`` flags a speaker rename the way the web app does.
+        """
+        body: dict[str, Any] = {
+            "object_id": obj.get("object_id"),
+            "content_id": obj.get("content_id"),
+            "content": content,
+            "origin_version": obj.get("version_ms"),
+        }
+        if speakers:
+            body["has_replaced_speaker"] = True
+        self._request_json(
+            "PATCH", f"{_V4}/files/update/content/{to_file_id(recording_id)}", strict=True, body=body
+        )
+
+    # ------------------------------------------------------------------
+    # Folders
+    # ------------------------------------------------------------------
+
+    def list_folders(self) -> list[Folder]:
+        """Every user folder, top level first, nested folders after their parent.
+
+        Walks the tree from the root: user folders can sit at the top level
+        or inside a system folder (Recordings, Import) or another folder.
+        Per-recording container folders are not user folders and are not
+        descended into.  Plaud has no tree endpoint, so this takes one request
+        per folder; each level of the tree is fetched in parallel, so the
+        cost is one round trip per level (about 1 s for a flat library of 16
+        folders instead of 4 s one at a time).
+        """
+        folders: list[Folder] = []
+        level = ["root"]
+        with ThreadPoolExecutor(max_workers=_FOLDER_WALK_WORKERS) as pool:
+            while level:
+                children = pool.map(
+                    lambda parent: self._walk(f"{_V4}/folders/children", {"node_id": parent}), level
+                )
+                next_level: list[str] = []
+                for parent, items in zip(level, children, strict=True):
+                    for item in items:
+                        if _is_user_folder(item):
+                            folders.append(self._normalize_folder(item))
+                            next_level.append(str(item["node_id"]))
+                        elif item.get("type") == 1 and item.get("system_folder_type") and parent == "root":
+                            next_level.append(str(item["node_id"]))
+                level = next_level
+        return folders
+
+    def create_folder(
+        self,
+        name: str,
+        *,
+        color: str | None = None,
+        icon: str | None = None,
+        parent_id: str | None = None,
+    ) -> Folder:
+        """Create a folder (at the top level unless *parent_id* names a folder)."""
+        if not name.strip():
+            raise ValueError("folder name cannot be empty")
+        data = (
+            self._request_json(
+                "POST",
+                f"{_V4}/nodes/folder",
+                strict=True,
+                body={
+                    "parent_node_id": parent_id or "root",
+                    "name": name,
+                    "icon": icon or _DEFAULT_FOLDER_ICON,
+                    "color": color or _DEFAULT_FOLDER_COLOR,
+                },
+            ).get("data")
+            or {}
+        )
+        items = data.get("items") or [data]
+        return self._normalize_folder(items[0])
+
+    def update_folder(
+        self,
+        folder_id: str,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+        icon: str | None = None,
+    ) -> Folder:
+        """Edit a folder's name, color, and/or icon; at least one is required."""
+        if not folder_id:
+            raise ValueError("folder_id cannot be empty")
+        if name is not None and not name.strip():
+            raise ValueError("folder name cannot be empty")
+        if name is None and color is None and icon is None:
+            raise ValueError("update_folder requires at least one of name, color, icon")
+        current = self._find_folder(folder_id)
+        data = (
+            self._request_json(
+                "PATCH",
+                f"{_V4}/nodes/rename/{folder_id}",
+                strict=True,
+                body={
+                    "name": name if name is not None else current.name,
+                    "color": color if color is not None else current.color,
+                    "icon": icon if icon is not None else current.icon,
+                    "origin_version": current.version_ms,
+                },
+            ).get("data")
+            or {}
+        )
+        items = data.get("items") or []
+        return self._normalize_folder(items[0]) if items else self._find_folder(folder_id)
+
+    def delete_folder(self, folder_id: str) -> None:
+        """Delete a folder, keeping what was inside it.  Cannot be undone.
+
+        Plaud's own delete takes a folder's contents with it, so its
+        recordings and subfolders are first moved to the Recordings folder
+        (unfiled), then the empty folder is trashed and permanently deleted.
+        """
+        if not folder_id:
+            raise ValueError("folder_id cannot be empty")
+        version = self._find_folder(folder_id).version_ms
+        children = self._walk(f"{_V4}/folders/children", {"node_id": folder_id})
+        if children:
+            moved = self._node_batch(
+                "POST",
+                "move",
+                {
+                    "target_node_id": self._system_folder_id(_SYSTEM_FOLDER_RECORDINGS),
+                    "items": [
+                        {"node_id": c["node_id"], "origin_version": c.get("version_ms")} for c in children
+                    ],
+                },
+            )
+            # Moving children out bumps the folder's own version to the move's
+            # timestamp, which a listing read straight after may not show yet.
+            version = max([version, *(int(item.get("version_ms") or 0) for item in moved)])
+        trashed = self._node_batch(
+            "DELETE", "trash", {"items": [{"node_id": folder_id, "origin_version": version}]}
+        )
+        version = next(
+            (int(item.get("version_ms") or 0) for item in trashed if item.get("node_id") == folder_id),
+            version,
+        )
+        self._node_batch("DELETE", "delete", {"items": [{"node_id": folder_id, "origin_version": version}]})
+
+    def _find_folder(self, folder_id: str) -> Folder:
+        # Most folders are top level, and the root is one request where the
+        # full tree walk is one per folder.
+        for item in self._walk(f"{_V4}/folders/children", {"node_id": "root"}):
+            if item.get("node_id") == folder_id and _is_user_folder(item):
+                return self._normalize_folder(item)
+        for folder in self.list_folders():
+            if folder.id == folder_id:
+                return folder
+        raise ValueError(f"no folder with id {folder_id!r}; list_folders shows the valid ids")
+
+    def _system_folder_id(self, system_type: int) -> str:
+        for item in self._walk(f"{_V4}/folders/children", {"node_id": "root"}):
+            if item.get("system_folder_type") == system_type:
+                return str(item["node_id"])
+        raise PlaudApiError(f"Plaud has no system folder of type {system_type}")
+
+    # ------------------------------------------------------------------
+    # Node plumbing
+    # ------------------------------------------------------------------
+
+    def _get_detail_raw(self, recording_id: str) -> dict[str, Any]:
+        """GET ``files/detail/{file_id}`` and unwrap Plaud's ``data`` envelope."""
+        data = self._request_json("GET", f"{_V4}/files/detail/{to_file_id(recording_id)}", strict=True)
+        raw = data.get("data")
+        if not isinstance(raw, dict):
+            raise PlaudApiError("Plaud recording detail response had no data")
+        return raw
+
+    def _walk(self, path: str, params: dict[str, Any], *, want: int | None = None) -> list[dict[str, Any]]:
+        """Follow a 4.0 list endpoint's ``next_cursor`` until done or *want* items."""
+        items: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(_MAX_LIST_PAGES):
+            page_size = _LIST_PAGE_MAX if want is None else max(1, min(_LIST_PAGE_MAX, want - len(items)))
+            query = {**params, "page_size": page_size, **({"cursor": cursor} if cursor else {})}
+            data = self._request_json("GET", f"{path}?{urlencode(query)}", strict=True).get("data") or {}
+            items.extend(data.get("items") or [])
+            cursor = data.get("next_cursor") or None
+            if not cursor or (want is not None and len(items) >= want):
+                return items
+        raise RuntimeError(
+            f"{path} did not end after {_MAX_LIST_PAGES} pages; refusing a possibly partial list"
+        )
+
+    def _container_file_id(self, container_id: str) -> str:
+        """The file id inside a per-recording container folder ('' if none)."""
+        for item in self._walk(f"{_V4}/folders/children", {"node_id": container_id}):
+            if item.get("file_id"):
+                return str(item["file_id"])
+        return ""
+
+    def _container_node(self, detail: RecordingDetail) -> dict[str, Any]:
+        """The container folder's node (for its version), via ``nodes/ancestor-items``.
+
+        That endpoint returns the recording's breadcrumb plus a window of the
+        container's siblings, the container included, in one request.
+        """
+        data = (
+            self._request_json(
+                "GET", f"{_V4}/nodes/ancestor-items?{urlencode({'file_id': detail.id})}", strict=True
+            ).get("data")
+            or {}
+        )
+        for item in data.get("flat_items") or []:
+            if item.get("node_id") == detail.wrapper_id:
+                found: dict[str, Any] = item
+                return found
+        parent = self._folder_node_of(detail)
+        for item in self._walk(f"{_V4}/folders/children", {"node_id": parent}):
+            if item.get("node_id") == detail.wrapper_id:
+                return item
+        raise PlaudApiError(f"could not find the container folder of recording {detail.id}")
+
+    def _movable_item(self, recording_id: str) -> dict[str, Any]:
+        """``{node_id, origin_version}`` for the node that moves as the recording."""
+        detail = self._normalize_recording_detail(self._get_detail_raw(recording_id))
+        if detail.wrapper_id:
+            container = self._container_node(detail)
+            return {"node_id": detail.wrapper_id, "origin_version": container.get("version_ms")}
+        return {"node_id": detail.node_id, "origin_version": detail.version_ms}
+
+    def _node_batch(self, method: str, action: str, body: dict[str, Any]) -> list[dict[str, Any]]:
+        """Run a batch node operation (move/trash/restore/delete); return its items.
+
+        These endpoints answer status 0 even when some items fail, listing
+        them under ``data.failed``, so each reply is checked item by item.
+        """
+        data = self._request_json(method, f"{_V4}/nodes/{action}", strict=True, body=body).get("data") or {}
+        failed = data.get("failed") or []
+        if failed:
+            reasons = "; ".join(
+                f"{f.get('name') or f.get('node_id')}: {f.get('error_message') or f.get('error_code')}"
+                for f in failed
+            )
+            code = str(failed[0].get("error_code") or "")
+            raise PlaudApiError(
+                f"Plaud API error: {action} failed for {len(failed)} item(s): {reasons}",
+                plaud_code=int(code) if code.lstrip("-").isdigit() else code or None,
+                plaud_msg=str(failed[0].get("error_message") or ""),
+            )
+        return [item for item in data.get("items") or [] if isinstance(item, dict)]
+
+    def _trash_items(self, recording_ids: list[str]) -> list[dict[str, Any]]:
+        """``{node_id, origin_version}`` for each recording, as it sits in the trash."""
+        by_id = {rec.id: rec for rec in self.list_trash()}
+        items = []
+        for rid in recording_ids:
+            rec = by_id.get(to_file_id(rid))
+            if rec is None:
+                raise ValueError(f"recording {rid} is not in the trash")
+            items.append({"node_id": rec.wrapper_id or rec.node_id, "origin_version": rec.version_ms})
+        return items
+
+    def _rename_node(self, node_id: str, name: str, version: int) -> None:
+        self._request_json(
+            "PATCH",
+            f"{_V4}/nodes/rename/{node_id}",
+            strict=True,
+            body={"name": name, "origin_version": version},
+        )
+
+    @staticmethod
+    def _folder_node_of(detail: RecordingDetail) -> str:
+        """The folder (user or system) a recording's container sits in."""
+        node = detail.raw.get("node") or {}
+        return str((node.get("display_folder") or {}).get("folder_id") or "")
+
+    @staticmethod
+    def _object(raw: dict[str, Any], object_type: str) -> dict[str, Any] | None:
+        for obj in raw.get("objects") or []:
+            if isinstance(obj, dict) and obj.get("object_type") == object_type:
+                return obj
+        return None
+
+    def _available_transcript_blocks(self, raw: dict[str, Any]) -> list[str]:
+        """Which blocks in ``TRANSCRIPT_BLOCKS`` are finished, in that order."""
+        return [
+            block for block in TRANSCRIPT_BLOCKS if _object_done(self._object(raw, _BLOCK_OBJECT_TYPE[block]))
+        ]
+
+    def _get_presigned(self, url: str, *, what: str) -> HttpResponse:
+        """GET a presigned S3 URL: no Plaud auth header, the signature is in the URL."""
+        response = self._transport.request(method="GET", url=url, headers={"User-Agent": BROWSER_USER_AGENT})
+        if response.status_code < 200 or response.status_code >= 300:
+            raise PlaudApiError(
+                f"{what} failed (HTTP {response.status_code})", http_status=response.status_code
+            )
+        return response
+
+    def _fetch_text(self, obj: dict[str, Any] | None) -> str | None:
+        """A finished content object's body as text (S3 serves it gzip-encoded)."""
+        if not _object_done(obj):
+            return None
+        assert obj is not None
+        return self._get_presigned(str(obj["content_url"]), what="content download").text() or None
+
+    def _fetch_segments(self, obj: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """A finished transcript object's utterances; ``[]`` when not finished.
+
+        A finished object whose download fails raises ``PlaudApiError`` rather
+        than reading as an empty transcript (#210).
+        """
+        text = self._fetch_text(obj)
+        if text is None:
+            return []
+        try:
+            body = json.loads(text)
+        except ValueError as exc:
+            raise PlaudApiError("Plaud transcript content was not JSON") from exc
+        if isinstance(body, dict):
+            body = body.get("trans_result") or body.get("segments") or []
+        return [s for s in body if isinstance(s, dict)] if isinstance(body, list) else []
+
+    # ------------------------------------------------------------------
+    # Normalization
+    # ------------------------------------------------------------------
+
+    def _normalize_recording(self, raw: dict[str, Any]) -> Recording:
+        """One ``recordings/all`` item.  ``parent_folder`` skips the container."""
+        parent_folder = raw.get("parent_folder") or {}
+        folder_id = parent_folder.get("folder_id") if not parent_folder.get("system_folder_type") else None
+        parent_id = str(raw.get("parent_id") or "")
+        return Recording(
+            id=str(raw.get("file_id") or ""),
+            filename=str(raw.get("name") or ""),
+            start_time=int(raw.get("created_at_show_ms") or 0),
+            duration=int(raw.get("duration_ms") or 0),
+            folder_id=str(folder_id) if folder_id else None,
+            node_id=str(raw.get("node_id") or ""),
+            wrapper_id=parent_id if parent_id != parent_folder.get("folder_id") else "",
+            version_ms=int(raw.get("version_ms") or 0),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_trash_item(item: dict[str, Any], file_id: str, wrapper_id: str) -> Recording:
+        return Recording(
+            id=file_id,
+            filename=str(item.get("name") or ""),
+            start_time=int(item.get("created_at_show_ms") or 0),
+            duration=int(item.get("duration_ms") or 0),
+            node_id="" if wrapper_id else str(item.get("node_id") or ""),
+            wrapper_id=wrapper_id,
+            version_ms=int(item.get("version_ms") or 0),
+            raw=item,
+        )
+
+    def _normalize_recording_detail(self, raw: dict[str, Any]) -> RecordingDetail:
+        node = raw.get("node") or {}
+        meta = raw.get("meta") or {}
+        folder = node.get("folder") or {}
+        display = node.get("display_folder") or {}
+        # The container is the node's direct parent folder when that differs
+        # from the folder the web app displays it in.
+        wrapper_id = folder.get("folder_id") if folder.get("folder_id") != display.get("folder_id") else ""
+        transcript = self._object(raw, "TRANSCRIPT")
+        return RecordingDetail(
+            id=str(meta.get("file_id") or ""),
+            filename=str(node.get("name") or ""),
+            start_time=int(meta.get("start_time") or 0),
+            duration=int(meta.get("duration") or 0),
+            folder_id=str(display["folder_id"])
+            if display.get("folder_id") and not display.get("system_folder_type")
+            else None,
+            is_trash=bool(node.get("trash_info")),
+            is_trans=_object_done(transcript),
+            is_summary=_object_done(self._object(raw, "SUMMARY")),
+            language=(transcript or {}).get("language"),
+            node_id=str(node.get("node_id") or ""),
+            wrapper_id=str(wrapper_id or ""),
+            version_ms=int(node.get("version_ms") or 0),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_folder(item: dict[str, Any]) -> Folder:
+        return Folder(
+            id=str(item.get("node_id") or ""),
+            name=str(item.get("name") or ""),
+            color=str(item.get("color") or ""),
+            icon=str(item.get("icon") or ""),
+            parent_id=str(item.get("parent_id") or ""),
+            version_ms=int(item.get("version_ms") or 0),
+            raw=item,
+        )
+
+    # ------------------------------------------------------------------
+    # HTTP
+    # ------------------------------------------------------------------
 
     def _request_json(
         self,
@@ -995,29 +1324,21 @@ class PlaudClient:
         strict: bool,
         body: dict[str, Any] | list[Any] | None = None,
         *,
+        timezone: str | None = None,
         _redirected: bool = False,
     ) -> dict[str, Any]:
         """Issue a Plaud API request and return the parsed JSON payload.
 
-        Retry / backoff (Wave 2 / C5):
-            On HTTP 429 or HTTP 5xx the request is retried up to
-            ``_MAX_ATTEMPTS - 1`` additional times (3 total) with exponential
-            backoff + ±25 % full jitter.  When the server supplies a
-            ``Retry-After`` header we sleep the *larger* of Retry-After and the
-            computed back-off delay to respect the server's instruction while
-            avoiding hammering.
+        Retry / backoff: an idempotent GET that hits HTTP 429, 5xx or a
+        network blip is retried up to ``_MAX_ATTEMPTS - 1`` more times with
+        exponential backoff and jitter, never sleeping less than a
+        ``Retry-After``.  Other methods get exactly one try, since replaying a
+        write risks doing it twice (#147).
 
-        Region-redirect (Wave 0 / A2):
-            A ``status == -302`` payload triggers a single region update and one
-            immediate retry (no delay).  The ``_redirected`` flag bounds this to
-            one hop — a redirect on every call raises ``PlaudApiError('region
-            redirect loop')`` rather than recursing indefinitely.
+        Region redirect: a ``status == -302`` payload updates the stored
+        region once and retries immediately; a second redirect raises.
 
-        The two mechanisms compose cleanly: retry/backoff wraps the transport
-        call; region-redirect is a recursive call at the application layer after
-        the region has been persisted.  The ``_redirected`` flag is never
-        propagated through the retry loop so a 429 retry cannot accidentally
-        suppress the redirect guard.
+        ``timezone`` overrides the ``x-timezone-iana`` header for this call.
         """
         try:
             session = self._session_manager.require()
@@ -1033,56 +1354,31 @@ class PlaudClient:
             "User-Agent": BROWSER_USER_AGENT,
             "app-platform": "web",
             "edit-from": "web",
+            "x-timezone-iana": timezone or self._timezone,
         }
         encoded_body = json.dumps(body).encode("utf-8") if body is not None else None
 
         last_error: PlaudApiError | None = None
         for attempt in range(_MAX_ATTEMPTS):
             if attempt > 0:
-                # Exponential backoff with ±25 % jitter: 1 s before the first
-                # retry, 2 s before the second (see the module-level formula).
                 base_delay = _BACKOFF_BASE * (2 ** (attempt - 1))
                 computed_delay = _jitter(base_delay * 0.75, base_delay * 1.25)
-
-                # Honour Retry-After: sleep the larger of the server's hint and
-                # our computed back-off.  Never sleep *less* than the computed
-                # delay — a server that forgets the header on a 503 should still
-                # get back-off respect.
                 retry_after = last_error.retry_after if last_error is not None else None
                 sleep_s = max(computed_delay, retry_after) if retry_after is not None else computed_delay
-
                 _log.debug(
-                    "Plaud API retry %d/%d for %s %s — sleeping %.2fs (computed=%.2fs, retry_after=%s)",
+                    "Plaud API retry %d/%d for %s %s — sleeping %.2fs",
                     attempt,
                     _MAX_ATTEMPTS - 1,
                     method,
                     path,
                     sleep_s,
-                    computed_delay,
-                    retry_after,
                 )
                 _sleep(sleep_s)
 
             try:
-                response = self._transport.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    body=encoded_body,
-                )
+                response = self._transport.request(method=method, url=url, headers=headers, body=encoded_body)
             except PlaudApiError as exc:
                 _code, retryable = exc.classify()
-                # #147: only auto-retry idempotent GETs. Retrying a
-                # non-idempotent POST/PATCH/DELETE on a transient 429/5xx (or
-                # a network blip) risks duplicating a side effect the caller
-                # never asked for — e.g. a second /file/combine merge running
-                # to completion, or a folder-create that "fails" with a false
-                # "already exists" after the first attempt actually succeeded
-                # server-side. A GET can be safely replayed, so it keeps the
-                # full retry budget; every other method gets exactly one try
-                # here (callers that need resilience for a specific mutation,
-                # e.g. merge/transcription polling, already retry at the
-                # application layer using idempotent GET polls).
                 if retryable and method == "GET" and attempt < _MAX_ATTEMPTS - 1:
                     last_error = exc
                     continue
@@ -1091,12 +1387,8 @@ class PlaudClient:
             try:
                 payload = response.json()
             except ValueError as exc:
-                # #146: a 2xx response with a non-JSON (or undecodable) body
-                # is a Plaud-side/upstream problem, not a caller input error.
-                # Left unguarded, json.JSONDecodeError (a ValueError subclass)
-                # escaped all the way to the MCP facade's `except ValueError`
-                # branch, which reports error_code="validation" — misleadingly
-                # blaming the caller for what is actually a server outage.
+                # #146: a 2xx with a non-JSON body is a Plaud-side problem,
+                # not a caller input error.
                 raise PlaudApiError(
                     f"Plaud API returned a non-JSON body (HTTP {response.status_code})",
                     http_status=response.status_code,
@@ -1104,207 +1396,28 @@ class PlaudClient:
             if not isinstance(payload, dict):
                 raise PlaudApiError("Plaud API returned a non-object payload.")
 
-            if payload.get("status") == -302:
-                # Guard against a server that returns -302 on every call — we
-                # allow at most one region redirect per outbound request.  The
-                # update_region persistence is load-bearing (fragile Plaud
-                # protocol): it must run before any retry so the next request
-                # hits the correct base URL.
+            status = payload.get("status")
+            if status == -302:
                 if _redirected:
                     raise PlaudApiError("region redirect loop")
                 next_region = region_for_api_domain(redirect_api_domain(payload))
                 if next_region is None:
                     raise PlaudApiError("region redirect to an unrecognized API host")
                 self._session_manager.update_region(next_region)
-                return self._request_json(method, path, strict=strict, body=body, _redirected=True)
+                return self._request_json(
+                    method, path, strict=strict, body=body, timezone=timezone, _redirected=True
+                )
 
-            if strict and payload.get("status") != 0:
-                msg = payload.get("msg") or f"status {payload.get('status')}"
-                raise PlaudApiError(f"Plaud API error: {msg}")
+            if strict and status != 0:
+                msg = str(payload.get("msg") or f"status {status}")
+                if status == _STATUS_MIGRATED:
+                    msg += " (this plaud-tools version predates Plaud 4.0; update plaud-tools)"
+                raise PlaudApiError(
+                    f"Plaud API error: {msg} (status {status}, {method} {path.split('?', 1)[0]})",
+                    plaud_code=status,
+                    plaud_msg=str(payload.get("msg") or ""),
+                )
             return payload
 
-        # Should be unreachable — loop always returns or raises — but the type
-        # checker cannot prove it.  Raise the last captured error.
         assert last_error is not None
         raise last_error
-
-    def _normalize_recording(self, raw: dict[str, Any]) -> Recording:
-        return Recording(
-            id=str(raw.get("id") or raw.get("file_id") or ""),
-            filename=str(raw.get("filename") or raw.get("file_name") or ""),
-            start_time=int(raw.get("start_time") or 0),
-            duration=int(raw.get("duration") or 0),
-            is_trash=bool(raw.get("is_trash")),
-            is_trans=bool(raw.get("is_trans")),
-            is_summary=bool(raw.get("is_summary")),
-            filetag_id_list=list(raw.get("filetag_id_list") or []),
-            raw=raw,
-        )
-
-    def _normalize_recording_detail(self, raw: dict[str, Any], fallback_id: str) -> RecordingDetail:
-        content_list = raw.get("content_list") or []
-
-        def find_item(data_type: str) -> dict[str, Any] | None:
-            for item in content_list:
-                if item.get("data_type") == data_type:
-                    # item comes from raw["content_list"] which is list[Any];
-                    # return type is narrowed here — the Plaud API always
-                    # returns dicts in this list.
-                    return item if isinstance(item, dict) else None
-            return None
-
-        def is_complete(data_type: str) -> bool:
-            item = find_item(data_type)
-            return bool(item and item.get("task_status") == 1)
-
-        auto_sum_item = find_item("auto_sum_note")
-        return RecordingDetail(
-            id=str(raw.get("file_id") or raw.get("id") or fallback_id),
-            filename=str(raw.get("file_name") or raw.get("filename") or fallback_id),
-            start_time=int(raw.get("start_time") or 0),
-            duration=int(raw.get("duration") or 0),
-            folder_id=(raw.get("filetag_id_list") or [None])[0],
-            is_trash=bool(raw.get("is_trash")),
-            is_trans=is_complete("transaction"),
-            is_summary=is_complete("auto_sum_note"),
-            scene=raw.get("scene"),
-            transcript="",
-            ai_content=self._extract_inline_summary(
-                raw, auto_sum_item.get("data_id") if auto_sum_item else None
-            ),
-            extra_data=raw.get("extra_data") or {},
-            raw=raw,
-        )
-
-    def _extract_inline_summary(self, raw: dict[str, Any], auto_sum_data_id: str | None) -> str | None:
-        def _parse_summary_obj(obj: dict[str, Any]) -> str | None:
-            for key in ("ai_content", "content", "text", "markdown"):
-                val = obj.get(key)
-                if isinstance(val, str) and val:
-                    return val
-            return None
-
-        def _try_item(item: dict[str, Any]) -> str | None:
-            data_content = item.get("data_content")
-            if isinstance(data_content, dict):
-                return _parse_summary_obj(data_content)
-            if isinstance(data_content, str) and data_content:
-                try:
-                    parsed = json.loads(data_content)
-                    if isinstance(parsed, dict):
-                        return _parse_summary_obj(parsed)
-                    if isinstance(parsed, str):
-                        return parsed or None
-                except json.JSONDecodeError:
-                    return data_content or None
-            return None
-
-        pre_list = raw.get("pre_download_content_list") or []
-        # Primary: match by data_id
-        if auto_sum_data_id:
-            for item in pre_list:
-                if item.get("data_id") == auto_sum_data_id:
-                    return _try_item(item)
-        # Fallback: match by data_type when data_id didn't match (or wasn't available)
-        for item in pre_list:
-            if item.get("data_type") == "auto_sum_note":
-                result = _try_item(item)
-                if result is not None:
-                    return result
-        return None
-
-    def _fetch_summary_from_data_link(self, raw: dict[str, Any]) -> str | None:
-        summary_item = None
-        for item in raw.get("content_list") or []:
-            if item.get("data_type") == "auto_sum_note" and item.get("task_status") == 1:
-                summary_item = item
-                break
-        if not summary_item or not summary_item.get("data_link"):
-            return None
-        response = self._transport.request(
-            method="GET",
-            url=str(summary_item["data_link"]),
-            headers={"User-Agent": BROWSER_USER_AGENT},
-        )
-        if response.status_code < 200 or response.status_code >= 300:
-            return None
-        try:
-            body = response.json()
-        except (ValueError, json.JSONDecodeError):
-            text = response.text()
-            return text or None
-        if isinstance(body, str):
-            return body or None
-        if isinstance(body, dict):
-            for key in ("ai_content", "content", "text", "markdown"):
-                val = body.get(key)
-                if isinstance(val, str) and val:
-                    return val
-        return None
-
-    def _available_transcript_blocks(self, raw: dict[str, Any]) -> list[str]:
-        """Which blocks in ``TRANSCRIPT_BLOCKS`` are finished for this recording.
-
-        Returned in ``TRANSCRIPT_BLOCKS`` order (not Plaud's ``content_list``
-        order) so the value is stable across responses.
-        """
-        done = {
-            item.get("data_type")
-            for item in raw.get("content_list") or []
-            if item.get("task_status") == 1 and item.get("data_link")
-        }
-        return [block for block in TRANSCRIPT_BLOCKS if block in done]
-
-    def _fetch_transcript_segments(
-        self, raw: dict[str, Any], block: str = DEFAULT_TRANSCRIPT_BLOCK
-    ) -> list[dict[str, Any]]:
-        """Fetch and parse one transcript block's segments.
-
-        *block* defaults to ``"transaction"`` — the raw transcript, and the only
-        block the edit paths may touch (``rename_speaker`` /
-        ``correct_transcript`` PATCH ``trans_result`` back, so they must read
-        the same block they write). Read-only callers may request any block in
-        ``TRANSCRIPT_BLOCKS``. Returns ``[]`` when the block is absent or
-        unfinished; callers distinguish that from "no transcript at all" via
-        ``_available_transcript_blocks``. A finished block whose download fails
-        raises ``PlaudApiError`` rather than reading as empty.
-        """
-        transcript_item = None
-        for item in raw.get("content_list") or []:
-            if item.get("data_type") == block and item.get("task_status") == 1:
-                transcript_item = item
-                break
-        if not transcript_item or not transcript_item.get("data_link"):
-            return []
-        response = self._transport.request(
-            method="GET",
-            url=str(transcript_item["data_link"]),
-            headers={"User-Agent": BROWSER_USER_AGENT},
-        )
-        if response.status_code < 200 or response.status_code >= 300:
-            # Plaud says this block is finished, so a failed download is an
-            # upstream error — returning [] here would pass it off as a
-            # genuinely empty transcript (#210).
-            raise PlaudApiError(
-                f"Plaud transcript link returned HTTP {response.status_code}",
-                http_status=response.status_code,
-            )
-        try:
-            body = response.json()
-        except ValueError as exc:
-            # #146: same rationale as _request_json — a 2xx with a non-JSON
-            # body is an upstream problem, not a caller input error. Without
-            # this, json.JSONDecodeError escaped as-is and calling code (e.g.
-            # rename_speaker/correct_transcript's "no transcript yet" check)
-            # misreported the resulting empty segment list as a validation
-            # error instead of the server-side failure it actually was.
-            raise PlaudApiError(
-                f"Plaud transcript link returned a non-JSON body (HTTP {response.status_code})",
-                http_status=response.status_code,
-            ) from exc
-        if isinstance(body, list):
-            return body
-        if isinstance(body, dict):
-            segments = body.get("trans_result")
-            return segments if isinstance(segments, list) else []
-        return []

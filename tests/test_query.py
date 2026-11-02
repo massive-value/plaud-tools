@@ -27,19 +27,9 @@ def make_recording(
     filename: str = "Meeting",
     start_time: int = 0,
     duration: int = 0,
-    is_trans: bool = False,
-    is_summary: bool = False,
-    filetag_id_list: list[str] | None = None,
+    folder_id: str | None = None,
 ) -> Recording:
-    return Recording(
-        id=id,
-        filename=filename,
-        start_time=start_time,
-        duration=duration,
-        is_trans=is_trans,
-        is_summary=is_summary,
-        filetag_id_list=filetag_id_list if filetag_id_list is not None else [],
-    )
+    return Recording(id=id, filename=filename, start_time=start_time, duration=duration, folder_id=folder_id)
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +107,10 @@ class TestFilterRecordings:
 
     def _make_items(self) -> list[Recording]:
         return [
-            make_recording("a", "Alpha Meeting", start_time=1_000, filetag_id_list=["folder1"]),
-            make_recording("b", "Beta Call", start_time=3_000, filetag_id_list=[]),
-            make_recording("c", "Gamma Note", start_time=2_000, filetag_id_list=["folder2"]),
-            make_recording("d", "Delta Meeting", start_time=4_000, filetag_id_list=[]),
+            make_recording("a", "Alpha Meeting", start_time=1_000, folder_id="folder1"),
+            make_recording("b", "Beta Call", start_time=3_000),
+            make_recording("c", "Gamma Note", start_time=2_000, folder_id="folder2"),
+            make_recording("d", "Delta Meeting", start_time=4_000),
         ]
 
     # --- passthrough ---
@@ -247,20 +237,13 @@ class TestFilterRecordings:
         result = filter_recordings(
             items, since_ms=None, until_ms=None, query=None, folder_id="folder1", unfiled=True
         )
-        # unfiled=True forces the "no filetag" branch; folder1 items are excluded.
+        # unfiled=True keeps only recordings outside any user folder.
         ids = {item.id for item in result}
         assert ids == {"b", "d"}
-        assert "a" not in ids  # rec a is in folder1 but has a filetag, so excluded
+        assert "a" not in ids  # rec a is in folder1, so excluded
 
-    def test_unfiled_recording_with_multiple_tags_excluded_when_has_tags(self):
-        rec = make_recording("x", "Multi", filetag_id_list=["t1", "t2"])
-        result = filter_recordings(
-            [rec], since_ms=None, until_ms=None, query=None, folder_id=None, unfiled=True
-        )
-        assert result == []
-
-    def test_unfiled_recording_with_no_tags_included(self):
-        rec = make_recording("x", "Bare", filetag_id_list=[])
+    def test_unfiled_recording_with_no_folder_included(self):
+        rec = make_recording("x", "Bare")
         result = filter_recordings(
             [rec], since_ms=None, until_ms=None, query=None, folder_id=None, unfiled=True
         )
@@ -297,9 +280,9 @@ class TestFilterRecordings:
 
     def test_folder_id_and_query_combined(self):
         items = [
-            make_recording("m1", "Project Alpha", start_time=10, filetag_id_list=["proj"]),
-            make_recording("m2", "Project Beta", start_time=20, filetag_id_list=["proj"]),
-            make_recording("m3", "Random", start_time=30, filetag_id_list=["proj"]),
+            make_recording("m1", "Project Alpha", start_time=10, folder_id="proj"),
+            make_recording("m2", "Project Beta", start_time=20, folder_id="proj"),
+            make_recording("m3", "Random", start_time=30, folder_id="proj"),
         ]
         result = filter_recordings(items, since_ms=None, until_ms=None, query="Project", folder_id="proj")
         ids = {item.id for item in result}
@@ -321,17 +304,9 @@ class TestSummarizeRecording:
             "title",
             "date",
             "duration_minutes",
-            "has_transcript",
-            "has_summary",
             "folder_id",
         }
         assert set(summary.keys()) == expected_keys
-
-    def test_has_summary_reflects_is_summary(self):
-        rec_with = make_recording(is_summary=True)
-        rec_without = make_recording(is_summary=False)
-        assert summarize_recording(rec_with)["has_summary"] is True
-        assert summarize_recording(rec_without)["has_summary"] is False
 
     def test_id_and_title_are_correct(self):
         rec = make_recording("abc123", "Team Standup")
@@ -356,18 +331,12 @@ class TestSummarizeRecording:
         rec = make_recording(duration=0)
         assert summarize_recording(rec)["duration_minutes"] == 0
 
-    def test_has_transcript_reflects_is_trans(self):
-        rec_with = make_recording(is_trans=True)
-        rec_without = make_recording(is_trans=False)
-        assert summarize_recording(rec_with)["has_transcript"] is True
-        assert summarize_recording(rec_without)["has_transcript"] is False
-
-    def test_folder_id_is_first_tag_when_present(self):
-        rec = make_recording(filetag_id_list=["folder-a", "folder-b"])
+    def test_folder_id_passes_through(self):
+        rec = make_recording(folder_id="folder-a")
         assert summarize_recording(rec)["folder_id"] == "folder-a"
 
-    def test_folder_id_is_none_when_no_tags(self):
-        rec = make_recording(filetag_id_list=[])
+    def test_folder_id_is_none_when_unfiled(self):
+        rec = make_recording()
         assert summarize_recording(rec)["folder_id"] is None
 
     def test_date_is_16_char_isoformat_prefix(self):

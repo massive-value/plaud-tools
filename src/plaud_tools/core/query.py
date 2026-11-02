@@ -145,9 +145,9 @@ def filter_recordings(
         query_lower = query.lower()
         filtered = [item for item in filtered if query_lower in item.filename.lower()]
     if unfiled:
-        filtered = [item for item in filtered if not item.filetag_id_list]
+        filtered = [item for item in filtered if not item.folder_id]
     elif folder_id is not None:
-        filtered = [item for item in filtered if folder_id in item.filetag_id_list]
+        filtered = [item for item in filtered if item.folder_id == folder_id]
     filtered.sort(key=lambda item: item.start_time, reverse=True)
     return filtered
 
@@ -179,9 +179,9 @@ def collect_filtered_paged(
       resolve ``has_more`` without over-fetching), or
     - the upstream returns fewer than ``page_size`` items (list exhausted), or
     - with ``since_ms`` set, a batch reaches back past ``since_ms``.  This
-      relies on ``fetch_page`` returning newest-first (``sort_by=start_time``,
-      ``is_desc=True``, as both callers request): every later page is older
-      still, so none of it can match.  Without it, a narrow date filter on a
+      relies on ``fetch_page`` returning newest-first (``list_recordings``
+      always does): every later page is older still, so none of it can
+      match.  Without it, a narrow date filter on a
       big library scanned the whole library.
 
     ``limit=None`` means "everything": paging only stops at upstream
@@ -229,14 +229,19 @@ def collect_filtered_paged(
     return page, has_more
 
 
-def folder_dict(tag: Any) -> dict[str, Any]:
-    """Produce the standard {id, name, color, icon} dict for a FileTag.
+def folder_dict(folder: Any) -> dict[str, Any]:
+    """The standard folder dict (CLI and MCP folder listings and edits).
 
-    Built independently four times across cli.py (_handle_folders,
-    _handle_folder) and mcp.py (list_folders, mutate_folder create/edit)
-    before Wave 5's §7.5 consolidation.
+    ``parent_id`` is "root" for a top-level folder, otherwise the folder (or
+    system folder) it sits in.
     """
-    return {"id": tag.id, "name": tag.name, "color": tag.color, "icon": tag.icon}
+    return {
+        "id": folder.id,
+        "name": folder.name,
+        "color": folder.color,
+        "icon": folder.icon,
+        "parent_id": folder.parent_id,
+    }
 
 
 def detail_summary_dict(detail: Any) -> dict[str, Any]:
@@ -245,12 +250,10 @@ def detail_summary_dict(detail: Any) -> dict[str, Any]:
     Shared core of cli.py's ``_handle_show`` (inline dict) and mcp.py's
     ``_summarize_detail`` (near-identical near-twins before Wave 5's §7.5
     consolidation) -- id/title/date/duration_minutes/folder_id/is_trans/
-    is_summary/headline. mcp.py's ``get_recording`` handler adds its own
-    extra fields (is_trash, language, used_template) on top of this base;
-    cli.py's ``show`` command uses the base as-is to keep its existing
-    output shape unchanged.
+    is_summary. mcp.py's ``get_recording`` handler adds its own extra fields
+    (is_trash, language) on top of this base; cli.py's ``show`` command uses
+    the base as-is.
     """
-    extra = detail.extra_data or {}
     return {
         "id": detail.id,
         "title": detail.filename,
@@ -259,7 +262,6 @@ def detail_summary_dict(detail: Any) -> dict[str, Any]:
         "folder_id": detail.folder_id,
         "is_trans": detail.is_trans,
         "is_summary": detail.is_summary,
-        "headline": (extra.get("aiContentHeader") or {}).get("headline"),
     }
 
 
@@ -334,7 +336,5 @@ def summarize_recording(item: Any) -> dict[str, Any]:
         "title": item.filename,
         "date": datetime.fromtimestamp(item.start_time / 1000).isoformat()[:16],
         "duration_minutes": round(item.duration / 60000),
-        "has_transcript": item.is_trans,
-        "has_summary": item.is_summary,
-        "folder_id": item.filetag_id_list[0] if item.filetag_id_list else None,
+        "folder_id": item.folder_id,
     }
