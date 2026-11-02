@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-02
+
 plaud-tools works again for accounts Plaud moved to its 4.0 app. Accounts not
 yet moved are no longer supported. See docs/adr/008-plaud-4-protocol.md.
 
