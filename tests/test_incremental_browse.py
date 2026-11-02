@@ -26,13 +26,13 @@ def make_rec(
     id: str,
     filename: str = "Meeting",
     start_time: int = 1_000,
-    filetag_id_list: list[str] | None = None,
+    folder_id: str | None = None,
 ) -> Recording:
     return Recording(
         id=id,
         filename=filename,
         start_time=start_time,
-        filetag_id_list=filetag_id_list if filetag_id_list is not None else [],
+        folder_id=folder_id,
     )
 
 
@@ -359,8 +359,8 @@ class TestBrowseRecordingsMcpHandler:
         translating it into query.py's single unfiled=True convention (§7.8)
         instead of filter_recordings' own folder_id=="" special case.
         """
-        filed = make_rec("filed", filename="Meeting A", start_time=1000, filetag_id_list=["f1"])
-        unfiled = make_rec("unfiled", filename="Meeting B", start_time=2000, filetag_id_list=[])
+        filed = make_rec("filed", filename="Meeting A", start_time=1000, folder_id="f1")
+        unfiled = make_rec("unfiled", filename="Meeting B", start_time=2000)
         client, _ = self._make_client([[filed, unfiled]])
         handlers = self._build_handlers(client)
         result = handlers["browse_recordings"](limit=10, folder="")

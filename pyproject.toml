@@ -36,6 +36,7 @@ dependencies = [
     "mcp>=2.2,<3.0",
     "platformdirs>=4.0",
     "tomlkit>=0.12",
+    "tzlocal>=5.4.5",
 ]
 
 [project.urls]

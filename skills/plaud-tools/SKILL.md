@@ -153,7 +153,7 @@ cutoff. `since`/`until` take ISO 8601 and `until` is inclusive to end-of-day.
   want a follow-up action on it.
 - `duration_minutes` is already minutes and `date` is already trimmed — no
   reformatting needed.
-- `has_transcript` / `has_summary` tell you whether it's worth fetching those
-  before you try.
+- `get_recording` returns `is_trans` / `is_summary`, which say whether a
+  transcript or summary exists before you ask for one.
 - `audio_url` expires in an hour (`audio_url_expires_in_s`). Don't save it or
   reuse it later in a long session — re-fetch it.

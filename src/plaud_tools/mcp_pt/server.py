@@ -107,8 +107,6 @@ _BROWSE_OUTPUT_SCHEMA: dict[str, Any] = {
                     "title": {"type": "string"},
                     "date": {"type": "string"},
                     "duration_minutes": {"type": "integer"},
-                    "has_transcript": {"type": "boolean"},
-                    "has_summary": {"type": "boolean"},
                     "folder_id": _NULLABLE_STRING,
                 },
                 "required": ["id", "title"],
@@ -155,10 +153,10 @@ _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
         "is_trans": {"type": "boolean"},
         "is_summary": {"type": "boolean"},
         "is_trash": {"type": "boolean"},
-        "headline": _NULLABLE_STRING,
         "language": _NULLABLE_STRING,
         "speakers": {"type": "array", "items": {"type": "string"}},
         "audio_url": _NULLABLE_STRING,
+        "audio_mime_type": _NULLABLE_STRING,
         "transcript": {"type": "string"},
         "transcript_segments": {"type": "array", "items": {"type": "object"}},
         "transcript_has_more": {"type": "boolean"},
@@ -218,6 +216,7 @@ _LIST_FOLDERS_OUTPUT_SCHEMA: dict[str, Any] = {
                     "name": {"type": "string"},
                     "color": {"type": "string"},
                     "icon": {"type": "string"},
+                    "parent_id": {"type": "string"},
                 },
                 "required": ["id", "name"],
             },
@@ -254,7 +253,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); pass empty string for unfiled recordings",  # noqa: E501
+                    "description": "Folder ID (from `list_folders`); pass empty string for recordings in no folder",  # noqa: E501
                 },
                 "after": {
                     "type": "integer",
@@ -443,7 +442,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "clear_folder": {
                     "type": "boolean",
-                    "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",  # noqa: E501
+                    "description": "When true, moves the recording out of its folder into Plaud's main Recordings list (use instead of a magic folder_id value)",  # noqa: E501
                 },
             },
             "required": ["action"],
@@ -543,7 +542,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`) to assign after upload",
+                    "description": "Folder ID (from `list_folders`) to file the recording in",
                 },
                 "start_time": {
                     "type": ["integer", "string"],
@@ -551,7 +550,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "timezone_offset": {
                     "type": "number",
-                    "description": "UTC offset in hours; defaults to local system offset",
+                    "description": "Whole-hour UTC offset (e.g. -6); defaults to this machine's timezone",
                 },
             },
             "required": ["file_path"],
@@ -567,7 +566,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="list_folders",
-        description="List Plaud folders, returning id, name, color, and icon for each.",
+        description="List Plaud folders, returning id, name, color, icon, and parent_id for each.",
         input_schema={
             "type": "object",
             "properties": {},
@@ -714,7 +713,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "color": {
                     "type": "string",
-                    "description": "Hex color (e.g. '#4c8eff'); optional",
+                    "description": "Plaud color name (e.g. 'folder-color-green'); optional",
                 },
                 "icon": {
                     "type": "string",
@@ -722,7 +721,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted.",  # noqa: E501
+                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. Its recordings are kept and move to Plaud's main Recordings list.",  # noqa: E501
                 },
             },
             "required": ["action"],

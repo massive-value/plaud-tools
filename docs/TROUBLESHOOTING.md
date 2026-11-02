@@ -180,6 +180,16 @@ FFMPEG_BIN=/usr/local/bin/ffmpeg plaud-tools upload file.wav
 
 ---
 
+## "Account migrated to 4.0. Please update and reinitialize."
+
+Plaud moved accounts to its 4.0 app on 2026-11-02 and turned off the old API for every account it moved. plaud-tools 0.12 and earlier use that old API, so browsing, reading and editing recordings all fail with this message. Search still works, which makes it look like a partial outage.
+
+Update to plaud-tools 0.13.0 or later. Use the tray's update button, or re-run the install script if the button does nothing. You don't need to sign in again.
+
+Recording IDs changed with 4.0. An ID you saved from an older version, such as `d48edd585ca134b19580ce827752925b`, still works, because plaud-tools converts it. New output shows the same recording as `of_d48edd585ca134b19580ce827752925b`.
+
+---
+
 ## Wrong region
 
 If your recordings don't appear, try the other region:

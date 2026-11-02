@@ -26,7 +26,7 @@ Example: [examples/transcript-export-v1.json](examples/transcript-export-v1.json
 |---|---|
 | `schema_version` | `1` |
 | `source` | `"plaud"` |
-| `recording_id` | Plaud's file ID, unchanged. Letters, digits, `-`, `_`, up to 128 characters. |
+| `recording_id` | Plaud's file ID, unchanged. Letters, digits, `-`, `_`, up to 128 characters. Since Plaud 4.0 this is `of_<hex>` for a recording made before the account moved to 4.0 and `f_<hex>` for a newer one. Exports from plaud-tools 0.12 and earlier sent the bare `<hex>`; that recording is now `of_<hex>`. |
 | `portion_id` | `"full"`. Portion export isn't built yet. |
 | `title` | Plaud's recording title. Omitted when empty. |
 | `recorded_at` | Recording start, UTC, `YYYY-MM-DDTHH:MM:SSZ`. Omitted when Plaud has none. |

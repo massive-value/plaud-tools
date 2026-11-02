@@ -213,14 +213,10 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
 
 def _summarize_detail(detail: Any) -> dict[str, Any]:
     """mcp.py's ``get_recording`` shape: query.detail_summary_dict()'s base
-    fields plus the MCP-specific extras (is_trash, language, used_template)."""
-    extra = detail.extra_data or {}
+    fields plus the MCP-specific extras (is_trash, language)."""
     output = detail_summary_dict(detail)
     output["is_trash"] = detail.is_trash
-    output["language"] = (extra.get("tranConfig") or {}).get("language")
-    output["used_template"] = extra.get("used_template") or (extra.get("aiContentHeader") or {}).get(
-        "used_template"
-    )
+    output["language"] = detail.language
     return output
 
 
@@ -358,9 +354,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             since_ms = parse_isoish(since, "since") if since else None
             until_ms = parse_isoish(until, "until", end_of_day=True) if until else None
             has_filters = any(value is not None for value in (since, until, query, folder))
-            # trash=True lists client.list_trash()'s underlying query
-            # (is_trash=1) instead of active recordings (is_trash=0) — a real
-            # gap the MCP had no way to discover trashed IDs to restore.
+            # trash=True lists the trash instead of active recordings, so an
+            # agent can discover trashed IDs to restore.
             is_trash_flag = 1 if trash else 0
             # The MCP `folder` parameter documents "" as the unfiled sentinel
             # (see server.py's tool schema); translate it into query.py's
@@ -370,13 +365,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             if has_filters:
                 page, has_more = collect_filtered_paged(
                     lambda skip, page_size: client.list_recordings(
-                        PlaudRecordingQuery(
-                            skip=skip,
-                            limit=page_size,
-                            is_trash=is_trash_flag,
-                            sort_by="start_time",
-                            is_desc=True,
-                        )
+                        PlaudRecordingQuery(skip=skip, limit=page_size, is_trash=is_trash_flag)
                     ),
                     BROWSE_PAGE_SIZE,
                     since_ms=since_ms,
@@ -392,11 +381,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 # exist" from "the library is an exact multiple of limit".
                 fetched = client.list_recordings(
                     PlaudRecordingQuery(
-                        skip=after if after else None,
-                        limit=limit + 1,
-                        is_trash=is_trash_flag,
-                        sort_by="start_time",
-                        is_desc=True,
+                        skip=after if after else None, limit=limit + 1, is_trash=is_trash_flag
                     )
                 )
                 page = fetched[:limit]
@@ -501,14 +486,15 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             if "speakers" in include_set:
                 output["speakers"] = detail.speakers
             if "audio_url" in include_set:
-                url = client.get_audio_url(recording_id)
-                output["audio_url"] = url
-                if url is None:
+                link = client.get_audio_link(recording_id)
+                output["audio_url"] = link.url if link else None
+                if link is None:
                     notes.append(
                         "No audio is available for this recording — it may not have finished "
                         "syncing from the device yet."
                     )
                 else:
+                    output["audio_mime_type"] = link.mime_type
                     output["audio_url_expires_in_s"] = AUDIO_URL_TTL_S
             if include_set & {"transcript", "segments"}:
                 segments = detail.transcript_segments or []
@@ -542,7 +528,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 if detail.ai_content is None and detail.is_summary:
                     output["summary"] = None
                     # Don't dead-end the caller: Plaud says a summary exists but
-                    # the data_link fetch came back empty, which is transient
+                    # its content came back empty, which is transient
                     # far more often than not.  Name the retry explicitly.
                     notes.append(
                         "Plaud reports a summary exists for this recording but its content could "
@@ -761,7 +747,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             # No wait budget here: the call returns as soon as Plaud confirms
             # the upload, with the new recording_id.  A failure is a normal
             # error (mapped by _call), never a "still processing" that would
-            # invite a duplicate upload.
+            # invite a duplicate upload.  The folder is set in the same
+            # confirm request, so there is no "uploaded but not filed" state.
             outcome = upload_with_transcode(
                 client,
                 path,
@@ -770,18 +757,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 timezone_offset=timezone_offset,
                 folder_id=folder_id,
             )
-            payload: dict[str, Any] = {
-                "ok": True,
-                "recording_id": outcome.recording.id,
-                "filename": outcome.recording.filename,
-                "transcoded": outcome.transcoded,
-            }
-            if outcome.folder_error is not None:
-                # #149: the recording was created successfully but the
-                # post-upload folder move failed — surface both so the caller
-                # can retry the move instead of re-uploading the file.
-                payload["folder_error"] = outcome.folder_error
-            return _json_result(payload)
+            return _json_result(
+                {
+                    "ok": True,
+                    "recording_id": outcome.recording.id,
+                    "filename": outcome.recording.filename,
+                    "transcoded": outcome.transcoded,
+                }
+            )
 
         return _call(get_client, inner)
 
@@ -896,8 +879,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
     def list_folders() -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
-            tags = client.list_file_tags()
-            return _json_result({"folders": [folder_dict(tag) for tag in tags]})
+            return _json_result({"folders": [folder_dict(folder) for folder in client.list_folders()]})
 
         return _call(get_client, inner)
 
@@ -999,12 +981,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                tag = client.create_folder(name, color=color, icon=icon)
+                folder = client.create_folder(name, color=color, icon=icon)
                 return _json_result(
                     {
                         "ok": True,
                         "action": "create",
-                        "folder": folder_dict(tag),
+                        "folder": folder_dict(folder),
                     }
                 )
 
@@ -1021,12 +1003,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                tag = client.update_folder(folder_id, name=name, color=color, icon=icon)
+                folder = client.update_folder(folder_id, name=name, color=color, icon=icon)
                 return _json_result(
                     {
                         "ok": True,
                         "action": "edit",
-                        "folder": folder_dict(tag),
+                        "folder": folder_dict(folder),
                     }
                 )
 

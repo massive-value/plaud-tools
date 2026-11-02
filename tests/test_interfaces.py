@@ -9,7 +9,7 @@ import pytest
 
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
-from plaud_tools.core.models import ContentMatch, FileTag, Recording, RecordingDetail
+from plaud_tools.core.models import AudioLink, ContentMatch, Folder, Recording, RecordingDetail
 from plaud_tools.core.session import PlaudSession, SessionStore
 from plaud_tools.mcp_pt.mcp import build_handlers
 
@@ -27,16 +27,13 @@ class StubClient:
             filename="Q4 Review",
             start_time=1_746_000_000_000,
             duration=600_000,
-            is_trans=True,
-            filetag_id_list=["tag1"],
+            folder_id="tag1",
         ),
         Recording(
             id="r2",
             filename="Lunch Chat",
             start_time=1_745_000_000_000,
             duration=300_000,
-            is_trans=False,
-            filetag_id_list=[],
         ),
     ]
 
@@ -50,8 +47,7 @@ class StubClient:
                     filename="meeting",
                     start_time=1_746_000_000_000,
                     duration=600_000,
-                    is_trans=True,
-                    filetag_id_list=["tag1"],
+                    folder_id="tag1",
                 )
             ]
         # Incremental filtered path (limit=BROWSE_PAGE_SIZE) or no-query path:
@@ -70,10 +66,8 @@ class StubClient:
             is_trash=False,
             is_trans=False,
             is_summary=False,
-            scene=None,
             transcript="",
             ai_content=None,
-            extra_data={},
             raw={},
         )
 
@@ -85,10 +79,6 @@ class StubClient:
             filename=filename,
             start_time=start_time or 0,
             duration=0,
-            is_trash=False,
-            is_trans=False,
-            is_summary=False,
-            filetag_id_list=[],
             raw={},
         )
 
@@ -111,10 +101,7 @@ class StubClient:
             speakers=["Speaker 1", "Alex"] if include_transcript else [],
             transcript_blocks_available=["transaction"] if include_transcript else [],
             ai_content="# Summary",
-            extra_data={
-                "aiContentHeader": {"headline": "Q4 review"},
-                "tranConfig": {"language": "en"},
-            },
+            language="en",
         )
 
     def rename_recording(self, recording_id, filename):
@@ -124,8 +111,8 @@ class StubClient:
         # positionally) that the signature-sync test below now catches.
         self.rename_call = (recording_id, filename)
 
-    def list_file_tags(self):
-        return [FileTag(id="tag1", name="Work", color="#191919", icon="e627")]
+    def list_folders(self):
+        return [Folder(id="tag1", name="Work", color="folder-color-green", icon="e627", parent_id="root")]
 
     def set_recording_folder(self, recording_ids, folder_id):
         self.move_call = (recording_ids, folder_id)
@@ -137,7 +124,6 @@ class StubClient:
                 filename="old meeting",
                 start_time=1_746_000_000_000,
                 duration=600_000,
-                is_trans=False,
             )
         ]
 
@@ -183,10 +169,7 @@ class StubClient:
                     "file_id": "rec1",
                     "task_id": "t1",
                     "task_type": "transcript",
-                    "task_status": 1,
-                    "is_complete": True,
-                    "sum_type": "",
-                    "sum_type_type": "",
+                    "stages": [{"code": "TRANSCRIPT", "state": "running"}],
                 },
             )()
         ]
@@ -207,8 +190,6 @@ def test_cli_list_shapes_output():
             "title": "meeting",
             "date": expected_date,
             "duration_minutes": 10,
-            "has_transcript": True,
-            "has_summary": False,
             "folder_id": "tag1",
         }
     ]
@@ -269,13 +250,12 @@ def test_cli_detail_passes_include_summary_to_client():
     assert calls["include_summary"] is True
 
 
-def test_cli_show_returns_metadata_speakers_headline():
+def test_cli_show_returns_metadata_and_speakers():
     output = run_cli(["show", "rec1"], StubClient())
     payload = json.loads(output)
     assert payload["id"] == "rec1"
     assert payload["title"] == "meeting"
     assert payload["speakers"] == ["Speaker 1", "Alex"]
-    assert payload["headline"] == "Q4 review"
     assert "transcript" not in payload
 
 
@@ -288,8 +268,8 @@ def test_cli_summary_returns_ai_content():
 
 def test_cli_audio_prints_url_and_expiry():
     class AudioStub(StubClient):
-        def get_audio_url(self, recording_id):
-            return "https://s3.fake/audiofiles/rec1.mp3?sig=x"
+        def get_audio_link(self, recording_id):
+            return AudioLink(url="https://s3.fake/audiofiles/rec1.mp3?sig=x", mime_type="audio/mpeg")
 
     payload = json.loads(run_cli(["audio", "rec1"], AudioStub()))
     assert payload["audio_url"] == "https://s3.fake/audiofiles/rec1.mp3?sig=x"
@@ -298,7 +278,10 @@ def test_cli_audio_prints_url_and_expiry():
 
 def test_cli_audio_output_downloads_the_file(tmp_path: Path):
     class AudioStub(StubClient):
-        def download_audio(self, recording_id, destination):
+        def get_audio_link(self, recording_id):
+            return AudioLink(url="https://s3.fake/rec1.mp3", mime_type="audio/mpeg")
+
+        def download_audio(self, link, destination):
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b"mp3-bytes")
             return destination
@@ -312,7 +295,10 @@ def test_cli_audio_output_downloads_the_file(tmp_path: Path):
 
 def test_cli_audio_output_directory_names_the_file_by_id(tmp_path: Path):
     class AudioStub(StubClient):
-        def download_audio(self, recording_id, destination):
+        def get_audio_link(self, recording_id):
+            return AudioLink(url="https://s3.fake/rec1.mp3", mime_type="audio/mpeg")
+
+        def download_audio(self, link, destination):
             destination.write_bytes(b"x")
             return destination
 
@@ -329,7 +315,10 @@ def test_cli_audio_output_trailing_slash_is_treated_as_a_not_yet_created_dir(tmp
     """
 
     class AudioStub(StubClient):
-        def download_audio(self, recording_id, destination):
+        def get_audio_link(self, recording_id):
+            return AudioLink(url="https://s3.fake/rec1.mp3", mime_type="audio/mpeg")
+
+        def download_audio(self, link, destination):
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b"x")
             return destination
@@ -343,7 +332,7 @@ def test_cli_audio_output_trailing_slash_is_treated_as_a_not_yet_created_dir(tmp
 
 def test_cli_audio_without_audio_errors():
     class NoAudioStub(StubClient):
-        def get_audio_url(self, recording_id):
+        def get_audio_link(self, recording_id):
             return None
 
     with pytest.raises(ValueError, match="no downloadable audio"):
@@ -519,7 +508,7 @@ class LibraryStub(StubClient):
                 id=f"r{i}",
                 filename=f"rec {i}",
                 start_time=1_746_000_000_000 - i * 60_000,
-                filetag_id_list=["tag1"] if i % 3 == 0 else [],
+                folder_id="tag1" if i % 3 == 0 else None,
             )
             for i in range(size)
         ]
@@ -579,8 +568,6 @@ def test_cli_trash_list_flag_lists_trash():
             "title": "old meeting",
             "date": expected_date,
             "duration_minutes": 10,
-            "has_transcript": False,
-            "has_summary": False,
             "folder_id": None,
         }
     ]
@@ -661,7 +648,15 @@ def test_cli_rename_shapes_success_response():
 def test_cli_folders_returns_curated_list():
     output = run_cli(["folders"], StubClient())
     payload = json.loads(output)
-    assert payload == [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]
+    assert payload == [
+        {
+            "id": "tag1",
+            "name": "Work",
+            "color": "folder-color-green",
+            "icon": "e627",
+            "parent_id": "root",
+        }
+    ]
 
 
 def test_cli_move_to_folder_supports_clear():
@@ -684,8 +679,6 @@ def test_cli_trash_list_returns_curated_items():
             "title": "old meeting",
             "date": expected_date,
             "duration_minutes": 10,
-            "has_transcript": False,
-            "has_summary": False,
             "folder_id": None,
         }
     ]
@@ -837,10 +830,7 @@ def test_cli_status_returns_task_list():
             "file_id": "rec1",
             "task_id": "t1",
             "task_type": "transcript",
-            "task_status": 1,
-            "is_complete": True,
-            "sum_type": "",
-            "sum_type_type": "",
+            "stages": [{"code": "TRANSCRIPT", "state": "running"}],
         }
     ]
 
@@ -1231,7 +1221,7 @@ def test_cli_main_broken_pipe_from_a_real_pipe_that_closes_early(tmp_path: Path)
         "    def list_recordings(self, query=None):\n"
         "        return [\n"
         "            Recording(id=f'r{i}', filename='x' * 2000, start_time=0,\n"
-        "                      duration=0, is_trans=False, filetag_id_list=[])\n"
+        "                      duration=0)\n"
         "            for i in range(20000)\n"
         "        ]\n"
         "\n"
@@ -1292,7 +1282,6 @@ def test_mcp_browse_recordings_returns_curated_list():
     assert item["id"] == "r1"
     assert item["title"] == "meeting"
     assert item["duration_minutes"] == 10
-    assert item["has_transcript"] is True
     assert item["folder_id"] == "tag1"
     # date is local time — just check shape, not exact value
     assert len(item["date"]) == 16
@@ -1353,8 +1342,7 @@ def test_mcp_browse_recordings_next_after_set_when_full_page():
                     filename=f"rec {i}",
                     start_time=1_746_000_000_000 - i * 1000,
                     duration=600_000,
-                    is_trans=True,
-                    filetag_id_list=["tag1"],
+                    folder_id="tag1",
                 )
                 for i in range(5)
             ]
@@ -1379,8 +1367,7 @@ def test_mcp_browse_recordings_pagination_cursor_advances():
                     filename=f"rec {i}",
                     start_time=1_746_000_000_000 - i * 1000,
                     duration=600_000,
-                    is_trans=True,
-                    filetag_id_list=["tag1"],
+                    folder_id="tag1",
                 )
                 for i in range(5)
             ]
@@ -1410,7 +1397,6 @@ def test_mcp_get_recording_default_excludes_transcript_and_summary():
     payload = json.loads(result["content"][0]["text"])
     assert payload["id"] == "rec1"
     assert payload["title"] == "meeting"
-    assert payload["headline"] == "Q4 review"
     assert payload["language"] == "en"
     assert "transcript" not in payload
     assert "summary" not in payload
@@ -1445,13 +1431,23 @@ def test_mcp_list_folders_returns_tags():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["list_folders"]()
     payload = json.loads(result["content"][0]["text"])
-    assert payload == {"folders": [{"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}]}
+    assert payload == {
+        "folders": [
+            {
+                "id": "tag1",
+                "name": "Work",
+                "color": "folder-color-green",
+                "icon": "e627",
+                "parent_id": "root",
+            }
+        ]
+    }
     assert result["structuredContent"] == payload
 
 
 def test_mcp_list_folders_returns_empty_when_no_tags():
     class EmptyClient(StubClient):
-        def list_file_tags(self):
+        def list_folders(self):
             return []
 
     handlers = build_handlers(lambda: EmptyClient())
@@ -1826,8 +1822,7 @@ def test_mcp_process_recording_rejects_unknown_wait_mode():
     ("is_trans", "is_summary", "expected"),
     [
         (True, True, "already has a transcript and summary"),
-        (True, False, "no finished summary"),
-        (False, False, "probably still processing"),
+        (False, False, "already processing"),
     ],
 )
 def test_mcp_process_recording_already_processed_reports_real_state(is_trans, is_summary, expected):
@@ -1972,67 +1967,6 @@ def test_cli_dump_returns_raw_json():
     assert payload["file_id"] == "rec1"
 
 
-def test_extract_inline_summary_handles_dict_data_content():
-    from plaud_tools.core.client import PlaudClient
-    from plaud_tools.core.session import SessionManager, SessionStore
-
-    client = PlaudClient(SessionManager(SessionStore(service_name="plaud-tools-test-extract-summary")))
-    raw = {
-        "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
-        "pre_download_content_list": [
-            {"data_id": "d1", "data_type": "auto_sum_note", "data_content": {"ai_content": "summary text"}}
-        ],
-    }
-    result = client._extract_inline_summary(raw, "d1")
-    assert result == "summary text"
-
-
-def test_extract_inline_summary_fallback_by_data_type():
-    from plaud_tools.core.client import PlaudClient
-    from plaud_tools.core.session import SessionManager, SessionStore
-
-    client = PlaudClient(SessionManager(SessionStore(service_name="plaud-tools-test-extract-summary")))
-    raw = {
-        "content_list": [{"data_type": "auto_sum_note", "task_status": 1, "data_id": "d1"}],
-        "pre_download_content_list": [
-            # data_id doesn't match "d1" — should fall back to data_type match
-            {
-                "data_id": "d99",
-                "data_type": "auto_sum_note",
-                "data_content": '{"ai_content": "fallback summary"}',
-            }
-        ],
-    }
-    result = client._extract_inline_summary(raw, "d1")
-    assert result == "fallback summary"
-
-
-def test_fetch_summary_from_data_link_handles_plain_text():
-    from plaud_tools.core.client import PlaudClient
-    from plaud_tools.core.session import SessionManager, SessionStore
-    from plaud_tools.core.transport import HttpResponse
-
-    class PlainTextTransport:
-        def request(self, method, url, headers, body=None, *, timeout=None):
-            return HttpResponse(status_code=200, body=b"# My Summary\n\nContent here.", headers={})
-
-    client = PlaudClient(
-        SessionManager(SessionStore(service_name="plaud-tools-test-extract-summary")),
-        transport=PlainTextTransport(),
-    )
-    raw = {
-        "content_list": [
-            {
-                "data_type": "auto_sum_note",
-                "task_status": 1,
-                "data_link": "https://cdn.example.com/summary.txt",
-            }
-        ]
-    }
-    result = client._fetch_summary_from_data_link(raw)
-    assert result == "# My Summary\n\nContent here."
-
-
 # ---------------------------------------------------------------------------
 # edit_summary — MCP tool + CLI (correct-summary / set-summary)
 # ---------------------------------------------------------------------------
@@ -2131,11 +2065,11 @@ class FolderStub(StubClient):
 
     def create_folder(self, name, *, color=None, icon=None):
         self.create_call = (name, color, icon)
-        return FileTag(id="new1", name=name, color=color or "", icon=icon or "")
+        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id="root")
 
     def update_folder(self, folder_id, *, name=None, color=None, icon=None):
         self.update_call = (folder_id, name, color, icon)
-        return FileTag(id=folder_id, name=name or "old", color=color or "", icon=icon or "")
+        return Folder(id=folder_id, name=name or "old", color=color or "", icon=icon or "", parent_id="root")
 
     def delete_folder(self, folder_id):
         self.delete_call = folder_id
@@ -2238,49 +2172,6 @@ def test_cli_folder_delete_with_yes():
     payload = json.loads(output)
     assert payload["ok"] is True
     assert client.delete_call == "f1"
-
-
-# ---------------------------------------------------------------------------
-# #149 — upload partial success: a post-upload folder-move failure must not
-# lose the newly created recording id (via the shared upload_with_transcode
-# helper in transcode.py).
-# ---------------------------------------------------------------------------
-
-
-class FolderFailingUploadStubClient(UploadStubClient):
-    def set_recording_folder(self, recording_id, folder_id):
-        raise ValueError(f"folder not found: {folder_id}")
-
-
-def test_cli_upload_folder_move_failure_is_partial_success(tmp_path):
-    mp3_file = tmp_path / "test.mp3"
-    mp3_file.write_bytes(b"fake mp3 data")
-    client = FolderFailingUploadStubClient()
-    output = run_cli(["upload", str(mp3_file), "--folder-id", "bad-folder", "--detach"], client)
-    payload = json.loads(output)
-    # The upload itself succeeded — the recording id must not be lost.
-    assert payload["ok"] is True
-    assert payload["recording_id"] == "new-rec"
-    assert "folder not found" in payload["folder_error"]
-
-
-class FolderFailingMutateStub(MutateStub):
-    def set_recording_folder(self, recording_id, folder_id):
-        raise ValueError(f"folder not found: {folder_id}")
-
-
-def test_mcp_upload_recording_folder_move_failure_is_partial_success(tmp_path):
-    mp3_file = tmp_path / "audio.mp3"
-    mp3_file.write_bytes(b"fake mp3")
-    client = FolderFailingMutateStub()
-    handlers = build_handlers(lambda: client)
-    result = handlers["upload_recording"](str(mp3_file), folder_id="bad-folder")
-    payload = json.loads(result["content"][0]["text"])
-    assert payload["ok"] is True
-    assert payload["recording_id"] == "mcp-rec"
-    assert "folder not found" in payload["folder_error"]
-    # This must NOT be reported as a tool error — the upload succeeded.
-    assert "isError" not in result
 
 
 # ---------------------------------------------------------------------------

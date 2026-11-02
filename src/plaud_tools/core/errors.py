@@ -193,7 +193,9 @@ class PlaudApiError(PlaudError):
         # again" rather than an opaque API error.
         if status == 401:
             return "session_expired", False
-        if status == 404:
+        # Plaud 4.0 answers an unknown recording id with HTTP 200 and status
+        # -1800311 "file not found".
+        if status == 404 or self.plaud_code == -1800311:
             return "not_found", False
         if status is not None and (status == 429 or status >= 500):
             return "transient", True
@@ -215,9 +217,8 @@ class PlaudWaitTimeoutError(PlaudApiError):
     caller's time budget runs out.  The job itself is still in flight on
     Plaud's side, so this is "check back later", not a failure.
 
-    ``task_id`` carries Plaud's job handle when there is one (merge's
-    ``/file/combine`` task id) so callers can report it instead of inviting a
-    duplicate re-run.
+    ``task_id`` carries Plaud's job handle when there is one (the merge
+    task id) so callers can report it instead of inviting a duplicate re-run.
     """
 
     def __init__(self, message: str, *, task_id: str | None = None) -> None:

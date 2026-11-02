@@ -4,22 +4,26 @@ import base64
 import gzip
 import io
 import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 import plaud_tools.core.client as client_mod
-from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery
+from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery, to_file_id
 from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
-from plaud_tools.core.models import region_for_api_domain
+from plaud_tools.core.models import AudioLink, region_for_api_domain
 from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
 from plaud_tools.core.transport import HttpResponse
 
+BASE = "https://api-euc1.plaud.ai"
+V4 = "/file-app/v4"
+
 
 class StubTransport:
+    """Plays back one queued response (or exception) per request, in order."""
+
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
@@ -30,6 +34,50 @@ class StubTransport:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class RouteTransport:
+    """Answers by ``"METHOD /path"`` (query string ignored), for the many-request v4 flows.
+
+    A route value is a payload dict (sent as a 200 JSON reply), an HttpResponse,
+    an exception to raise, a callable taking the full URL, or a list of those
+    played in order (the last one repeats).  A request nobody routed fails loudly.
+    """
+
+    def __init__(self, routes):
+        self.routes = {key: list(v) if isinstance(v, list) else v for key, v in routes.items()}
+        self.calls = []
+
+    @staticmethod
+    def key(method, url):
+        return f"{method} {url.removeprefix(BASE).split('?')[0]}"
+
+    def request(self, method, url, headers, body=None, *, timeout=None):
+        self.calls.append({"method": method, "url": url, "headers": headers, "body": body})
+        key = self.key(method, url)
+        if key not in self.routes:
+            raise AssertionError(f"unrouted request: {key}")
+        reply = self.routes[key]
+        if isinstance(reply, list):
+            reply = reply.pop(0) if len(reply) > 1 else reply[0]
+        if callable(reply):
+            reply = reply(url)
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, dict):
+            reply = HttpResponse(200, json.dumps(reply).encode(), {})
+        return reply
+
+    def sent(self, key):
+        """JSON bodies sent to *key*, oldest first."""
+        return [
+            json.loads(call["body"])
+            for call in self.calls
+            if self.key(call["method"], call["url"]) == key and call["body"]
+        ]
+
+    def hit(self, key):
+        return any(self.key(c["method"], c["url"]) == key for c in self.calls)
 
 
 def make_jwt(days=300):
@@ -45,265 +93,937 @@ def make_manager(tmp_path: Path, region="eu"):
     return SessionManager(store), store
 
 
-def test_list_recordings_filters_trash_by_default(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data_file_list": [
-                            {"id": "a", "filename": "keep", "is_trash": False},
-                            {"id": "b", "filename": "drop", "is_trash": True},
-                        ],
-                    }
-                ).encode(),
-                {},
-            )
-        ]
+def routed(tmp_path, routes):
+    transport = RouteTransport(routes)
+    return PlaudClient(make_manager(tmp_path)[0], transport=transport), transport
+
+
+def ok(data=None):
+    return {"status": 0, "data": data}
+
+
+def json_response(payload):
+    return HttpResponse(200, json.dumps(payload).encode(), {})
+
+
+EMPTY_LIST = ok({"items": []})
+
+
+@pytest.fixture(autouse=True)
+def _instant_retries(monkeypatch):
+    monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
+    monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
+
+
+def children(by_parent):
+    """Route for ``folders/children``: answers by the ``node_id`` in the query."""
+
+    def reply(url):
+        node_id = parse_qs(urlsplit(url).query)["node_id"][0]
+        return ok({"items": by_parent.get(node_id, [])})
+
+    return reply
+
+
+def obj(object_type, url=None, *, object_id="o1", content_id="c1", version_ms=500, task_status=None):
+    return {
+        "object_type": object_type,
+        "object_id": object_id,
+        "content_id": content_id,
+        "version_ms": version_ms,
+        "content_url": url,
+        "task_status": task_status,
+    }
+
+
+def detail_payload(*objects, tasks=None, file_id="of_1", duration=0):
+    """A ``files/detail`` reply: file node on_f_1 in container on_w_1, shown in folder on_fd_1."""
+    return ok(
+        {
+            "node": {
+                "node_id": "on_f_1",
+                "name": "Meeting",
+                "version_ms": 100,
+                "folder": {"folder_id": "on_w_1"},
+                "display_folder": {"folder_id": "on_fd_1"},
+            },
+            "meta": {"file_id": file_id, "start_time": 1_750_000_000_000, "duration": duration},
+            "objects": list(objects),
+            "task": {"in_progress_tasks": tasks or []},
+        }
     )
-    client = PlaudClient(manager, transport=transport)
-    items = client.list_recordings()
-    assert [item.id for item in items] == ["a"]
+
+
+def filed_routes(*, folder_items=None):
+    """Routes every recording write needs: detail of of_1 plus its container's version (200)."""
+    return {
+        f"GET {V4}/files/detail/of_1": detail_payload(),
+        f"GET {V4}/nodes/ancestor-items": ok({"flat_items": [{"node_id": "on_w_1", "version_ms": 200}]}),
+        f"GET {V4}/folders/children": children(
+            folder_items or {"root": [{"node_id": "on_sys_rec", "type": 1, "system_folder_type": 1}]}
+        ),
+    }
+
+
+def transcript_routes(segments, *, summary=None):
+    """Routes for reading and writing the transcript (and optionally summary) of of_1."""
+    objects = [obj("TRANSCRIPT", "https://s3.fake/t.json")]
+    routes = {
+        "GET https://s3.fake/t.json": json_response(segments),
+        f"PATCH {V4}/files/update/content/of_1": ok(),
+    }
+    if summary is not None:
+        objects.append(
+            obj("SUMMARY", "https://s3.fake/s.md", object_id="o2", content_id="c2", version_ms=600)
+        )
+        routes["GET https://s3.fake/s.md"] = HttpResponse(200, summary.encode(), {})
+    routes[f"GET {V4}/files/detail/of_1"] = detail_payload(*objects)
+    return routes
+
+
+SEGMENTS = [
+    {"speaker": "Kadin Bullock", "original_speaker": "Speaker 1", "content": "Flourish Cache account"},
+    {"speaker": "Speaker 2", "original_speaker": "Speaker 2", "content": "no match here"},
+    {"speaker": "Kadin Bullock", "original_speaker": "Speaker 1", "content": "Cache and Cache"},
+]
+
+
+# ---------------------------------------------------------------------------
+# Ids
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("ab" * 16, "of_" + "ab" * 16),  # pre-4.0 bare hex
+        ("of_" + "ab" * 16, "of_" + "ab" * 16),
+        ("f_" + "cd" * 16, "f_" + "cd" * 16),
+        ("on_f_" + "ab" * 16, "of_" + "ab" * 16),  # migrated file node
+        ("on_w_" + "ab" * 16, "of_" + "ab" * 16),  # migrated container
+    ],
+)
+def test_to_file_id_prefixes_bare_hex_and_passes_prefixed_ids_through(given, expected):
+    assert to_file_id(given) == expected
+
+
+# ---------------------------------------------------------------------------
+# Listing
+# ---------------------------------------------------------------------------
+
+
+def test_list_recordings_maps_v4_items_and_sends_browser_headers(tmp_path):
+    item = {
+        "file_id": "of_1",
+        "name": "Weekly",
+        "created_at_show_ms": 1000,
+        "duration_ms": 2000,
+        "node_id": "on_f_1",
+        "parent_id": "on_w_1",
+        "parent_folder": {"folder_id": "on_fd_1"},
+        "version_ms": 9,
+    }
+    client, transport = routed(tmp_path, {f"GET {V4}/recordings/all": ok({"items": [item]})})
+    (rec,) = client.list_recordings()
+    assert (rec.id, rec.filename, rec.start_time, rec.duration) == ("of_1", "Weekly", 1000, 2000)
+    assert (rec.folder_id, rec.node_id, rec.wrapper_id, rec.version_ms) == ("on_fd_1", "on_f_1", "on_w_1", 9)
     headers = transport.calls[0]["headers"]
     assert headers["app-platform"] == "web"
     assert headers["edit-from"] == "web"
     assert headers["User-Agent"].startswith("Mozilla/5.0")
+    assert headers["x-timezone-iana"]
 
 
-def test_list_recordings_honors_explicit_query_and_region(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})]
+def test_list_recordings_follows_the_cursor_across_pages(tmp_path):
+    def page(ids, cursor=None):
+        return ok({"items": [{"file_id": i, "name": i} for i in ids], "next_cursor": cursor})
+
+    client, transport = routed(
+        tmp_path, {f"GET {V4}/recordings/all": [page(["of_1", "of_2"], "c2"), page(["f_3"])]}
     )
-    client = PlaudClient(manager, transport=transport)
-    client.list_recordings(PlaudRecordingQuery(limit=5, is_trash=0, sort_by="start_time", is_desc=True))
-    assert (
-        transport.calls[0]["url"]
-        == "https://api-euc1.plaud.ai/file/simple/web?limit=5&is_trash=0&sort_by=start_time&is_desc=true"
+    assert [r.id for r in client.list_recordings()] == ["of_1", "of_2", "f_3"]
+    assert "cursor" not in transport.calls[0]["url"]
+    assert "cursor=c2" in transport.calls[1]["url"]
+
+
+def test_list_recordings_window_stops_walking_once_satisfied(tmp_path):
+    items = [{"file_id": f"of_{i}", "name": "x"} for i in range(5)]
+    client, transport = routed(
+        tmp_path, {f"GET {V4}/recordings/all": ok({"items": items[:3], "next_cursor": "more"})}
     )
+    assert [r.id for r in client.list_recordings(PlaudRecordingQuery(skip=1, limit=2))] == ["of_1", "of_2"]
+    assert len(transport.calls) == 1
+    assert "page_size=3" in transport.calls[0]["url"]
 
 
-def test_get_recording_fetches_transcript_from_data_link(tmp_path):
-    manager, _ = make_manager(tmp_path)
+def test_list_trash_maps_every_kind_of_trashed_item(tmp_path):
+    trash = [
+        {"node_id": "on_w_9", "type": 1, "name": "Migrated", "version_ms": 7, "duration_ms": 1000},
+        {"node_id": "n_c1", "type": 1, "name": "New", "version_ms": 8},
+        {"node_id": "on_fd_2", "type": 1, "icon": "e627", "name": "A folder"},
+        {"type": 2, "file_id": "of_5", "node_id": "on_f_5", "name": "Loose", "version_ms": 3},
+    ]
+    client, _ = routed(
+        tmp_path,
+        {
+            f"GET {V4}/folders/content": ok({"items": trash}),
+            f"GET {V4}/folders/children": children({"n_c1": [{"file_id": "f_new1"}]}),
+        },
+    )
+    migrated, new, loose = client.list_trash()
+    # A migrated container names its recording; a new one costs a lookup; folders are skipped.
+    assert (migrated.id, migrated.wrapper_id, migrated.version_ms) == ("of_9", "on_w_9", 7)
+    assert (new.id, new.wrapper_id) == ("f_new1", "n_c1")
+    assert (loose.id, loose.node_id, loose.wrapper_id) == ("of_5", "on_f_5", "")
+
+
+# ---------------------------------------------------------------------------
+# Reading one recording
+# ---------------------------------------------------------------------------
+
+
+def test_get_recording_reads_gzip_transcript_and_summary_from_content_urls(tmp_path):
     segments = [
         {"speaker": "Alex", "original_speaker": "Speaker 1", "content": "Hi"},
         {"speaker": "", "original_speaker": "Speaker 2", "content": "Hello"},
     ]
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "transaction",
-                                    "task_status": 1,
-                                    "data_link": "https://s3.fake/transcript.json",
-                                },
-                                {
-                                    "data_type": "auto_sum_note",
-                                    "task_status": 1,
-                                    "data_id": "sum1",
-                                },
-                            ],
-                            "pre_download_content_list": [
-                                {"data_id": "sum1", "data_content": json.dumps({"ai_content": "# Summary"})}
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps(segments).encode(), {}),
-        ]
+    routes = transcript_routes(segments, summary="# Summary")
+    routes["GET https://s3.fake/t.json"] = HttpResponse(
+        200, gzip.compress(json.dumps(segments).encode()), {"content-encoding": "gzip"}
     )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.get_recording("rec1", include_transcript=True)
+    client, transport = routed(tmp_path, routes)
+    detail = client.get_recording("of_1", include_transcript=True, include_summary=True)
     assert detail.transcript == "Alex: Hi\n\nSpeaker 2: Hello"
-    assert detail.ai_content == "# Summary"
-    assert transport.calls[1]["url"] == "https://s3.fake/transcript.json"
     assert detail.speakers == ["Alex", "Speaker 2"]
-
-
-def test_get_recording_inline_summary_does_not_fetch(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "auto_sum_note",
-                                    "task_status": 1,
-                                    "data_id": "sum1",
-                                    "data_link": "https://s3.fake/summary.json",
-                                },
-                            ],
-                            "pre_download_content_list": [
-                                {"data_id": "sum1", "data_content": json.dumps({"ai_content": "# Inline"})}
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-        ]
+    assert detail.ai_content == "# Summary"
+    assert detail.is_trans and detail.is_summary
+    assert (detail.id, detail.folder_id, detail.node_id, detail.wrapper_id, detail.version_ms) == (
+        "of_1",
+        "on_fd_1",
+        "on_f_1",
+        "on_w_1",
+        100,
     )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.get_recording("rec1", include_summary=True)
-    assert detail.is_summary is True
-    assert detail.ai_content == "# Inline"
-    assert len(transport.calls) == 1
-    assert "s3.fake" not in transport.calls[0]["url"]
 
 
-def test_get_recording_fetches_summary_from_data_link(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    summary_text = "# Meeting Summary\n\n- Point A\n- Point B"
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "auto_sum_note",
-                                    "task_status": 1,
-                                    "data_id": "sum1",
-                                    "data_link": "https://s3.fake/summary.json",
-                                },
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"ai_content": summary_text}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.get_recording("rec1", include_summary=True)
-    assert detail.is_summary is True
-    assert detail.ai_content == summary_text
-    assert transport.calls[1]["url"] == "https://s3.fake/summary.json"
+def test_get_recording_sends_a_bare_hex_id_as_a_4_0_file_id(tmp_path):
+    hex_id = "ab" * 16
+    client, transport = routed(tmp_path, {f"GET {V4}/files/detail/of_{hex_id}": detail_payload()})
+    client.get_recording(hex_id)
+    assert transport.calls[0]["url"].endswith(f"{V4}/files/detail/of_{hex_id}")
 
 
-def test_get_recording_skips_summary_fetch_when_not_requested(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "auto_sum_note",
-                                    "task_status": 1,
-                                    "data_id": "sum1",
-                                    "data_link": "https://s3.fake/summary.json",
-                                },
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.get_recording("rec1")
-    assert detail.is_summary is True
-    assert detail.ai_content is None
+def test_get_recording_fetches_nothing_extra_unless_asked(tmp_path):
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS, summary="# Summary"))
+    detail = client.get_recording("of_1")
+    assert detail.is_summary and detail.ai_content is None and detail.speakers == []
     assert len(transport.calls) == 1
 
 
-def test_get_recording_speakers_empty_when_no_transcript(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(),
-                {},
+class TestTranscriptBlockSelection:
+    """get_recording must fetch the requested transcript block, not always the raw one."""
+
+    @staticmethod
+    def routes():
+        polished = [{"speaker": "Speaker 1", "content": "Polished."}]
+        return {
+            f"GET {V4}/files/detail/of_1": detail_payload(
+                obj("TRANSCRIPT", "https://s3.fake/raw.json", task_status=1),
+                obj("POLISHED_TRANSCRIPT", "https://s3.fake/polish.json", object_id="o3", task_status=1),
+            ),
+            "GET https://s3.fake/raw.json": json_response([{"speaker": "Speaker 1", "content": "um, raw"}]),
+            "GET https://s3.fake/polish.json": json_response(polished),
+            f"PATCH {V4}/files/update/content/of_1": ok(),
+        }
+
+    def test_default_is_raw_and_lists_both_blocks(self, tmp_path):
+        client, transport = routed(tmp_path, self.routes())
+        detail = client.get_recording("of_1", include_transcript=True)
+        assert "um, raw" in detail.transcript
+        assert not any("polish" in c["url"] for c in transport.calls)
+        assert detail.transcript_blocks_available == ["transaction", "transaction_polish"]
+
+    def test_polish_block_reads_the_polished_object(self, tmp_path):
+        client, _ = routed(tmp_path, self.routes())
+        detail = client.get_recording("of_1", include_transcript=True, transcript_block="transaction_polish")
+        assert detail.transcript == "Speaker 1: Polished."
+
+    def test_missing_block_is_empty_but_still_lists_available(self, tmp_path):
+        routes = self.routes()
+        routes[f"GET {V4}/files/detail/of_1"] = detail_payload(obj("TRANSCRIPT", "https://s3.fake/raw.json"))
+        client, _ = routed(tmp_path, routes)
+        detail = client.get_recording("of_1", include_transcript=True, transcript_block="transaction_polish")
+        assert detail.transcript == ""
+        assert detail.transcript_blocks_available == ["transaction"]
+
+    def test_unknown_block_is_rejected_before_any_request(self, tmp_path):
+        client, transport = routed(tmp_path, {})
+        with pytest.raises(ValueError, match="transcript_block"):
+            client.get_recording("of_1", include_transcript=True, transcript_block="outline")
+        assert transport.calls == []
+
+    def test_edits_always_read_the_raw_block(self, tmp_path):
+        """Writing polished text back over the raw transcript would be silent data loss."""
+        client, transport = routed(tmp_path, self.routes())
+        client.rename_speaker("of_1", "Speaker 1", "Kadin")
+        assert not any("polish" in c["url"] for c in transport.calls)
+
+
+def test_finished_transcript_that_fails_to_download_raises_instead_of_reading_empty(tmp_path):
+    """#210: a finished block that will not download is not an empty transcript."""
+    routes = transcript_routes(SEGMENTS)
+    routes["GET https://s3.fake/t.json"] = HttpResponse(403, b"<Error>AccessDenied</Error>", {})
+    client, _ = routed(tmp_path, routes)
+    with pytest.raises(PlaudApiError) as exc_info:
+        client.get_recording("of_1", include_transcript=True)
+    assert exc_info.value.http_status == 403
+
+
+def test_transcript_that_is_not_json_raises_api_error(tmp_path):
+    routes = transcript_routes(SEGMENTS)
+    routes["GET https://s3.fake/t.json"] = HttpResponse(200, b"not json at all", {})
+    client, _ = routed(tmp_path, routes)
+    with pytest.raises(PlaudApiError, match="not JSON"):
+        client.get_recording("of_1", include_transcript=True)
+
+
+def test_get_task_status_maps_in_progress_tasks(tmp_path):
+    task = {"task_id": "t1", "task_type": "trans", "task_stage": [{"code": "TRANSCRIPT"}]}
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload(tasks=[task])})
+    (status,) = client.get_task_status("of_1")
+    assert (status.file_id, status.task_id, status.task_type) == ("of_1", "t1", "trans")
+    assert status.stages == [{"code": "TRANSCRIPT"}]
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload()})
+    assert client.get_task_status("of_1") == []
+
+
+# ---------------------------------------------------------------------------
+# Audio
+# ---------------------------------------------------------------------------
+
+
+def test_get_audio_link_returns_the_audio_objects_presigned_url(tmp_path):
+    audio = obj("AUDIO", "https://s3.fake/a.ogg?sig=x")
+    audio["mime_type"] = "audio/ogg"
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload(audio)})
+    link = client.get_audio_link("of_1")
+    assert link == AudioLink(url="https://s3.fake/a.ogg?sig=x", mime_type="audio/ogg")
+    assert link.extension == ".ogg"
+
+
+def test_get_audio_link_is_none_without_audio(tmp_path):
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload()})
+    assert client.get_audio_link("of_1") is None
+
+
+def test_download_audio_writes_bytes_without_a_plaud_auth_header(tmp_path):
+    client, transport = routed(tmp_path, {"GET https://s3.fake/a.mp3": HttpResponse(200, b"ID3fake", {})})
+    destination = tmp_path / "out" / "rec.mp3"
+    assert client.download_audio(AudioLink(url="https://s3.fake/a.mp3"), destination) == destination
+    assert destination.read_bytes() == b"ID3fake"
+    # The signature is in the URL; sending Authorization can make S3 reject the request.
+    assert "Authorization" not in transport.calls[0]["headers"]
+
+
+def test_download_audio_propagates_s3_failure(tmp_path):
+    client, _ = routed(tmp_path, {"GET https://s3.fake/a.mp3": HttpResponse(403, b"expired", {})})
+    with pytest.raises(PlaudApiError) as exc_info:
+        client.download_audio(AudioLink(url="https://s3.fake/a.mp3"), tmp_path / "rec.mp3")
+    assert exc_info.value.http_status == 403
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+
+def test_search_content_maps_hit_ids_to_file_ids_and_flattens_hits(tmp_path):
+    hex_id = "ab" * 16
+    response = ok(
+        {
+            "query": "rollover",
+            "keywords": ["rollover", "rol"],
+            "list": [
+                {
+                    "id": hex_id,  # pre-4.0 bare hex
+                    "title": "Transcript hit",
+                    "start_time": 1_750_000_000_000,
+                    "trans_chunks": [
+                        {
+                            "content": "[Advisor]Let's plan the rollover.\n[Client]Sounds good.",
+                            "offset": 0,
+                            "speakers": [
+                                {"name": "Advisor", "start_time": 61_000, "end_time": 64_000},
+                                {"name": "Client", "start_time": 64_500, "end_time": 65_000},
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "id": "n_c1",  # a 4.0 recording is named by its container folder
+                    "title": "Summary hit",
+                    "start_time": 1_740_000_000_000,
+                    "notes": [
+                        {"id": "auto_sum:x", "chunks": [{"content": "ext rollover next steps", "offset": 90}]}
+                    ],
+                },
+            ],
+        }
+    )
+    client, transport = routed(
+        tmp_path,
+        {
+            "POST /gsearch/v1/search": response,
+            f"GET {V4}/folders/children": children({"n_c1": [{"file_id": "f_new1"}]}),
+        },
+    )
+    transcript, summary = client.search_content("rollover", since_ms=1, until_ms=2)
+    assert transport.sent("POST /gsearch/v1/search") == [
+        {"query": "rollover", "date_from": 1, "date_to": 2, "from": ""}
+    ]
+    assert (transcript.id, transcript.source, transcript.start_ms) == ("of_" + hex_id, "transcript", 61_000)
+    assert transcript.snippet == "[Advisor]Let's plan the rollover. [Client]Sounds good."
+    assert (summary.id, summary.source, summary.start_ms) == ("f_new1", "summary", None)
+    assert summary.snippet == "…rollover next steps"
+
+
+def test_search_content_with_no_hits_returns_empty_list(tmp_path):
+    client, _ = routed(tmp_path, {"POST /gsearch/v1/search": ok({"query": "x", "keywords": ["x"]})})
+    assert client.search_content("x") == []
+
+
+# ---------------------------------------------------------------------------
+# Recording writes
+# ---------------------------------------------------------------------------
+
+
+def test_rename_recording_renames_the_file_node_and_its_container(tmp_path):
+    routes = filed_routes() | {
+        f"PATCH {V4}/nodes/rename/on_f_1": ok(),
+        f"PATCH {V4}/nodes/rename/on_w_1": ok(),
+    }
+    client, transport = routed(tmp_path, routes)
+    client.rename_recording("of_1", "New Name")
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_f_1") == [{"name": "New Name", "origin_version": 100}]
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_w_1") == [{"name": "New Name", "origin_version": 200}]
+
+
+def test_rename_recording_rejects_blank_name(tmp_path):
+    client, _ = routed(tmp_path, {})
+    with pytest.raises(ValueError, match="filename cannot be empty"):
+        client.rename_recording("of_1", "   ")
+
+
+def test_set_recording_folder_moves_the_container_into_recordings_when_unfiling(tmp_path):
+    client, transport = routed(tmp_path, filed_routes() | {f"POST {V4}/nodes/move": ok({"items": []})})
+    client.set_recording_folder("of_1", None)
+    assert transport.sent(f"POST {V4}/nodes/move") == [
+        {"target_node_id": "on_sys_rec", "items": [{"node_id": "on_w_1", "origin_version": 200}]}
+    ]
+
+
+def test_move_to_trash_sends_container_and_its_version(tmp_path):
+    client, transport = routed(tmp_path, filed_routes() | {f"DELETE {V4}/nodes/trash": ok({"items": []})})
+    client.move_to_trash("of_1")
+    assert transport.sent(f"DELETE {V4}/nodes/trash") == [
+        {"items": [{"node_id": "on_w_1", "origin_version": 200}]}
+    ]
+
+
+def test_delete_recordings_trashes_a_live_recording_first_then_deletes_it(tmp_path):
+    in_trash = ok({"items": [{"node_id": "on_w_1", "type": 1, "name": "Meeting", "version_ms": 300}]})
+    routes = filed_routes() | {
+        f"GET {V4}/folders/content": [EMPTY_LIST, in_trash],
+        f"DELETE {V4}/nodes/trash": ok({"items": []}),
+        f"DELETE {V4}/nodes/delete": ok({"items": []}),
+    }
+    client, transport = routed(tmp_path, routes)
+    client.delete_recordings("of_1")
+    assert transport.hit(f"DELETE {V4}/nodes/trash")
+    assert transport.sent(f"DELETE {V4}/nodes/delete") == [
+        {"items": [{"node_id": "on_w_1", "origin_version": 300}]}
+    ]
+
+
+def test_restore_rejects_a_recording_that_is_not_in_the_trash(tmp_path):
+    client, _ = routed(tmp_path, {f"GET {V4}/folders/content": EMPTY_LIST})
+    with pytest.raises(ValueError, match="not in the trash"):
+        client.restore_from_trash("of_1")
+
+
+@pytest.mark.parametrize("method", ["move_to_trash", "restore_from_trash", "delete_recordings"])
+def test_batch_writes_reject_empty_ids(tmp_path, method):
+    client, _ = routed(tmp_path, {})
+    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
+        getattr(client, method)([])
+
+
+def test_node_batch_raises_when_plaud_says_status_0_but_lists_failed_items(tmp_path):
+    failed = {
+        "node_id": "on_w_1",
+        "name": "Meeting",
+        "error_code": "-1800313",
+        "error_message": "stale version",
+    }
+    client, _ = routed(tmp_path, filed_routes() | {f"DELETE {V4}/nodes/trash": ok({"failed": [failed]})})
+    with pytest.raises(PlaudApiError, match="trash failed for 1 item.*Meeting: stale version") as info:
+        client.move_to_trash("of_1")
+    assert info.value.plaud_code == -1800313
+
+
+# ---------------------------------------------------------------------------
+# Transcript and summary edits
+# ---------------------------------------------------------------------------
+
+
+def written_segments(transport):
+    (body,) = transport.sent(f"PATCH {V4}/files/update/content/of_1")
+    return body, json.loads(body["content"])
+
+
+def test_rename_speaker_writes_back_the_whole_transcript_with_its_version(tmp_path):
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS))
+    assert client.rename_speaker("of_1", "Speaker 1", "Advisor") == {"segments_updated": 2}
+    body, written = written_segments(transport)
+    assert (body["object_id"], body["content_id"], body["origin_version"]) == ("o1", "c1", 500)
+    assert body["has_replaced_speaker"] is True
+    assert [s["speaker"] for s in written] == ["Advisor", "Speaker 2", "Advisor"]
+    assert written[0]["original_speaker"] == "Speaker 1"
+
+
+def test_rename_speaker_matches_the_displayed_name_too(tmp_path):
+    """Plaud auto-resolves enrolled voices, so the displayed name can differ from "Speaker N"."""
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS))
+    assert client.rename_speaker("of_1", "Kadin Bullock", "Advisor") == {"segments_updated": 2}
+    assert [s["speaker"] for s in written_segments(transport)[1]] == ["Advisor", "Speaker 2", "Advisor"]
+
+
+def test_rename_speaker_rejects_unknown_label_blank_inputs_and_missing_transcript(tmp_path):
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS))
+    with pytest.raises(ValueError, match='no segments found for speaker "Speaker 9"'):
+        client.rename_speaker("of_1", "Speaker 9", "Alex")
+    with pytest.raises(ValueError, match="original_label cannot be empty"):
+        client.rename_speaker("of_1", "", "Alex")
+    with pytest.raises(ValueError, match="new_name cannot be empty"):
+        client.rename_speaker("of_1", "Speaker 1", "   ")
+    assert not transport.hit(f"PATCH {V4}/files/update/content/of_1")
+
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload()})
+    with pytest.raises(ValueError, match="has no transcript yet"):
+        client.rename_speaker("of_1", "Speaker 1", "Alex")
+
+
+def test_correct_transcript_replaces_content_only_and_leaves_speakers(tmp_path):
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS))
+    assert client.correct_transcript("of_1", "Cache", "Cash") == {"replacements": 3, "segments_changed": 2}
+    body, written = written_segments(transport)
+    assert "has_replaced_speaker" not in body
+    assert [s["content"] for s in written] == ["Flourish Cash account", "no match here", "Cash and Cash"]
+    assert written[0]["speaker"] == "Kadin Bullock"
+
+
+def test_correct_transcript_rejects_empty_find_and_no_match(tmp_path):
+    client, _ = routed(tmp_path, transcript_routes(SEGMENTS))
+    with pytest.raises(ValueError, match="find text cannot be empty"):
+        client.correct_transcript("of_1", "", "x")
+    with pytest.raises(ValueError, match='no occurrences of "zzz" found'):
+        client.correct_transcript("of_1", "zzz", "x")
+
+
+def test_count_transcript_matches_counts_content_not_speaker_labels(tmp_path):
+    """The dry-run count must equal what correct_transcript would replace."""
+    segments = [
+        {"content": "Ann said hi to Ann", "speaker": "Ann", "original_speaker": "Speaker 1"},
+        {"content": "bye", "speaker": "Ann", "original_speaker": "Speaker 1"},
+    ]
+    client, transport = routed(tmp_path, transcript_routes(segments))
+    assert client.count_transcript_matches("of_1", "Ann") == 2
+    assert not transport.hit(f"PATCH {V4}/files/update/content/of_1")
+
+
+def test_correct_summary_replaces_text_and_writes_the_summary_object(tmp_path):
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS, summary="Suzan met with Suzan again."))
+    assert client.correct_summary("of_1", "Suzan", "Susan") == {"replacements": 2}
+    (body,) = transport.sent(f"PATCH {V4}/files/update/content/of_1")
+    assert body == {
+        "object_id": "o2",
+        "content_id": "c2",
+        "content": "Susan met with Susan again.",
+        "origin_version": 600,
+    }
+
+
+def test_correct_summary_rejects_empty_find_no_match_and_missing_summary(tmp_path):
+    client, _ = routed(tmp_path, transcript_routes(SEGMENTS, summary="nothing to change"))
+    with pytest.raises(ValueError, match="find text cannot be empty"):
+        client.correct_summary("of_1", "", "x")
+    with pytest.raises(ValueError, match='no occurrences of "zzz" found in summary'):
+        client.correct_summary("of_1", "zzz", "x")
+
+    client, _ = routed(tmp_path, transcript_routes(SEGMENTS))
+    with pytest.raises(ValueError, match="has no summary yet"):
+        client.correct_summary("of_1", "a", "b")
+
+
+def test_set_summary_overwrites_full_content_and_rejects_blank(tmp_path):
+    client, transport = routed(tmp_path, transcript_routes(SEGMENTS, summary="old summary"))
+    client.set_summary("of_1", "# Brand New\n\n- point")
+    assert transport.sent(f"PATCH {V4}/files/update/content/of_1")[0]["content"] == "# Brand New\n\n- point"
+    with pytest.raises(ValueError, match="summary content cannot be empty"):
+        client.set_summary("of_1", "   ")
+
+
+# ---------------------------------------------------------------------------
+# Folders
+# ---------------------------------------------------------------------------
+
+
+def folder_node(node_id, name, *, version_ms=100, **extra):
+    return {"node_id": node_id, "type": 1, "name": name, "icon": "e627", "version_ms": version_ms, **extra}
+
+
+def test_list_folders_walks_the_tree_and_skips_recording_containers(tmp_path):
+    client, _ = routed(
+        tmp_path,
+        {
+            f"GET {V4}/folders/children": children(
+                {
+                    "root": [
+                        folder_node("on_fd_a", "A"),
+                        {"node_id": "on_sys", "type": 1, "system_folder_type": 1},
+                    ],
+                    "on_fd_a": [
+                        folder_node("on_fd_b", "B", parent_id="on_fd_a"),
+                        {"node_id": "on_w_1", "type": 1},
+                    ],
+                    "on_sys": [folder_node("on_fd_c", "C")],
+                }
             )
-        ]
+        },
     )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.get_recording("rec1", include_transcript=False)
-    assert detail.speakers == []
+    assert [f.name for f in client.list_folders()] == ["A", "B", "C"]
 
 
-def test_region_failover_updates_persisted_region(tmp_path):
-    manager, store = make_manager(tmp_path, region="us")
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
-        ]
+def test_create_folder_posts_name_icon_color_parent_and_defaults(tmp_path):
+    reply = ok({"items": [folder_node("on_fd_9", "Clients", color="#f9a251", icon="e708")]})
+    client, transport = routed(tmp_path, {f"POST {V4}/nodes/folder": reply})
+    folder = client.create_folder("Clients", color="#f9a251", icon="e708", parent_id="on_fd_1")
+    assert (folder.id, folder.name, folder.color) == ("on_fd_9", "Clients", "#f9a251")
+    client.create_folder("Plain")
+    first, second = transport.sent(f"POST {V4}/nodes/folder")
+    assert first == {"parent_node_id": "on_fd_1", "name": "Clients", "icon": "e708", "color": "#f9a251"}
+    assert second == {
+        "parent_node_id": "root",
+        "name": "Plain",
+        "icon": client_mod._DEFAULT_FOLDER_ICON,
+        "color": client_mod._DEFAULT_FOLDER_COLOR,
+    }
+
+
+def test_folder_writes_reject_bad_input(tmp_path):
+    client, _ = routed(tmp_path, {})
+    with pytest.raises(ValueError, match="folder name cannot be empty"):
+        client.create_folder("   ")
+    with pytest.raises(ValueError, match="at least one of name, color, icon"):
+        client.update_folder("on_fd_1")
+    with pytest.raises(ValueError, match="folder_id cannot be empty"):
+        client.update_folder("", name="X")
+    with pytest.raises(ValueError, match="folder_id cannot be empty"):
+        client.delete_folder("")
+
+
+def test_update_folder_keeps_current_values_and_sends_its_version(tmp_path):
+    current = folder_node("on_fd_1", "Old", version_ms=100, color="#111111")
+    renamed = folder_node("on_fd_1", "Renamed", version_ms=110, color="#111111")
+    client, transport = routed(
+        tmp_path,
+        {
+            f"GET {V4}/folders/children": children({"root": [current]}),
+            f"PATCH {V4}/nodes/rename/on_fd_1": ok({"items": [renamed]}),
+        },
     )
-    client = PlaudClient(manager, transport=transport)
-    client.list_recordings()
-    assert store.load().region == "eu"
-    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
+    assert client.update_folder("on_fd_1", name="Renamed").name == "Renamed"
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_fd_1") == [
+        {"name": "Renamed", "color": "#111111", "icon": "e627", "origin_version": 100}
+    ]
 
 
-def test_region_redirect_preserves_request_body(tmp_path):
-    """Regression: -302 redirect must re-send the original POST body, not drop it."""
-    manager, store = make_manager(tmp_path, region="us")
-    transport = StubTransport(
-        [
-            # First call returns -302 region mismatch
-            HttpResponse(
-                200,
-                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-                {},
-            ),
-            # Retry after region update should succeed
-            HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
-        ]
+def test_update_folder_unknown_id_raises(tmp_path):
+    client, _ = routed(tmp_path, {f"GET {V4}/folders/children": children({})})
+    with pytest.raises(ValueError, match="no folder with id"):
+        client.update_folder("on_fd_x", name="X")
+
+
+def test_delete_folder_moves_children_to_recordings_then_trashes_and_deletes(tmp_path):
+    routes = {
+        f"GET {V4}/folders/children": children(
+            {
+                "root": [
+                    folder_node("on_fd_1", "Clients", version_ms=100),
+                    {"node_id": "on_sys_rec", "type": 1, "system_folder_type": 1},
+                ],
+                "on_fd_1": [
+                    {"node_id": "on_w_a", "version_ms": 150},
+                    {"node_id": "on_w_b", "version_ms": 160},
+                ],
+            }
+        ),
+        # The move bumps the folder's own version, which a fresh listing may not show yet.
+        f"POST {V4}/nodes/move": ok(
+            {"items": [{"node_id": "on_w_a", "version_ms": 900}, {"node_id": "on_fd_1", "version_ms": 950}]}
+        ),
+        f"DELETE {V4}/nodes/trash": ok({"items": [{"node_id": "on_fd_1", "version_ms": 1000}]}),
+        f"DELETE {V4}/nodes/delete": ok({"items": []}),
+    }
+    client, transport = routed(tmp_path, routes)
+    client.delete_folder("on_fd_1")
+    assert transport.sent(f"POST {V4}/nodes/move") == [
+        {
+            "target_node_id": "on_sys_rec",
+            "items": [
+                {"node_id": "on_w_a", "origin_version": 150},
+                {"node_id": "on_w_b", "origin_version": 160},
+            ],
+        }
+    ]
+    # Trash with the highest version the move reported; delete with the version the trash reported.
+    assert transport.sent(f"DELETE {V4}/nodes/trash") == [
+        {"items": [{"node_id": "on_fd_1", "origin_version": 950}]}
+    ]
+    assert transport.sent(f"DELETE {V4}/nodes/delete") == [
+        {"items": [{"node_id": "on_fd_1", "origin_version": 1000}]}
+    ]
+
+
+def test_delete_empty_folder_skips_the_move(tmp_path):
+    routes = {
+        f"GET {V4}/folders/children": children({"root": [folder_node("on_fd_1", "Empty", version_ms=100)]}),
+        f"DELETE {V4}/nodes/trash": ok({"items": []}),
+        f"DELETE {V4}/nodes/delete": ok({"items": []}),
+    }
+    client, transport = routed(tmp_path, routes)
+    client.delete_folder("on_fd_1")
+    assert not transport.hit(f"POST {V4}/nodes/move")
+    assert transport.sent(f"DELETE {V4}/nodes/delete") == [
+        {"items": [{"node_id": "on_fd_1", "origin_version": 100}]}
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Processing, upload, merge, waits
+# ---------------------------------------------------------------------------
+
+
+def test_transcribe_and_summarize_starts_whatever_is_missing(tmp_path):
+    routes = {f"GET {V4}/files/detail/of_1": detail_payload(), f"POST {V4}/tasks/trans-sum": ok()}
+    client, transport = routed(tmp_path, routes)
+    assert client.transcribe_and_summarize("of_1", language="en-US", diarization=False, llm="gpt-5") is True
+    (body,) = transport.sent(f"POST {V4}/tasks/trans-sum")
+    assert (body["file_id"], body["language"], body["diarization"], body["summary_ai_model"]) == (
+        "of_1",
+        "en",
+        0,
+        "gpt-5",
     )
-    client = PlaudClient(manager, transport=transport)
-    # move_to_trash issues POST /file/trash/ with body ["rec1"]
-    client.move_to_trash(["rec1"])
 
-    assert len(transport.calls) == 2
-    # First call went to the original (us) region
-    assert transport.calls[0]["url"].startswith("https://api.plaud.ai/")
-    # Second call went to the eu region
-    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
-    # Body must be preserved in the retried request
-    retry_body = json.loads(transport.calls[1]["body"].decode("utf-8"))
-    assert retry_body == ["rec1"], "retry must carry original body, not None"
-    # Region was persisted
-    assert store.load().region == "eu"
+    routes = {
+        f"GET {V4}/files/detail/of_1": detail_payload(obj("TRANSCRIPT", "https://s3.fake/t.json")),
+        f"POST {V4}/tasks/summary": ok(),
+    }
+    client, transport = routed(tmp_path, routes)
+    assert client.transcribe_and_summarize("of_1", template_type="MEETING") is True
+    assert transport.sent(f"POST {V4}/tasks/summary")[0]["template_id"] == "MEETING"
+
+
+def test_transcribe_and_summarize_starts_nothing_when_done_or_running(tmp_path):
+    done = detail_payload(obj("TRANSCRIPT", "https://s3.fake/t.json"), obj("SUMMARY", "https://s3.fake/s.md"))
+    running = detail_payload(tasks=[{"task_id": "t1", "task_type": "trans"}])
+    for payload in (done, running):
+        client, transport = routed(tmp_path, {f"GET {V4}/files/detail/of_1": payload})
+        assert client.transcribe_and_summarize("of_1") is False
+        assert len(transport.calls) == 1  # no POST: any would be an unrouted request
+
+
+def upload_routes(**overrides):
+    routes = {
+        f"POST {V4}/upload/create": ok(
+            {"upload_id": "u1", "part_urls": ["https://s3.fake/p1", "https://s3.fake/p2"], "chunk_size": 6}
+        ),
+        "PUT https://s3.fake/p1": HttpResponse(200, b"", {"etag": '"e1"'}),
+        "PUT https://s3.fake/p2": HttpResponse(200, b"", {"etag": '"e2"'}),
+        f"POST {V4}/upload/merge-part": ok(),
+        f"POST {V4}/upload/confirm-audio-web": ok(
+            {"file_id": "f_x", "node_id": "n_f", "folder_node_id": "n_w", "version_ms": 5}
+        ),
+    }
+    return routes | overrides
+
+
+def test_upload_recording_runs_create_put_merge_confirm(tmp_path):
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"abcdefghij")
+    client, transport = routed(tmp_path, upload_routes())
+    rec = client.upload_recording(
+        audio, "Call", "MP3", start_time=1234, timezone_offset=-6, folder_id="on_fd_1"
+    )
+    assert (rec.id, rec.node_id, rec.wrapper_id, rec.version_ms, rec.folder_id) == (
+        "f_x",
+        "n_f",
+        "n_w",
+        5,
+        "on_fd_1",
+    )
+    puts = [c["body"] for c in transport.calls if c["method"] == "PUT"]
+    assert puts == [b"abcdef", b"ghij"]
+    assert transport.sent(f"POST {V4}/upload/create")[0]["file_size"] == 10
+    assert transport.sent(f"POST {V4}/upload/merge-part") == [
+        {"upload_id": "u1", "parts": [{"etag": "e1", "part_number": 1}, {"etag": "e2", "part_number": 2}]}
+    ]
+    confirm = transport.sent(f"POST {V4}/upload/confirm-audio-web")[0]
+    assert (confirm["file_name"], confirm["start_time"], confirm["target_node_id"]) == (
+        "Call",
+        1234,
+        "on_fd_1",
+    )
+    assert confirm["conflict_strategy"] == "keep_both"
+    assert confirm["file_id"].startswith("f_")
+    # Upload confirm fails without the IANA zone; -6 hours is Etc/GMT+6.
+    assert transport.calls[-1]["headers"]["x-timezone-iana"] == "Etc/GMT+6"
+
+
+def test_upload_recording_refuses_to_merge_a_truncated_file(tmp_path):
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"abcdefghijklmnop")  # 16 bytes: 3 chunks of 6, but only 2 part URLs
+    client, transport = routed(tmp_path, upload_routes())
+    with pytest.raises(PlaudApiError, match="more data"):
+        client.upload_recording(audio, "Call", "MP3")
+    assert not transport.hit(f"POST {V4}/upload/merge-part")
+
+
+def test_upload_recording_confirm_network_error_warns_about_a_possible_duplicate(tmp_path):
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"abcdefghij")
+    boom = PlaudApiError("connection reset", network_error=True)
+    client, _ = routed(tmp_path, upload_routes(**{f"POST {V4}/upload/confirm-audio-web": boom}))
+    with pytest.raises(PlaudApiError, match="may have completed anyway") as info:
+        client.upload_recording(audio, "Call", "MP3")
+    assert info.value.network_error is False
+
+
+def merge_routes(merged_detail):
+    return {
+        f"GET {V4}/files/detail/of_1": detail_payload(),
+        f"POST {V4}/tasks/audio-merge": ok({"task_id": "t1", "file_id": "f_m"}),
+        f"GET {V4}/files/detail/f_m": merged_detail,
+    }
+
+
+def test_merge_recordings_posts_ids_and_target_folder_and_waits_for_the_result(tmp_path):
+    client, transport = routed(tmp_path, merge_routes(detail_payload(file_id="f_m", duration=5000)))
+    merged = client.merge_recordings(["of_1", "of_2"], "Merged", poll_interval_s=0)
+    assert (merged.id, merged.duration) == ("f_m", 5000)
+    (body,) = transport.sent(f"POST {V4}/tasks/audio-merge")
+    assert (body["source_file_ids"], body["target_node_id"], body["file_name"]) == (
+        ["of_1", "of_2"],
+        "on_fd_1",
+        "Merged",
+    )
+
+
+def test_merge_recordings_timeout_carries_the_task_id(tmp_path):
+    not_found = {"status": -1800311, "msg": "file not found"}  # the merged file does not exist yet
+    client, _ = routed(tmp_path, merge_routes(not_found))
+    with pytest.raises(PlaudWaitTimeoutError, match="merge timed out") as info:
+        client.merge_recordings(["of_1", "of_2"], "Merged", timeout_s=0)
+    assert info.value.task_id == "t1"
+
+
+def test_merge_recordings_rejects_bad_input(tmp_path):
+    client, _ = routed(tmp_path, {})
+    with pytest.raises(ValueError, match="at least 2"):
+        client.merge_recordings(["of_1"], "Merged")
+    with pytest.raises(ValueError, match="filename cannot be empty"):
+        client.merge_recordings(["of_1", "of_2"], " ")
+
+
+def test_wait_for_transcription_returns_once_done_and_times_out_when_not(tmp_path):
+    pending = detail_payload()
+    done = detail_payload(obj("TRANSCRIPT", "https://s3.fake/t.json"))
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": [pending, done]})
+    client.wait_for_transcription("of_1", poll_interval_s=0)
+
+    client, _ = routed(tmp_path, {f"GET {V4}/files/detail/of_1": pending})
+    with pytest.raises(PlaudWaitTimeoutError, match="transcription timed out"):
+        client.wait_for_transcription("of_1", timeout_s=0)
+
+
+class TestPollLoopSurvival:
+    """PlaudClient._poll_until backs the transcription, summary, and merge waits."""
+
+    def test_skips_transient_errors_then_returns_result(self, tmp_path):
+        """A 429 and a network blip count as skipped polls, not failures."""
+        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
+        outcomes = iter(
+            [
+                _transient_error(429),
+                PlaudApiError("Plaud API request timed out after 30.0s", network_error=True),
+                None,
+                "done",
+            ]
+        )
+
+        def check():
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        assert client._poll_until(check, what="job", timeout_s=60, poll_interval_s=0) == "done"
+
+    def test_non_transient_error_propagates(self, tmp_path):
+        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
+        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"not found"))
+
+        def check():
+            raise err_404
+
+        with pytest.raises(PlaudApiError) as info:
+            client._poll_until(check, what="job", timeout_s=60, poll_interval_s=0)
+        assert info.value is err_404
+
+    def test_timeout_checks_once_then_raises_wait_timeout(self, tmp_path):
+        """Even a zero budget polls once; then it's a soft deadline, not a failure."""
+        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
+        calls = []
+
+        with pytest.raises(PlaudWaitTimeoutError, match="job timed out after 0s") as info:
+            client._poll_until(
+                lambda: calls.append(1), what="job", timeout_s=0, poll_interval_s=0, task_id="t1"
+            )
+        assert calls == [1]
+        assert info.value.task_id == "t1"
+        assert info.value.is_soft_deadline_timeout()
+
+
+# ---------------------------------------------------------------------------
+# Transport: errors, retry, region redirect
+# ---------------------------------------------------------------------------
+
+
+def _make_http_error(status: int, body: bytes, headers: dict[str, str] | None = None) -> HTTPError:
+    """Build a urllib.error.HTTPError with a readable body and optional headers."""
+    from email.message import Message
+
+    msg = Message()
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    return HTTPError(url="https://example.com/api", code=status, msg="Error", hdrs=msg, fp=io.BytesIO(body))
+
+
+def _transient_error(status: int = 429, retry_after: float | None = None) -> PlaudApiError:
+    """Build a PlaudApiError that classify() deems retryable."""
+    headers = {} if retry_after is None else {"Retry-After": str(int(retry_after))}
+    return PlaudApiError.from_http_error(_make_http_error(status, b"rate limited", headers=headers))
 
 
 def test_missing_session_raises(tmp_path):
@@ -313,944 +1033,168 @@ def test_missing_session_raises(tmp_path):
         client.list_recordings()
 
 
-def test_nonzero_status_raises_api_error(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": -1, "msg": "recording not found"}).encode(), {})]
+def test_error_message_names_status_method_and_path_without_the_query(tmp_path):
+    client, _ = routed(tmp_path, {f"GET {V4}/recordings/all": {"status": -1, "msg": "boom"}})
+    with pytest.raises(PlaudApiError) as info:
+        client.list_recordings()
+    message = str(info.value)
+    assert "boom" in message
+    assert f"status -1, GET {V4}/recordings/all)" in message
+    assert info.value.plaud_code == -1
+
+
+def test_migrated_account_status_hints_to_update_plaud_tools(tmp_path):
+    client, _ = routed(
+        tmp_path, {f"GET {V4}/recordings/all": {"status": -1800907, "msg": "Account migrated to 4.0"}}
     )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(PlaudApiError, match="recording not found"):
-        client.get_recording("bogus")
+    with pytest.raises(PlaudApiError, match="update plaud-tools"):
+        client.list_recordings()
 
 
-def test_rename_recording_uses_patch_payload(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.rename_recording("rec1", "New Name")
-    call = transport.calls[0]
-    assert call["method"] == "PATCH"
-    assert call["url"] == "https://api-euc1.plaud.ai/file/rec1"
-    assert json.loads(call["body"].decode("utf-8")) == {"filename": "New Name"}
-
-
-def test_rename_recording_rejects_blank_name(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="filename cannot be empty"):
-        client.rename_recording("rec1", "   ")
-
-
-def test_list_file_tags_handles_live_shape(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data_filetag_list": [
-                            {"id": "tag1", "name": "Work", "color": "#191919", "icon": "e627"}
-                        ],
-                    }
-                ).encode(),
-                {},
-            )
-        ]
+def test_unknown_file_status_classifies_as_not_found(tmp_path):
+    client, _ = routed(
+        tmp_path, {f"GET {V4}/files/detail/of_1": {"status": -1800311, "msg": "file not found"}}
     )
-    client = PlaudClient(manager, transport=transport)
-    tags = client.list_file_tags()
-    assert len(tags) == 1
-    assert tags[0].id == "tag1"
-    assert tags[0].name == "Work"
+    with pytest.raises(PlaudApiError) as info:
+        client.get_recording("of_1")
+    assert info.value.classify() == ("not_found", False)
 
 
-def test_set_recording_folder_uses_update_tags_shape(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.set_recording_folder("rec1", "tag1")
-    call = transport.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://api-euc1.plaud.ai/file/update-tags"
-    assert json.loads(call["body"].decode("utf-8")) == {"file_id_list": ["rec1"], "filetag_id": "tag1"}
+def test_non_json_2xx_body_raises_plaud_api_error_not_a_value_error(tmp_path):
+    """#146: an HTML error page behind a proxy is a Plaud-side failure, not a caller input error."""
+    transport = StubTransport([HttpResponse(200, b"<html>upstream hiccup</html>", {})])
+    client = PlaudClient(make_manager(tmp_path)[0], transport=transport)
+    with pytest.raises(PlaudApiError) as exc_info:
+        client.list_recordings()
+    assert not isinstance(exc_info.value, json.JSONDecodeError)
+    assert exc_info.value.http_status == 200
 
 
-def test_list_trash_uses_is_trash_query(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {"status": 0, "data_file_list": [{"id": "rec1", "filename": "Old", "is_trash": True}]}
-                ).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    items = client.list_trash()
-    assert [item.id for item in items] == ["rec1"]
-    assert transport.calls[0]["url"] == "https://api-euc1.plaud.ai/file/simple/web?is_trash=1"
+class TestRetryBackoff:
+    """Idempotent GETs retry 429 / 5xx up to _MAX_ATTEMPTS; everything else gets one try."""
+
+    def client(self, tmp_path, responses):
+        transport = StubTransport(responses)
+        return PlaudClient(make_manager(tmp_path)[0], transport=transport), transport
+
+    def test_get_succeeds_after_transient_failures(self, tmp_path, monkeypatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", sleeps.append)
+        client, transport = self.client(
+            tmp_path, [_transient_error(429), _transient_error(503), json_response(EMPTY_LIST)]
+        )
+        assert client.list_recordings() == []
+        assert len(transport.calls) == 3
+        assert sleeps == [0.75, 1.5]  # 1 s then 2 s backoff, jitter pinned to its low end
+
+    def test_get_raises_after_exhausting_attempts(self, tmp_path):
+        client, transport = self.client(tmp_path, [_transient_error(429)] * 4)
+        with pytest.raises(PlaudApiError):
+            client.list_recordings()
+        assert len(transport.calls) == client_mod._MAX_ATTEMPTS
+
+    def test_non_retryable_error_is_not_retried(self, tmp_path):
+        client, transport = self.client(
+            tmp_path, [PlaudApiError.from_http_error(_make_http_error(404, b"not found"))]
+        )
+        with pytest.raises(PlaudApiError):
+            client.list_recordings()
+        assert len(transport.calls) == 1
+
+    @pytest.mark.parametrize("status", [429, 503])
+    def test_post_is_never_retried(self, tmp_path, status):
+        """Replaying a write that may already have landed risks doing it twice (#147)."""
+        client, transport = self.client(tmp_path, [_transient_error(status)])
+        with pytest.raises(PlaudApiError):
+            client.create_folder("Clients")
+        assert len(transport.calls) == 1
+
+    def test_retry_after_is_honoured_and_never_under_slept(self, tmp_path, monkeypatch):
+        sleeps: list[float] = []
+        monkeypatch.setattr(client_mod, "_sleep", sleeps.append)
+        client, _ = self.client(tmp_path, [_transient_error(429, retry_after=30), json_response(EMPTY_LIST)])
+        client.list_recordings()
+        assert sleeps == [30.0]
+
+        sleeps.clear()
+        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: hi)
+        client, _ = self.client(tmp_path, [_transient_error(429, retry_after=0), json_response(EMPTY_LIST)])
+        client.list_recordings()
+        assert sleeps == [1.25]
+
+    def test_retry_after_header_parsing(self):
+        assert (
+            PlaudApiError.from_http_error(_make_http_error(429, b"", {"Retry-After": "45"})).retry_after
+            == 45.0
+        )
+        assert PlaudApiError.from_http_error(_make_http_error(429, b"")).retry_after is None
+        http_date = {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}
+        assert PlaudApiError.from_http_error(_make_http_error(429, b"", http_date)).retry_after is None
 
 
-def test_move_to_trash_uses_array_body(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.move_to_trash(["rec1", "rec2"])
-    call = transport.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://api-euc1.plaud.ai/file/trash/"
-    assert json.loads(call["body"].decode("utf-8")) == ["rec1", "rec2"]
+REDIRECT_TO_EU = {"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}
 
 
-def test_restore_from_trash_uses_array_body(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.restore_from_trash("rec1")
-    call = transport.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://api-euc1.plaud.ai/file/untrash/"
-    assert json.loads(call["body"].decode("utf-8")) == ["rec1"]
+def test_region_redirect_persists_region_and_resends_the_body(tmp_path):
+    manager, store = make_manager(tmp_path, region="us")
+    created = ok({"items": [folder_node("on_fd_9", "N")]})
+    transport = StubTransport([json_response(REDIRECT_TO_EU), json_response(created)])
+    PlaudClient(manager, transport=transport).create_folder("N")
+    assert transport.calls[0]["url"].startswith("https://api.plaud.ai/")
+    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
+    assert transport.calls[1]["body"] == transport.calls[0]["body"]
+    assert store.load().region == "eu"
 
 
-def test_trash_methods_reject_empty_ids(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
-        client.move_to_trash([])
-    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
-        client.restore_from_trash([])
-
-
-def test_delete_recordings_uses_delete_method(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.delete_recordings(["rec1", "rec2"])
-    call = transport.calls[0]
-    assert call["method"] == "DELETE"
-    assert call["url"] == "https://api-euc1.plaud.ai/file/"
-    assert json.loads(call["body"].decode("utf-8")) == ["rec1", "rec2"]
-
-
-def test_delete_recordings_accepts_single_id(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.delete_recordings("rec1")
-    assert json.loads(transport.calls[0]["body"].decode("utf-8")) == ["rec1"]
-
-
-def test_delete_recordings_rejects_empty_ids(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="recording_ids cannot be empty"):
-        client.delete_recordings([])
-
-
-def test_edit_transcript_uses_full_trans_result_payload(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    segments = [
-        {
-            "start_time": 0,
-            "end_time": 5000,
-            "content": "hello",
-            "speaker": "Alex",
-            "original_speaker": "Speaker 1",
-        },
-        {
-            "start_time": 5000,
-            "end_time": 10000,
-            "content": "world",
-            "speaker": "Bee",
-            "original_speaker": "Speaker 2",
-        },
-    ]
-    client.edit_transcript("rec1", segments)
-    call = transport.calls[0]
-    assert call["method"] == "PATCH"
-    assert call["url"] == "https://api-euc1.plaud.ai/file/rec1"
-    assert json.loads(call["body"].decode("utf-8")) == {
-        "trans_result": segments,
-        "support_mul_summ": True,
-    }
-
-
-def test_rename_speaker_reads_segments_and_patches_full_transcript(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "transaction",
-                                    "task_status": 1,
-                                    "data_link": "https://s3.fake/rec1-transcript.json",
-                                }
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(
-                200,
-                json.dumps(
-                    [
-                        {
-                            "start_time": 0,
-                            "end_time": 5000,
-                            "content": "one",
-                            "speaker": "Speaker 1",
-                            "original_speaker": "Speaker 1",
-                        },
-                        {
-                            "start_time": 5000,
-                            "end_time": 10000,
-                            "content": "two",
-                            "speaker": "Speaker 2",
-                            "original_speaker": "Speaker 2",
-                        },
-                        {
-                            "start_time": 10000,
-                            "end_time": 15000,
-                            "content": "three",
-                            "speaker": "Speaker 1",
-                            "original_speaker": "Speaker 1",
-                        },
-                    ]
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.rename_speaker("rec1", "Speaker 1", "Alex Riley")
-    assert result == {"segments_updated": 2}
-    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
-    assert write_body["support_mul_summ"] is True
-    assert write_body["trans_result"][0]["speaker"] == "Alex Riley"
-    assert write_body["trans_result"][2]["speaker"] == "Alex Riley"
-    assert write_body["trans_result"][0]["original_speaker"] == "Speaker 1"
-    assert write_body["trans_result"][1]["speaker"] == "Speaker 2"
-
-
-def test_rename_speaker_rejects_missing_transcript(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match="has no transcript yet"):
-        client.rename_speaker("rec1", "Speaker 1", "Alex")
-
-
-def test_rename_speaker_rejects_missing_label_match(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "transaction",
-                                    "task_status": 1,
-                                    "data_link": "https://s3.fake/rec1-transcript.json",
-                                }
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(
-                200,
-                json.dumps(
-                    [
-                        {
-                            "start_time": 0,
-                            "end_time": 5000,
-                            "content": "one",
-                            "speaker": "Speaker 2",
-                            "original_speaker": "Speaker 2",
-                        },
-                    ]
-                ).encode(),
-                {},
-            ),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match='no segments found for speaker "Speaker 1"'):
-        client.rename_speaker("rec1", "Speaker 1", "Alex")
-
-
-def test_rename_speaker_rejects_blank_labels(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="original_label cannot be empty"):
-        client.rename_speaker("rec1", "", "Alex")
-    with pytest.raises(ValueError, match="new_name cannot be empty"):
-        client.rename_speaker("rec1", "Speaker 1", "   ")
-
-
-def _detail_and_transcript_transport(segments):
-    """Build a StubTransport for the GET /file/detail → S3 transcript → PATCH flow."""
-    return StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "transaction",
-                                    "task_status": 1,
-                                    "data_link": "https://s3.fake/rec1-transcript.json",
-                                }
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps(segments).encode(), {}),
-            HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
-        ]
-    )
-
-
-def test_rename_speaker_matches_display_name(tmp_path):
-    """Plaud auto-resolves enrolled voices, so the displayed `speaker` can differ
-    from `original_speaker`. Renaming by the displayed name must work (issue: agent
-    reported rename_speaker fails for named/bracketed labels)."""
-    manager, _ = make_manager(tmp_path)
-    transport = _detail_and_transcript_transport(
-        [
-            {
-                "start_time": 0,
-                "end_time": 5,
-                "content": "hi",
-                "speaker": "Kadin Bullock",
-                "original_speaker": "Speaker 1",
-            },
-            {
-                "start_time": 5,
-                "end_time": 9,
-                "content": "yo",
-                "speaker": "Speaker 2",
-                "original_speaker": "Speaker 2",
-            },
-            {
-                "start_time": 9,
-                "end_time": 12,
-                "content": "ok",
-                "speaker": "Kadin Bullock",
-                "original_speaker": "Speaker 1",
-            },
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.rename_speaker("rec1", "Kadin Bullock", "Advisor")
-    assert result == {"segments_updated": 2}
-    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
-    assert write_body["trans_result"][0]["speaker"] == "Advisor"
-    assert write_body["trans_result"][2]["speaker"] == "Advisor"
-    # original_speaker is preserved; the untouched speaker is left alone.
-    assert write_body["trans_result"][0]["original_speaker"] == "Speaker 1"
-    assert write_body["trans_result"][1]["speaker"] == "Speaker 2"
-
-
-def test_rename_speaker_matches_original_speaker_label(tmp_path):
-    """Renaming by the generic 'Speaker N' label still works when the display
-    name has been auto-resolved to something else."""
-    manager, _ = make_manager(tmp_path)
-    transport = _detail_and_transcript_transport(
-        [
-            {
-                "start_time": 0,
-                "end_time": 5,
-                "content": "hi",
-                "speaker": "Kadin Bullock",
-                "original_speaker": "Speaker 1",
-            },
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.rename_speaker("rec1", "Speaker 1", "Advisor")
-    assert result == {"segments_updated": 1}
-    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
-    assert write_body["trans_result"][0]["speaker"] == "Advisor"
-
-
-def test_correct_transcript_replaces_text_and_patches(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = _detail_and_transcript_transport(
-        [
-            {
-                "start_time": 0,
-                "end_time": 5,
-                "content": "Flourish Cache account",
-                "speaker": "A",
-                "original_speaker": "Speaker 1",
-            },
-            {
-                "start_time": 5,
-                "end_time": 9,
-                "content": "no match here",
-                "speaker": "B",
-                "original_speaker": "Speaker 2",
-            },
-            {
-                "start_time": 9,
-                "end_time": 12,
-                "content": "another Cache and Cache",
-                "speaker": "A",
-                "original_speaker": "Speaker 1",
-            },
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.correct_transcript("rec1", "Cache", "Cash")
-    assert result == {"replacements": 3, "segments_changed": 2}
-    write_body = json.loads(transport.calls[2]["body"].decode("utf-8"))
-    assert write_body["support_mul_summ"] is True
-    assert write_body["trans_result"][0]["content"] == "Flourish Cash account"
-    assert write_body["trans_result"][1]["content"] == "no match here"
-    assert write_body["trans_result"][2]["content"] == "another Cash and Cash"
-    # Speaker labels are untouched by a text correction.
-    assert write_body["trans_result"][0]["speaker"] == "A"
-
-
-def test_count_transcript_matches_counts_content_not_speaker_labels(tmp_path):
-    """The dry-run count must equal what correct_transcript would replace.
-
-    It used to count on the formatted transcript, so a speaker named "Ann"
-    inflated the count for find="Ann" even though labels are never edited.
-    """
-    manager, _ = make_manager(tmp_path)
-    segments = [
-        {"content": "Ann said hi to Ann", "speaker": "Ann", "original_speaker": "Speaker 1"},
-        {"content": "bye", "speaker": "Ann", "original_speaker": "Speaker 1"},
-    ]
-    client = PlaudClient(manager, transport=_detail_and_transcript_transport(segments))
-    assert client.count_transcript_matches("rec1", "Ann") == 2
-    assert len(client._transport.calls) == 2  # read-only: detail + transcript link, no PATCH
-
-
-def test_correct_transcript_rejects_no_match(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = _detail_and_transcript_transport(
-        [
-            {
-                "start_time": 0,
-                "end_time": 5,
-                "content": "hello",
-                "speaker": "A",
-                "original_speaker": "Speaker 1",
-            }
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match='no occurrences of "zzz" found'):
-        client.correct_transcript("rec1", "zzz", "x")
-
-
-def test_correct_transcript_rejects_empty_find(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="find text cannot be empty"):
-        client.correct_transcript("rec1", "", "x")
-
-
-def test_correct_transcript_rejects_missing_transcript(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": 0, "data": {"file_id": "rec1", "file_name": "Meeting"}}).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match="has no transcript yet"):
-        client.correct_transcript("rec1", "a", "b")
-
-
-# ---------------------------------------------------------------------------
-# Summary editing (set_summary / correct_summary) — POST /ai/update_note_info
-# ---------------------------------------------------------------------------
-
-
-def _detail_with_inline_summary(summary_text, *, note_id="auto_sum:hash:rec1"):
-    """GET /file/detail response carrying an inline auto_sum_note summary."""
-    return HttpResponse(
-        200,
-        json.dumps(
-            {
-                "status": 0,
-                "data": {
-                    "file_id": "rec1",
-                    "file_name": "Meeting",
-                    "content_list": [
-                        {
-                            "data_type": "auto_sum_note",
-                            "task_status": 1,
-                            "data_id": note_id,
-                            "data_link": "https://s3.fake/summary.json",
-                        }
-                    ],
-                    "pre_download_content_list": [
-                        {"data_id": note_id, "data_content": json.dumps({"ai_content": summary_text})}
-                    ],
-                },
-            }
-        ).encode(),
-        {},
-    )
-
-
-def test_correct_summary_replaces_text_and_posts_note_update(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            _detail_with_inline_summary("Customer: Suzan met with Suzan again."),
-            HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.correct_summary("rec1", "Suzan", "Susan")
-    assert result == {"replacements": 2}
-    # No S3 fetch was needed (inline summary); detail + note-update = 2 calls.
+def test_region_redirect_loop_raises_after_two_requests(tmp_path):
+    manager, _ = make_manager(tmp_path, region="us")
+    transport = StubTransport([json_response(REDIRECT_TO_EU)] * 3)
+    with pytest.raises(PlaudApiError, match="region redirect loop"):
+        PlaudClient(manager, transport=transport).list_recordings()
     assert len(transport.calls) == 2
-    post = transport.calls[1]
-    assert post["method"] == "POST"
-    assert post["url"] == "https://api-euc1.plaud.ai/ai/update_note_info"
-    body = json.loads(post["body"].decode("utf-8"))
-    assert body == {
-        "file_id": "rec1",
-        "note_id": "auto_sum:hash:rec1",
-        "note_type": "auto_sum_note",
-        "note_content": "Customer: Susan met with Susan again.",
-    }
 
 
-def test_correct_summary_rejects_no_match(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([_detail_with_inline_summary("nothing to change here")])
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match='no occurrences of "zzz" found in summary'):
-        client.correct_summary("rec1", "zzz", "x")
+def test_region_redirect_to_unlisted_plaud_host_uses_that_host(tmp_path):
+    """A -302 to a Plaud API host we have no region key for is followed as-is;
+    a non-Plaud host is refused."""
+    manager, store = make_manager(tmp_path, region="us")
 
+    def redirect(host):
+        return json_response({"status": -302, "data": {"domains": {"api": host}}})
 
-def test_correct_summary_rejects_empty_find(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="find text cannot be empty"):
-        client.correct_summary("rec1", "", "x")
-
-
-def test_correct_summary_rejects_missing_summary(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    # content_list has a transcript but no completed auto_sum_note.
     transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [{"data_type": "transaction", "task_status": 1}],
-                        },
-                    }
-                ).encode(),
-                {},
-            )
-        ]
+        [redirect("api-apse1.plaud.ai"), json_response(EMPTY_LIST), redirect("evil.example.com")]
     )
     client = PlaudClient(manager, transport=transport)
-    with pytest.raises(ValueError, match="has no summary yet"):
-        client.correct_summary("rec1", "a", "b")
+    client.list_recordings()
+    assert store.load().region == "api-apse1.plaud.ai"
+    assert transport.calls[1]["url"].startswith("https://api-apse1.plaud.ai/")
+
+    with pytest.raises(PlaudApiError, match="unrecognized API host"):
+        client.list_recordings()
+    assert store.load().region == "api-apse1.plaud.ai"
 
 
-def test_correct_summary_fetches_content_from_data_link(tmp_path):
-    """When the summary is not inlined, correct_summary fetches it from data_link."""
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "auto_sum_note",
-                                    "task_status": 1,
-                                    "data_id": "auto_sum:hash:rec1",
-                                    "data_link": "https://s3.fake/summary.json",
-                                }
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"ai_content": "Meeting with Bxb"}).encode(), {}),
-            HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.correct_summary("rec1", "Bxb", "Bob")
-    assert result == {"replacements": 1}
-    assert transport.calls[1]["url"] == "https://s3.fake/summary.json"
-    body = json.loads(transport.calls[2]["body"].decode("utf-8"))
-    assert body["note_content"] == "Meeting with Bob"
-
-
-def test_set_summary_overwrites_full_content(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            _detail_with_inline_summary("old summary"),
-            HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.set_summary("rec1", "# Brand New Summary\n\n- point")
-    post = transport.calls[1]
-    body = json.loads(post["body"].decode("utf-8"))
-    assert body["note_content"] == "# Brand New Summary\n\n- point"
-    assert body["note_id"] == "auto_sum:hash:rec1"
-
-
-def test_set_summary_rejects_empty_content(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="summary content cannot be empty"):
-        client.set_summary("rec1", "   ")
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("api-euc1.plaud.ai", "eu"),
+        ("https://api.plaud.ai/", "us"),
+        ("api-apse1.plaud.ai", "api-apse1.plaud.ai"),
+        (".plaud.ai", None),
+        ("a..plaud.ai", None),
+        ("apiа.plaud.ai", None),  # Cyrillic "a"
+        ("plaud.ai.evil.com", None),
+        ("", None),
+    ],
+)
+def test_region_for_api_domain_accepts_only_clean_plaud_hosts(domain, expected):
+    assert region_for_api_domain(domain) == expected
 
 
 # ---------------------------------------------------------------------------
-# Folder CRUD (create_folder / update_folder / delete_folder) — /filetag/
+# Session store and cache
 # ---------------------------------------------------------------------------
-
-
-def test_create_folder_posts_name_icon_color_and_returns_tag(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data_filetag": {
-                            "id": "new1",
-                            "name": "Clients",
-                            "icon": "e708",
-                            "color": "#f9a251",
-                        },
-                    }
-                ).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    tag = client.create_folder("Clients", color="#f9a251", icon="e708")
-    assert tag.id == "new1"
-    assert tag.name == "Clients"
-    call = transport.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://api-euc1.plaud.ai/filetag/"
-    assert json.loads(call["body"].decode("utf-8")) == {
-        "name": "Clients",
-        "icon": "e708",
-        "color": "#f9a251",
-    }
-
-
-def test_create_folder_defaults_icon_and_color(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": 0, "data_filetag": {"id": "x", "name": "N"}}).encode(), {})]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.create_folder("N")
-    body = json.loads(transport.calls[0]["body"].decode("utf-8"))
-    assert body["icon"] == client_mod._DEFAULT_FOLDER_ICON
-    assert body["color"] == client_mod._DEFAULT_FOLDER_COLOR
-
-
-def test_create_folder_rejects_blank_name(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="folder name cannot be empty"):
-        client.create_folder("   ")
-
-
-def test_create_folder_duplicate_name_raises_api_error(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": -2, "msg": "filetag name existed", "data_filetag": None}).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    with pytest.raises(PlaudApiError, match="filetag name existed"):
-        client.create_folder("Existing")
-
-
-def test_update_folder_patches_only_supplied_fields(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data_filetag": {"id": "f1", "name": "Renamed", "icon": "e604", "color": "#fb5c5c"},
-                    }
-                ).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    tag = client.update_folder("f1", name="Renamed", color="#fb5c5c")
-    assert tag.name == "Renamed"
-    call = transport.calls[0]
-    assert call["method"] == "PATCH"
-    assert call["url"] == "https://api-euc1.plaud.ai/filetag/f1"
-    # icon was not supplied, so it must not be in the body.
-    assert json.loads(call["body"].decode("utf-8")) == {"name": "Renamed", "color": "#fb5c5c"}
-
-
-def test_update_folder_requires_at_least_one_field(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="at least one of name, color, icon"):
-        client.update_folder("f1")
-
-
-def test_update_folder_rejects_blank_id(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="folder_id cannot be empty"):
-        client.update_folder("", name="X")
-
-
-def test_delete_folder_uses_delete_method(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": 0, "msg": "delete success"}).encode(), {})]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.delete_folder("f1")
-    call = transport.calls[0]
-    assert call["method"] == "DELETE"
-    assert call["url"] == "https://api-euc1.plaud.ai/filetag/f1"
-    assert call["body"] is None
-
-
-def test_delete_folder_rejects_blank_id(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    client = PlaudClient(manager, transport=StubTransport([]))
-    with pytest.raises(ValueError, match="folder_id cannot be empty"):
-        client.delete_folder("")
-
-
-def test_transcribe_and_summarize_uses_expected_payload(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [HttpResponse(200, json.dumps({"status": 0, "msg": "task processing"}).encode(), {})]
-    )
-    client = PlaudClient(manager, transport=transport)
-    assert client.transcribe_and_summarize("rec1") is True
-    call = transport.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://api-euc1.plaud.ai/ai/transsumm/rec1"
-    body = json.loads(call["body"].decode("utf-8"))
-    assert body["is_reload"] == 0
-    assert body["summ_type"] == "AUTO-SELECT"
-    assert body["summ_type_type"] == "system"
-    assert body["support_mul_summ"] is True
-    info = json.loads(body["info"])
-    assert info["language"] == "auto"
-    assert info["diarization"] == 1
-    assert info["llm"] == "auto"
-
-
-def test_transcribe_and_summarize_reports_already_processed(tmp_path):
-    """Live shape (2026-09-24): on a recording that already has a transcript,
-    Plaud answers is_reload=0 with status 1 "success" plus the EXISTING output
-    and starts no job. That must not raise "Plaud API error: success"."""
-    manager, _ = make_manager(tmp_path)
-    payload = {"status": 1, "msg": "success", "data_result": [{"content": "old"}]}
-    transport = StubTransport([HttpResponse(200, json.dumps(payload).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    assert client.transcribe_and_summarize("rec1", template_type="MEETING") is False
-
-
-def test_transcribe_and_summarize_honors_overrides(tmp_path, monkeypatch):
-    # Pin the machine to US Central (UTC-6).  Plaud's web app sends -6 for it,
-    # the plain UTC offset, not JavaScript's inverted getTimezoneOffset().
-    central = datetime(2026, 1, 5, 12, tzinfo=timezone(timedelta(hours=-6)))
-    fake_now = SimpleNamespace(astimezone=lambda: central)
-    monkeypatch.setattr(client_mod, "datetime", SimpleNamespace(now=lambda: fake_now))
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    client.transcribe_and_summarize(
-        "rec1", template_type="MEETING-CONSULT", language="en", diarization=False, llm="gpt-5"
-    )
-    body = json.loads(transport.calls[0]["body"].decode("utf-8"))
-    assert body["summ_type"] == "MEETING-CONSULT"
-    info = json.loads(body["info"])
-    assert info == {
-        "language": "en",
-        "timezone": -6.0,
-        "diarization": 0,
-        "llm": "gpt-5",
-    }
-
-
-def test_get_task_status_shapes_and_filters(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_status_list": [
-                                {
-                                    "file_id": "rec1",
-                                    "task_id": "t1",
-                                    "task_type": "transcript",
-                                    "task_status": 1,
-                                    "sum_type": "",
-                                    "sum_type_type": "",
-                                    "post_id": 0,
-                                    "ppc_status": 0,
-                                    "is_chatllm": False,
-                                    "auto_save": False,
-                                },
-                                {
-                                    "file_id": "rec2",
-                                    "task_id": "t2",
-                                    "task_type": "summary",
-                                    "task_status": 0,
-                                },
-                            ]
-                        },
-                    }
-                ).encode(),
-                {},
-            )
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    tasks = client.get_task_status("rec1")
-    assert len(tasks) == 1
-    assert tasks[0].file_id == "rec1"
-    assert tasks[0].is_complete is True
-
-
-def test_get_task_status_handles_missing_list(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport([HttpResponse(200, json.dumps({"status": 0, "data": {}}).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-    assert client.get_task_status() == []
-
-
-def test_get_recording_fetches_gzip_transcript_from_data_link(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps(
-                    {
-                        "status": 0,
-                        "data": {
-                            "file_id": "rec1",
-                            "file_name": "Meeting",
-                            "content_list": [
-                                {
-                                    "data_type": "transaction",
-                                    "task_status": 1,
-                                    "data_link": "https://s3.fake/transcript.json.gz",
-                                }
-                            ],
-                        },
-                    }
-                ).encode(),
-                {},
-            ),
-            HttpResponse(
-                200,
-                gzip.compress(
-                    json.dumps(
-                        [
-                            {"speaker": "Alex", "original_speaker": "Speaker 1", "content": "Hi"},
-                        ]
-                    ).encode("utf-8")
-                ),
-                {"content-encoding": "gzip"},
-            ),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    detail = client.get_recording("rec1", include_transcript=True)
-    assert detail.transcript == "Alex: Hi"
 
 
 def test_session_store_prefers_keyring_when_available(tmp_path, monkeypatch):
@@ -1341,7 +1285,7 @@ def test_session_cache_multiple_client_requests_hit_store_once(tmp_path):
     """A PlaudClient that issues multiple HTTP requests should cause store.load()
     to be called at most once per client lifetime (acceptance criterion)."""
     manager, counting_store = make_counting_manager()
-    ok_response = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
+    ok_response = HttpResponse(200, json.dumps({"status": 0, "data": {"items": []}}).encode(), {})
     transport = StubTransport([ok_response, ok_response, ok_response])
     client = PlaudClient(manager, transport=transport)
     client.list_recordings()
@@ -1393,73 +1337,11 @@ def test_update_region_does_not_persist_env_token_session(monkeypatch):
 
 def test_session_cache_region_failover_loads_store_at_most_twice(tmp_path):
     """-302 region failover triggers update_region which reloads the store once,
-    then the retry uses the cache.  Total store.load() calls: ≤ 2."""
+    then the retry uses the cache.  Total store.load() calls: <= 2."""
     manager, counting_store = make_counting_manager(region="us")
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.list_recordings()
+    transport = StubTransport([json_response(REDIRECT_TO_EU), json_response(EMPTY_LIST)])
+    PlaudClient(manager, transport=transport).list_recordings()
     assert counting_store.load_count <= 2
-
-
-# ---------------------------------------------------------------------------
-# Region-redirect recursion-bound tests (Wave 0 / A2)
-# ---------------------------------------------------------------------------
-
-
-def test_region_redirect_loop_raises_after_two_requests(tmp_path):
-    """A server that returns -302 on every call must not recurse unboundedly.
-    Exactly 2 transport requests should be made (original + one retry), then
-    PlaudApiError('region redirect loop') must be raised."""
-    manager, _ = make_manager(tmp_path, region="us")
-    redirect_response = HttpResponse(
-        200,
-        json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-        {},
-    )
-    # Provide more than 2 responses to prove we stop early, not because the
-    # stub runs out.
-    transport = StubTransport([redirect_response, redirect_response, redirect_response])
-    client = PlaudClient(manager, transport=transport)
-
-    with pytest.raises(PlaudApiError, match="region redirect loop"):
-        client.list_recordings()
-
-    # Exactly 2 requests: the original call and the single allowed retry.
-    assert len(transport.calls) == 2
-
-
-def test_region_redirect_once_then_success(tmp_path):
-    """A single -302 followed by a normal status-0 payload must succeed and
-    persist the new region — the existing happy-path contract must hold."""
-    manager, store = make_manager(tmp_path, region="us")
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    result = client.list_recordings()
-
-    assert result == []
-    # Region must have been persisted to "eu".
-    assert store.load().region == "eu"
-    # Second request must have gone to the EU base URL.
-    assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
-    assert len(transport.calls) == 2
 
 
 def test_session_cache_expired_session_invalidates_cache(tmp_path):
@@ -1481,696 +1363,3 @@ def test_session_cache_expired_session_invalidates_cache(tmp_path):
 
     # Cache must be None — a subsequent require() after re-auth would reload.
     assert manager._cache is None
-
-
-# ---------------------------------------------------------------------------
-# Wave 2 / C5 — 429 backoff & polite polling
-# ---------------------------------------------------------------------------
-
-
-def _make_http_error(status: int, body: bytes, headers: dict[str, str] | None = None) -> HTTPError:
-    """Build a urllib.error.HTTPError with a readable body and optional headers."""
-    from email.message import Message
-
-    msg = Message()
-    for k, v in (headers or {}).items():
-        msg[k] = v
-    fp = io.BytesIO(body)
-    return HTTPError(url="https://example.com/api", code=status, msg="Error", hdrs=msg, fp=fp)
-
-
-def _transient_error(status: int = 429, retry_after: float | None = None) -> PlaudApiError:
-    """Build a PlaudApiError that classify() deems retryable."""
-    headers: dict[str, str] = {}
-    if retry_after is not None:
-        headers["Retry-After"] = str(int(retry_after))
-    exc = _make_http_error(status, b"rate limited", headers=headers)
-    return PlaudApiError.from_http_error(exc)
-
-
-class TestRetryBackoff:
-    """_request_json must retry 429 / 5xx up to _MAX_ATTEMPTS total attempts."""
-
-    def test_succeeds_after_one_transient_failure(self, tmp_path, monkeypatch):
-        """Transport raises 429 once, then succeeds — caller gets the result."""
-        manager, _ = make_manager(tmp_path)
-        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
-        transport = StubTransport([_transient_error(429), ok])
-
-        sleep_calls: list[float] = []
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
-        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)  # deterministic
-
-        client = PlaudClient(manager, transport=transport)
-        result = client.list_recordings()
-
-        assert result == []
-        # 1 original attempt + 1 retry = 2 transport calls total.
-        assert len(transport.calls) == 2
-        # One sleep call for the retry.
-        assert len(sleep_calls) == 1
-
-    def test_succeeds_after_two_transient_failures(self, tmp_path, monkeypatch):
-        """Transport raises 503 twice, then succeeds — caller gets the result."""
-        manager, _ = make_manager(tmp_path)
-        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
-        transport = StubTransport([_transient_error(503), _transient_error(503), ok])
-
-        sleep_calls: list[float] = []
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
-        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
-
-        client = PlaudClient(manager, transport=transport)
-        result = client.list_recordings()
-
-        assert result == []
-        # 1 original + 2 retries = 3 transport calls total.
-        assert len(transport.calls) == 3
-        assert len(sleep_calls) == 2
-
-    def test_raises_after_exhausting_all_attempts(self, tmp_path, monkeypatch):
-        """Transport raises 429 every time — raises after _MAX_ATTEMPTS calls."""
-        manager, _ = make_manager(tmp_path)
-        # Provide more responses than _MAX_ATTEMPTS to prove we stop early.
-        transport = StubTransport(
-            [_transient_error(429), _transient_error(429), _transient_error(429), _transient_error(429)]
-        )
-
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.list_recordings()
-
-        # Must stop at exactly _MAX_ATTEMPTS calls.
-        assert len(transport.calls) == client_mod._MAX_ATTEMPTS
-
-    def test_non_retryable_error_not_retried(self, tmp_path, monkeypatch):
-        """A 404 must not be retried — exactly 1 transport call."""
-        manager, _ = make_manager(tmp_path)
-        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"not found"))
-        transport = StubTransport([err_404])
-
-        sleep_calls: list[float] = []
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.list_recordings()
-
-        assert len(transport.calls) == 1
-        assert sleep_calls == []
-
-
-class TestMutationRetryPolicy:
-    """#147: non-idempotent methods must not be auto-retried on 429/5xx.
-
-    Design decision (issue #147, needs-triage): retry the idempotent GET path
-    on transient errors as before, but give POST/PATCH/DELETE exactly one
-    attempt regardless of ``classify()``'s retryable flag. Blindly retrying a
-    transient failure on a mutation risks duplicating a side effect that may
-    have already landed server-side before the "failure" was observed (a
-    second /file/combine merge, a folder create that raises a false
-    "already exists" after the first attempt actually succeeded). GET has no
-    such risk, so it keeps the full retry budget.
-    """
-
-    def test_post_with_transient_error_is_not_retried(self, tmp_path, monkeypatch):
-        """A 429 on a POST (e.g. folder create) must raise after exactly one
-        transport call — not silently retried into a duplicate mutation."""
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([_transient_error(429)])
-
-        sleep_calls: list[float] = []
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.create_folder("Clients")
-
-        assert len(transport.calls) == 1
-        assert sleep_calls == []
-
-    def test_post_with_5xx_is_not_retried(self, tmp_path, monkeypatch):
-        """A 503 on a POST must also not be retried."""
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([_transient_error(503)])
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError):
-            client.create_folder("Clients")
-
-        assert len(transport.calls) == 1
-
-    def test_get_with_transient_error_still_retries(self, tmp_path, monkeypatch):
-        """Control: GET keeps the existing retry-on-transient behaviour."""
-        manager, _ = make_manager(tmp_path)
-        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
-        transport = StubTransport([_transient_error(429), ok])
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
-
-        client = PlaudClient(manager, transport=transport)
-        result = client.list_recordings()
-
-        assert result == []
-        assert len(transport.calls) == 2
-
-
-class TestRetryAfterHeader:
-    """Retry-After header value must be honoured: sleep >= Retry-After."""
-
-    def test_retry_after_larger_than_backoff_is_used(self, tmp_path, monkeypatch):
-        """When Retry-After > computed backoff, we sleep Retry-After."""
-        manager, _ = make_manager(tmp_path)
-        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
-        # Retry-After = 30s, which is much larger than the ~1 s back-off.
-        transport = StubTransport([_transient_error(429, retry_after=30.0), ok])
-
-        sleep_calls: list[float] = []
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
-        # Force jitter to minimum so computed delay is clearly < 30.
-        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: lo)
-
-        client = PlaudClient(manager, transport=transport)
-        client.list_recordings()
-
-        assert len(sleep_calls) == 1
-        # The sleep value must be at least the Retry-After value.
-        assert sleep_calls[0] >= 30.0
-
-    def test_retry_after_parsed_from_header(self, tmp_path, monkeypatch):
-        """from_http_error must populate retry_after from the Retry-After header."""
-        exc = _make_http_error(429, b"rate limited", headers={"Retry-After": "45"})
-        err = PlaudApiError.from_http_error(exc)
-        assert err.retry_after == 45.0
-
-    def test_retry_after_absent_gives_none(self, tmp_path, monkeypatch):
-        """Missing Retry-After header → retry_after is None."""
-        exc = _make_http_error(429, b"rate limited")
-        err = PlaudApiError.from_http_error(exc)
-        assert err.retry_after is None
-
-    def test_retry_after_http_date_ignored(self, tmp_path, monkeypatch):
-        """HTTP-date form of Retry-After must be ignored (set to None), not crash."""
-        exc = _make_http_error(429, b"rate limited", headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
-        err = PlaudApiError.from_http_error(exc)
-        assert err.retry_after is None
-
-    def test_backoff_larger_than_retry_after_is_used(self, tmp_path, monkeypatch):
-        """When computed backoff > Retry-After, we sleep the backoff (never under-sleep)."""
-        manager, _ = make_manager(tmp_path)
-        ok = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
-        # Retry-After = 0 s — server says "retry now", but we still back off.
-        transport = StubTransport([_transient_error(429, retry_after=0.0), ok])
-
-        sleep_calls: list[float] = []
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: sleep_calls.append(s))
-        # Force jitter to upper bound so computed delay > 0.
-        monkeypatch.setattr(client_mod, "_jitter", lambda lo, hi: hi)
-
-        client = PlaudClient(manager, transport=transport)
-        client.list_recordings()
-
-        assert len(sleep_calls) == 1
-        # Sleep must be at least the computed backoff, not the zero Retry-After.
-        assert sleep_calls[0] > 0.0
-
-
-class TestNonJsonBodyOnSuccess:
-    """#146: a 2xx response with a non-JSON body must surface as a
-    PlaudApiError (server/upstream error shape), not an unguarded
-    json.JSONDecodeError — the latter is a ValueError subclass that the MCP
-    facade's `except ValueError` branch reports as error_code="validation",
-    misleadingly blaming the caller for what is actually a server outage.
-    """
-
-    def test_main_api_non_json_2xx_body_raises_plaud_api_error(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        # A 200 whose body is not JSON at all (e.g. an HTML error page served
-        # through a CDN/proxy in front of the real API).
-        transport = StubTransport([HttpResponse(200, b"<html>upstream hiccup</html>", {})])
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError) as exc_info:
-            client.list_recordings()
-
-        # Must NOT be a bare json.JSONDecodeError (a ValueError subclass) —
-        # it must be wrapped as a PlaudApiError carrying the HTTP status.
-        assert not isinstance(exc_info.value, json.JSONDecodeError)
-        assert exc_info.value.http_status == 200
-
-    def test_transcript_data_link_non_json_2xx_body_raises_plaud_api_error(self, tmp_path):
-        """Same guarantee for the transcript S3 data_link fetch path
-        (client.py _fetch_transcript_segments), a separate code path from the
-        main /file/... API request loop."""
-        manager, _ = make_manager(tmp_path)
-        detail_response = HttpResponse(
-            200,
-            json.dumps(
-                {
-                    "status": 0,
-                    "data": {
-                        "file_id": "rec1",
-                        "content_list": [
-                            {
-                                "data_type": "transaction",
-                                "task_status": 1,
-                                "data_link": "https://s3.fake/transcript.json",
-                            }
-                        ],
-                    },
-                }
-            ).encode(),
-            {},
-        )
-        transport = StubTransport([detail_response, HttpResponse(200, b"not json at all", {})])
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError) as exc_info:
-            client.get_recording("rec1", include_transcript=True)
-
-        assert not isinstance(exc_info.value, json.JSONDecodeError)
-        assert exc_info.value.http_status == 200
-
-    def test_transcript_data_link_http_error_raises_instead_of_reading_empty(self, tmp_path):
-        """#210: a finished block that fails to download is not an empty transcript."""
-        manager, _ = make_manager(tmp_path)
-        detail_response = HttpResponse(
-            200,
-            json.dumps(
-                {
-                    "status": 0,
-                    "data": {
-                        "file_id": "rec1",
-                        "content_list": [
-                            {
-                                "data_type": "transaction",
-                                "task_status": 1,
-                                "data_link": "https://s3.fake/transcript.json",
-                            }
-                        ],
-                    },
-                }
-            ).encode(),
-            {},
-        )
-        transport = StubTransport([detail_response, HttpResponse(403, b"<Error>AccessDenied</Error>", {})])
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError) as exc_info:
-            client.get_recording("rec1", include_transcript=True)
-
-        assert exc_info.value.http_status == 403
-
-
-class TestTranscriptBlockSelection:
-    """get_recording must fetch the requested transcript block, not always the raw one."""
-
-    def _detail_response(self) -> HttpResponse:
-        """A recording with both a raw and an AI-polished transcript block."""
-        return HttpResponse(
-            200,
-            json.dumps(
-                {
-                    "status": 0,
-                    "data": {
-                        "file_id": "rec1",
-                        "file_name": "Test",
-                        "content_list": [
-                            {
-                                "data_type": "transaction",
-                                "task_status": 1,
-                                "data_link": "https://s3.fake/raw.json",
-                            },
-                            {
-                                "data_type": "transaction_polish",
-                                "task_status": 1,
-                                "data_link": "https://s3.fake/polish.json",
-                            },
-                        ],
-                    },
-                }
-            ).encode(),
-            {},
-        )
-
-    def _segments_response(self, content: str) -> HttpResponse:
-        return HttpResponse(200, json.dumps([{"speaker": "Speaker 1", "content": content}]).encode(), {})
-
-    def test_default_fetches_the_raw_transaction_block(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([self._detail_response(), self._segments_response("um, raw")])
-        client = PlaudClient(manager, transport=transport)
-
-        detail = client.get_recording("rec1", include_transcript=True)
-
-        assert "um, raw" in detail.transcript
-        # Second request must be the raw block's data_link, not the polished one.
-        assert transport.calls[1]["url"] == "https://s3.fake/raw.json"
-        assert detail.transcript_blocks_available == ["transaction", "transaction_polish"]
-
-    def test_polish_block_fetches_the_polished_data_link(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([self._detail_response(), self._segments_response("Raw.")])
-        client = PlaudClient(manager, transport=transport)
-
-        client.get_recording("rec1", include_transcript=True, transcript_block="transaction_polish")
-
-        assert transport.calls[1]["url"] == "https://s3.fake/polish.json"
-
-    def test_missing_block_yields_empty_transcript_but_still_lists_available(self, tmp_path):
-        """Asking for a block Plaud never generated must not look like "no transcript"."""
-        manager, _ = make_manager(tmp_path)
-        raw_only = HttpResponse(
-            200,
-            json.dumps(
-                {
-                    "status": 0,
-                    "data": {
-                        "file_id": "rec1",
-                        "content_list": [
-                            {
-                                "data_type": "transaction",
-                                "task_status": 1,
-                                "data_link": "https://s3.fake/raw.json",
-                            }
-                        ],
-                    },
-                }
-            ).encode(),
-            {},
-        )
-        transport = StubTransport([raw_only])
-        client = PlaudClient(manager, transport=transport)
-
-        detail = client.get_recording("rec1", include_transcript=True, transcript_block="transaction_polish")
-
-        assert detail.transcript == ""
-        assert detail.transcript_blocks_available == ["transaction"]
-
-    def test_unknown_block_is_rejected_before_any_request(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([])
-        client = PlaudClient(manager, transport=transport)
-
-        with pytest.raises(ValueError, match="transcript_block"):
-            client.get_recording("rec1", include_transcript=True, transcript_block="outline")
-
-        assert transport.calls == []
-
-    def test_edit_paths_always_read_the_raw_block(self, tmp_path):
-        """rename_speaker PATCHes trans_result back, so it must read what it writes.
-
-        Reading the polished block here would write polished text over the raw
-        transcript.
-        """
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport(
-            [
-                self._detail_response(),
-                self._segments_response("hello"),
-                HttpResponse(200, json.dumps({"status": 0}).encode(), {}),
-            ]
-        )
-        client = PlaudClient(manager, transport=transport)
-
-        client.rename_speaker("rec1", "Speaker 1", "Kadin")
-
-        assert transport.calls[1]["url"] == "https://s3.fake/raw.json"
-
-
-class TestAudioDownload:
-    """`GET /file/temp-url/{id}` → presigned mp3, valid ~1h."""
-
-    def _temp_url_response(self, url: str | None = "https://s3.fake/audiofiles/rec1.mp3?sig=x"):
-        return HttpResponse(
-            200,
-            json.dumps({"status": 0, "temp_url": url, "temp_url_opus": None}).encode(),
-            {},
-        )
-
-    def test_get_audio_url_returns_the_presigned_url(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([self._temp_url_response()])
-        client = PlaudClient(manager, transport=transport)
-
-        assert client.get_audio_url("rec1") == "https://s3.fake/audiofiles/rec1.mp3?sig=x"
-        assert "/file/temp-url/rec1" in transport.calls[0]["url"]
-
-    def test_get_audio_url_returns_none_when_no_audio(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([self._temp_url_response(url=None)])
-        client = PlaudClient(manager, transport=transport)
-
-        assert client.get_audio_url("rec1") is None
-
-    def test_get_audio_url_falls_back_to_opus(self, tmp_path):
-        """temp_url was null in every capture, but the field exists — prefer it over failing."""
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport(
-            [
-                HttpResponse(
-                    200,
-                    json.dumps(
-                        {"status": 0, "temp_url": None, "temp_url_opus": "https://s3.fake/a.opus"}
-                    ).encode(),
-                    {},
-                )
-            ]
-        )
-        client = PlaudClient(manager, transport=transport)
-
-        assert client.get_audio_url("rec1") == "https://s3.fake/a.opus"
-
-    def test_download_audio_writes_bytes_to_disk(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport(
-            [self._temp_url_response(), HttpResponse(200, b"ID3\x04fake-mp3-bytes", {})]
-        )
-        client = PlaudClient(manager, transport=transport)
-        destination = tmp_path / "out" / "rec1.mp3"
-
-        saved = client.download_audio("rec1", destination)
-
-        assert saved == destination
-        assert destination.read_bytes() == b"ID3\x04fake-mp3-bytes"
-        # The S3 GET must not carry a Plaud auth header — the signature is in
-        # the URL, and sending Authorization can make S3 reject the request.
-        assert "Authorization" not in transport.calls[1]["headers"]
-
-    def test_download_audio_without_audio_raises_value_error(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([self._temp_url_response(url=None)])
-        client = PlaudClient(manager, transport=transport)
-
-        with pytest.raises(ValueError, match="no downloadable audio"):
-            client.download_audio("rec1", tmp_path / "rec1.mp3")
-
-    def test_download_audio_propagates_s3_failure(self, tmp_path):
-        manager, _ = make_manager(tmp_path)
-        transport = StubTransport([self._temp_url_response(), HttpResponse(403, b"expired", {})])
-        client = PlaudClient(manager, transport=transport)
-
-        with pytest.raises(PlaudApiError) as exc_info:
-            client.download_audio("rec1", tmp_path / "rec1.mp3")
-        assert exc_info.value.http_status == 403
-
-
-class TestPollLoopSurvival:
-    """PlaudClient._poll_until backs the transcription, summary, and merge waits."""
-
-    def test_skips_transient_errors_then_returns_result(self, tmp_path, monkeypatch):
-        """A 429 and a network blip count as skipped polls, not failures."""
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
-        outcomes = iter(
-            [
-                _transient_error(429),
-                PlaudApiError("Plaud API request timed out after 30.0s", network_error=True),
-                None,
-                "done",
-            ]
-        )
-
-        def check():
-            outcome = next(outcomes)
-            if isinstance(outcome, Exception):
-                raise outcome
-            return outcome
-
-        assert client._poll_until(check, what="job", timeout_s=60, poll_interval_s=0) == "done"
-
-    def test_non_transient_error_propagates(self, tmp_path):
-        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
-        err_404 = PlaudApiError.from_http_error(_make_http_error(404, b"not found"))
-
-        def check():
-            raise err_404
-
-        with pytest.raises(PlaudApiError) as info:
-            client._poll_until(check, what="job", timeout_s=60, poll_interval_s=0)
-        assert info.value is err_404
-
-    def test_timeout_checks_once_then_raises_wait_timeout(self, tmp_path):
-        """Even a zero budget polls once; then it's a soft deadline, not a failure."""
-        client = PlaudClient(make_manager(tmp_path)[0], transport=StubTransport([]))
-        calls = []
-
-        with pytest.raises(PlaudWaitTimeoutError, match="job timed out after 0s") as info:
-            client._poll_until(
-                lambda: calls.append(1), what="job", timeout_s=0, poll_interval_s=0, task_id="t1"
-            )
-        assert calls == [1]
-        assert info.value.task_id == "t1"
-        assert info.value.is_soft_deadline_timeout()
-
-
-class TestRedirectAndRetryComposition:
-    """Region redirect and retry/backoff must not interfere with each other."""
-
-    def test_redirect_then_success_still_works_with_retry_present(self, tmp_path, monkeypatch):
-        """The existing -302 redirect contract is preserved after adding retry logic."""
-        manager, store = make_manager(tmp_path, region="us")
-        redirect_response = HttpResponse(
-            200,
-            json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-            {},
-        )
-        ok_response = HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {})
-        transport = StubTransport([redirect_response, ok_response])
-
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        result = client.list_recordings()
-
-        assert result == []
-        assert store.load().region == "eu"
-        assert len(transport.calls) == 2
-        assert transport.calls[1]["url"].startswith("https://api-euc1.plaud.ai/")
-
-    def test_redirect_loop_still_raises_with_retry_present(self, tmp_path, monkeypatch):
-        """-302 on every call must still raise 'region redirect loop', not retry infinitely."""
-        manager, _ = make_manager(tmp_path, region="us")
-        redirect_response = HttpResponse(
-            200,
-            json.dumps({"status": -302, "data": {"domains": {"api": "api-euc1.plaud.ai"}}}).encode(),
-            {},
-        )
-        transport = StubTransport(
-            [redirect_response, redirect_response, redirect_response, redirect_response]
-        )
-        monkeypatch.setattr(client_mod, "_sleep", lambda s: None)
-
-        client = PlaudClient(manager, transport=transport)
-        with pytest.raises(PlaudApiError, match="region redirect loop"):
-            client.list_recordings()
-
-        # Still exactly 2 requests (original + 1 redirect retry).
-        assert len(transport.calls) == 2
-
-
-def test_region_redirect_to_unlisted_plaud_host_uses_that_host(tmp_path):
-    """A -302 to a Plaud API host we have no region key for is followed as-is
-    instead of being treated as US; a non-Plaud host is refused."""
-    manager, store = make_manager(tmp_path, region="us")
-    transport = StubTransport(
-        [
-            HttpResponse(
-                200,
-                json.dumps({"status": -302, "data": {"domains": {"api": "api-apse1.plaud.ai"}}}).encode(),
-                {},
-            ),
-            HttpResponse(200, json.dumps({"status": 0, "data_file_list": []}).encode(), {}),
-            HttpResponse(
-                200,
-                json.dumps({"status": -302, "data": {"domains": {"api": "evil.example.com"}}}).encode(),
-                {},
-            ),
-        ]
-    )
-    client = PlaudClient(manager, transport=transport)
-    client.list_recordings()
-    assert store.load().region == "api-apse1.plaud.ai"
-    assert transport.calls[1]["url"].startswith("https://api-apse1.plaud.ai/")
-
-    with pytest.raises(PlaudApiError, match="unrecognized API host"):
-        client.list_recordings()
-    assert store.load().region == "api-apse1.plaud.ai"
-
-
-@pytest.mark.parametrize(
-    ("domain", "expected"),
-    [
-        ("api-euc1.plaud.ai", "eu"),
-        ("https://api.plaud.ai/", "us"),
-        ("api-apse1.plaud.ai", "api-apse1.plaud.ai"),
-        (".plaud.ai", None),
-        ("a..plaud.ai", None),
-        ("apiа.plaud.ai", None),  # Cyrillic "a"
-        ("plaud.ai.evil.com", None),
-        ("", None),
-    ],
-)
-def test_region_for_api_domain_accepts_only_clean_plaud_hosts(domain, expected):
-    assert region_for_api_domain(domain) == expected
-
-
-def test_search_content_posts_query_and_flattens_transcript_and_summary_hits(tmp_path):
-    manager, _ = make_manager(tmp_path, region="us")
-    response = {
-        "status": 0,
-        "data": {
-            "query": "rollover",
-            "keywords": ["rollover", "rol"],
-            "list": [
-                {
-                    "id": "rec-t",
-                    "title": "Transcript hit",
-                    "start_time": 1_750_000_000_000,
-                    "trans_chunks": [
-                        {
-                            "content": "[Advisor]Let's plan the rollover.\n[Client]Sounds good.",
-                            "offset": 0,
-                            "speakers": [
-                                {"name": "Advisor", "start_time": 61_000, "end_time": 64_000},
-                                {"name": "Client", "start_time": 64_500, "end_time": 65_000},
-                            ],
-                        }
-                    ],
-                },
-                {
-                    "id": "rec-s",
-                    "title": "Summary hit",
-                    "start_time": 1_740_000_000_000,
-                    "notes": [
-                        {"id": "auto_sum:x", "chunks": [{"content": "ext rollover next steps", "offset": 90}]}
-                    ],
-                },
-            ],
-        },
-    }
-    transport = StubTransport([HttpResponse(200, json.dumps(response).encode(), {})])
-    client = PlaudClient(manager, transport=transport)
-
-    matches = client.search_content("rollover", since_ms=1, until_ms=2)
-
-    call = transport.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://api.plaud.ai/gsearch/v1/search"
-    assert json.loads(call["body"]) == {"query": "rollover", "date_from": 1, "date_to": 2, "from": ""}
-    transcript, summary = matches
-    assert (transcript.id, transcript.source, transcript.start_ms) == ("rec-t", "transcript", 61_000)
-    assert transcript.snippet == "[Advisor]Let's plan the rollover. [Client]Sounds good."
-    assert (summary.id, summary.source, summary.start_ms) == ("rec-s", "summary", None)
-    assert summary.snippet == "…rollover next steps"
-
-
-def test_search_content_with_no_hits_returns_empty_list(tmp_path):
-    manager, _ = make_manager(tmp_path)
-    body = {"status": 0, "data": {"query": "x", "keywords": ["x"]}}
-    transport = StubTransport([HttpResponse(200, json.dumps(body).encode(), {})])
-    assert PlaudClient(manager, transport=transport).search_content("x") == []

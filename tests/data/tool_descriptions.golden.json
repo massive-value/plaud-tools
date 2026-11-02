@@ -11,7 +11,7 @@
           "type": "integer"
         },
         "folder": {
-          "description": "Folder ID (from `list_folders`); pass empty string for unfiled recordings",
+          "description": "Folder ID (from `list_folders`); pass empty string for recordings in no folder",
           "type": "string"
         },
         "limit": {
@@ -207,7 +207,7 @@
           "type": "string"
         },
         "clear_folder": {
-          "description": "When true, removes the recording from its current folder (use instead of a magic folder_id value)",
+          "description": "When true, moves the recording out of its folder into Plaud's main Recordings list (use instead of a magic folder_id value)",
           "type": "boolean"
         },
         "folder_id": {
@@ -312,7 +312,7 @@
           "type": "string"
         },
         "folder_id": {
-          "description": "Folder ID (from `list_folders`) to assign after upload",
+          "description": "Folder ID (from `list_folders`) to file the recording in",
           "type": "string"
         },
         "start_time": {
@@ -323,7 +323,7 @@
           ]
         },
         "timezone_offset": {
-          "description": "UTC offset in hours; defaults to local system offset",
+          "description": "Whole-hour UTC offset (e.g. -6); defaults to this machine's timezone",
           "type": "number"
         },
         "title": {
@@ -339,7 +339,7 @@
     "name": "upload_recording"
   },
   {
-    "description": "List Plaud folders, returning id, name, color, and icon for each.",
+    "description": "List Plaud folders, returning id, name, color, icon, and parent_id for each.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -468,11 +468,11 @@
           "type": "string"
         },
         "color": {
-          "description": "Hex color (e.g. '#4c8eff'); optional",
+          "description": "Plaud color name (e.g. 'folder-color-green'); optional",
           "type": "string"
         },
         "confirm": {
-          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted.",
+          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. Its recordings are kept and move to Plaud's main Recordings list.",
           "type": "boolean"
         },
         "folder_id": {

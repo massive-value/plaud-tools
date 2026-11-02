@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+plaud-tools works again for accounts Plaud moved to its 4.0 app. Accounts not
+yet moved are no longer supported. See docs/adr/008-plaud-4-protocol.md.
+
+### Fixed
+
+- On 2026-11-02 Plaud turned off its old API for accounts moved to 4.0. Every
+  tool except search failed with "Account migrated to 4.0. Please update and
+  reinitialize." The client now uses the 4.0 API for listing, reading,
+  editing, uploading, merging, trash and folders.
+- Plaud's batch move, trash, restore and delete calls can report success while
+  rejecting an item. plaud-tools now checks each item and raises the error
+  instead of reporting success.
+
+### Changed
+
+- Recording ids are Plaud 4.0 file ids: `of_<hex>` for recordings made before
+  the move, `f_<hex>` for newer ones. Old bare hex ids are still accepted
+  everywhere. Systems that stored ids from earlier exports will see the same
+  recording as `of_<hex>`.
+- `browse_recordings` and CLI `list` items no longer include `has_transcript`
+  or `has_summary`. The 4.0 list doesn't carry them. `get_recording` still
+  returns `is_trans` and `is_summary`.
+- `get_recording` no longer returns `headline` or `used_template`, and now
+  returns `audio_mime_type`. Audio can be `.ogg` as well as `.mp3`; CLI
+  `audio -o <dir>` names the file with the right extension.
+- Folder colors are Plaud color names such as `folder-color-green` instead of
+  hex. Folders now include `parent_id`.
+- Uploads go straight into the chosen folder in the same request, so
+  `folder_error` is gone from `upload_recording` and CLI `upload` output.
+  Without a folder, Plaud puts uploads in its Import folder.
+- `--timezone-offset` / `timezone_offset` take whole hours only. The default
+  is this machine's timezone, read with the new `tzlocal` dependency.
+- CLI `status` prints each running job's stages instead of the old status
+  fields.
+- Deleting a folder moves its recordings to Plaud's main Recordings list.
+
 ## [0.12.1] - 2026-10-01
 
 In-app updates are harder to break: the tray now runs the updater that ships
