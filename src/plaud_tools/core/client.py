@@ -94,6 +94,10 @@ _DEFAULT_FOLDER_COLOR = "folder-color-default"
 # recordings live.
 _SYSTEM_FOLDER_RECORDINGS = 1
 
+# Community summary templates have 32-hex ids; official ones use a code
+# such as MEETING.  Summary tasks must say which kind an id is.
+_HEX_ID = re.compile(r"[0-9a-f]{32}")
+
 # Plaud status codes worth naming.
 _STATUS_FILE_NOT_FOUND = -1800311
 _STATUS_MIGRATED = -1800907
@@ -595,7 +599,9 @@ class PlaudClient:
         speaker renames and edits.
 
         ``template_type`` is a Plaud summary template id; "default" or None
-        lets Plaud choose.
+        lets Plaud choose.  Plaud rejects a ``template_id`` sent without its
+        kind, so the kind is inferred: official templates use codes such as
+        ``MEETING`` or ``SALES-BANT``, community templates use hex ids.
         """
         raw = self._get_detail_raw(recording_id)
         detail = self._normalize_recording_detail(raw)
@@ -613,6 +619,7 @@ class PlaudClient:
         }
         if template_type and template_type.lower() not in ("default", "auto-select"):
             body["template_id"] = template_type
+            body["template_type"] = "community" if _HEX_ID.fullmatch(template_type) else "official"
         if detail.is_trans:
             self._request_json("POST", f"{_V4}/tasks/summary", strict=True, body=body)
             return True
@@ -1035,22 +1042,35 @@ class PlaudClient:
     def delete_folder(self, folder_id: str) -> None:
         """Delete a folder, keeping what was inside it.  Cannot be undone.
 
-        Plaud's own delete takes a folder's contents with it, so its
-        recordings and subfolders are first moved to the Recordings folder
-        (unfiled), then the empty folder is trashed and permanently deleted.
+        Plaud's own delete takes a folder's contents with it, so everything
+        inside first moves up one level: into the parent folder for a
+        subfolder.  For a top-level folder, subfolders move to the top level
+        and recordings to the Recordings folder (unfiled).  Then the empty
+        folder is trashed and permanently deleted.
         """
         if not folder_id:
             raise ValueError("folder_id cannot be empty")
-        version = self._find_folder(folder_id).version_ms
+        folder = self._find_folder(folder_id)
+        version = folder.version_ms
         children = self._walk(f"{_V4}/folders/children", {"node_id": folder_id})
-        if children:
+        if folder.parent_id not in ("", "root"):
+            moves = [(folder.parent_id, children)]
+        else:
+            subfolders = [c for c in children if _is_user_folder(c)]
+            recordings = [c for c in children if not _is_user_folder(c)]
+            moves = [("root", subfolders)]
+            if recordings:
+                moves.append((self._system_folder_id(_SYSTEM_FOLDER_RECORDINGS), recordings))
+        for target, nodes in moves:
+            if not nodes:
+                continue
             moved = self._node_batch(
                 "POST",
                 "move",
                 {
-                    "target_node_id": self._system_folder_id(_SYSTEM_FOLDER_RECORDINGS),
+                    "target_node_id": target,
                     "items": [
-                        {"node_id": c["node_id"], "origin_version": c.get("version_ms")} for c in children
+                        {"node_id": c["node_id"], "origin_version": c.get("version_ms")} for c in nodes
                     ],
                 },
             )
@@ -1112,11 +1132,21 @@ class PlaudClient:
         )
 
     def _container_file_id(self, container_id: str) -> str:
-        """The file id inside a per-recording container folder ('' if none)."""
-        for item in self._walk(f"{_V4}/folders/children", {"node_id": container_id}):
-            if item.get("file_id"):
-                return str(item["file_id"])
-        return ""
+        """The recording's file id inside its container folder ('' if none).
+
+        A container can also hold notes (``MD`` files) and attached
+        documents next to the recording, in any order, so the ``REC`` file
+        wins.  A container with no ``REC`` file falls back to its first
+        non-note file.
+        """
+        files = [
+            item
+            for item in self._walk(f"{_V4}/folders/children", {"node_id": container_id})
+            if item.get("file_id")
+        ]
+        recordings = [f for f in files if f.get("file_type") == "REC"]
+        not_notes = [f for f in files if f.get("file_type") != "MD"]
+        return str((recordings or not_notes or [{}])[0].get("file_id") or "")
 
     def _container_node(self, detail: RecordingDetail) -> dict[str, Any]:
         """The container folder's node (for its version), via ``nodes/ancestor-items``.

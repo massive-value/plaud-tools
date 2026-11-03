@@ -267,7 +267,15 @@ def test_list_trash_maps_every_kind_of_trashed_item(tmp_path):
         tmp_path,
         {
             f"GET {V4}/folders/content": ok({"items": trash}),
-            f"GET {V4}/folders/children": children({"n_c1": [{"file_id": "f_new1"}]}),
+            # A note can come before the recording in its container.
+            f"GET {V4}/folders/children": children(
+                {
+                    "n_c1": [
+                        {"file_id": "of_n_1", "file_type": "MD"},
+                        {"file_id": "f_new1", "file_type": "REC"},
+                    ]
+                }
+            ),
         },
     )
     migrated, new, loose = client.list_trash()
@@ -795,6 +803,37 @@ def test_delete_folder_moves_children_to_recordings_then_trashes_and_deletes(tmp
     ]
 
 
+def test_delete_folder_moves_subfolders_up_not_into_recordings(tmp_path):
+    sub = folder_node("on_fd_2", "Sub", version_ms=170, parent_id="on_fd_1")
+    routes = {
+        f"GET {V4}/folders/children": children(
+            {
+                "root": [
+                    folder_node("on_fd_1", "Clients", version_ms=100, parent_id="root"),
+                    {"node_id": "on_sys_rec", "type": 1, "system_folder_type": 1},
+                ],
+                "on_fd_1": [{"node_id": "on_w_a", "version_ms": 150}, sub],
+                "on_fd_2": [{"node_id": "on_w_b", "version_ms": 180}],
+            }
+        ),
+        f"POST {V4}/nodes/move": ok({"items": []}),
+        f"DELETE {V4}/nodes/trash": ok({"items": []}),
+        f"DELETE {V4}/nodes/delete": ok({"items": []}),
+    }
+    client, transport = routed(tmp_path, routes)
+    # Top level: the subfolder goes to the top level, the recording to Recordings.
+    client.delete_folder("on_fd_1")
+    assert [
+        (m["target_node_id"], [i["node_id"] for i in m["items"]])
+        for m in transport.sent(f"POST {V4}/nodes/move")
+    ] == [("root", ["on_fd_2"]), ("on_sys_rec", ["on_w_a"])]
+
+    # Nested: everything goes to the parent folder.
+    client, transport = routed(tmp_path, routes)
+    client.delete_folder("on_fd_2")
+    assert [m["target_node_id"] for m in transport.sent(f"POST {V4}/nodes/move")] == ["on_fd_1"]
+
+
 def test_delete_empty_folder_skips_the_move(tmp_path):
     routes = {
         f"GET {V4}/folders/children": children({"root": [folder_node("on_fd_1", "Empty", version_ms=100)]}),
@@ -832,7 +871,11 @@ def test_transcribe_and_summarize_starts_whatever_is_missing(tmp_path):
     }
     client, transport = routed(tmp_path, routes)
     assert client.transcribe_and_summarize("of_1", template_type="MEETING") is True
-    assert transport.sent(f"POST {V4}/tasks/summary")[0]["template_id"] == "MEETING"
+    assert client.transcribe_and_summarize("of_1", template_type="790a48f29350244d1baae3837c4035de") is True
+    # Plaud rejects a template id sent without its kind (-400).
+    official, community = transport.sent(f"POST {V4}/tasks/summary")
+    assert (official["template_id"], official["template_type"]) == ("MEETING", "official")
+    assert community["template_type"] == "community"
 
 
 def test_transcribe_and_summarize_starts_nothing_when_done_or_running(tmp_path):

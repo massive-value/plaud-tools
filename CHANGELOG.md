@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Trash, restore and permanent delete failed for recordings that have extra
+  notes, with "recording ... is not in the trash". Plaud 4.0 keeps notes in
+  the same folder as the recording, and the lookup picked up a note instead
+  of the recording. About 18% of a real library had notes.
+- Deleting a folder that held subfolders moved those subfolders into the
+  Recordings folder. Contents now move up one level. A subfolder's contents
+  go to its parent folder. A top-level folder's subfolders go to the top
+  level, and its recordings go to Recordings as before.
+- Transcribing or summarizing with a named template (`--template MEETING`,
+  or `template_type` in `process_recording`) failed with Plaud error -400.
+  Plaud needs the template's kind next to its id, and it now gets it.
+
 ## [0.13.0] - 2026-11-02
 
 plaud-tools works again for accounts Plaud moved to its 4.0 app. Accounts not
