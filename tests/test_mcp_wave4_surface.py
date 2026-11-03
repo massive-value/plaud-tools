@@ -669,12 +669,25 @@ class TestTrimAndAttach:
         mock_client.attach_document.assert_called_once_with("r1", doc, None, on_progress=None)
         mock_client.upload_recording.assert_not_called()
 
+    def test_upload_with_attach_to_refuses_audio_only_options(self, tmp_path):
+        doc = tmp_path / "statement.pdf"
+        doc.write_bytes(b"%PDF")
+        mock_client = MagicMock()
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["upload_recording"](file_path=str(doc), attach_to="r1", folder_id="fd1")
+
+        assert result["isError"]
+        assert "folder_id cannot be used with attach_to" in json.loads(result["content"][0]["text"])["error"]
+        mock_client.attach_document.assert_not_called()
+
     def test_get_recording_lists_attachments_when_asked(self):
         mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Call")
-        mock_client.list_attachments.return_value = [
-            Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")
-        ]
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1",
+            filename="Call",
+            attachments=[Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")],
+        )
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["get_recording"](recording_id="r1", include=["attachments"])

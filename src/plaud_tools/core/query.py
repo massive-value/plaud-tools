@@ -275,6 +275,11 @@ def share_dict(link: Any) -> dict[str, Any]:
     }
 
 
+def attachment_dict(attachment: Any) -> dict[str, Any]:
+    """The standard attachment dict (CLI ``show`` and MCP ``get_recording``)."""
+    return {"id": attachment.id, "name": attachment.filename, "type": attachment.file_type}
+
+
 def template_dict(template: Any) -> dict[str, Any]:
     """A summary template as CLI and MCP template search show it.
 

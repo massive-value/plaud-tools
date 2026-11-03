@@ -71,9 +71,9 @@ $_plaud_tools_nested = @{
         'delete' = @('--yes', '--help')
     }
     'share'  = @{
-        'create' = @('--days', '--never-expires', '--audio', '--no-audio', '--transcript', '--no-transcript', '--summary', '--no-summary', '--help')
+        'create' = @('--days', '--never-expires', '--audio', '--no-audio', '--transcript', '--no-transcript', '--summary', '--no-summary', '--yes', '--help')
         'get'    = @('--help')
-        'update' = @('--days', '--never-expires', '--audio', '--no-audio', '--transcript', '--no-transcript', '--summary', '--no-summary', '--help')
+        'update' = @('--days', '--never-expires', '--audio', '--no-audio', '--transcript', '--no-transcript', '--summary', '--no-summary', '--yes', '--help')
         'revoke' = @('--yes', '--help')
     }
 }

@@ -77,15 +77,13 @@ class StubClient:
             raw={},
         )
 
-    def list_attachments(self, recording_id):
-        return [Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")]
-
     def get_recording(
         self,
         recording_id,
         include_transcript=False,
         include_summary=False,
         transcript_block="transaction",
+        include_attachments=False,
     ):
         return RecordingDetail(
             id=recording_id,
@@ -100,6 +98,9 @@ class StubClient:
             transcript_blocks_available=["transaction"] if include_transcript else [],
             ai_content="# Summary",
             language="en",
+            attachments=[Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")]
+            if include_attachments
+            else [],
         )
 
     def rename_recording(self, recording_id, filename):
@@ -2417,7 +2418,7 @@ class VocabShareStub(StubClient):
         self.link = ShareLink(url="https://share.example/s/abc", key="abc", expires_at="2026-12-01T00:00:00Z")
 
     def list_vocabulary(self):
-        return [VocabularyWord(id="hw_1", word="Nguyen", heard_as="Win", language="en")]
+        return [VocabularyWord(id="hw_1", word="Quorvale", heard_as="Core veil", language="en")]
 
     def add_vocabulary(self, word, *, heard_as=None, language="en"):
         self.calls.append(("add", word, heard_as, language))
@@ -2425,7 +2426,7 @@ class VocabShareStub(StubClient):
 
     def update_vocabulary(self, word_id, *, word=None, heard_as=None, language=None):
         self.calls.append(("edit", word_id, word, heard_as, language))
-        return VocabularyWord(id=word_id, word=word or "Nguyen", heard_as=heard_as or "")
+        return VocabularyWord(id=word_id, word=word or "Quorvale", heard_as=heard_as or "")
 
     def delete_vocabulary(self, word_ids):
         self.calls.append(("delete", word_ids))
@@ -2455,11 +2456,11 @@ def test_mcp_vocabulary_list_add_and_edit():
     client = VocabShareStub()
     _, listed = _mcp(client, "mutate_vocabulary", action="list")
     assert listed["words"] == [
-        {"id": "hw_1", "word": "Nguyen", "heard_as": "Win", "language": "en", "correction_count": 0}
+        {"id": "hw_1", "word": "Quorvale", "heard_as": "Core veil", "language": "en", "correction_count": 0}
     ]
-    _mcp(client, "mutate_vocabulary", action="add", word="Okafor", heard_as="Oh car for")
+    _mcp(client, "mutate_vocabulary", action="add", word="Zentrix", heard_as="Zen tricks")
     _mcp(client, "mutate_vocabulary", action="edit", word_id="hw_1", heard_as="")
-    assert client.calls == [("add", "Okafor", "Oh car for", "en"), ("edit", "hw_1", None, "", None)]
+    assert client.calls == [("add", "Zentrix", "Zen tricks", "en"), ("edit", "hw_1", None, "", None)]
 
 
 def test_mcp_vocabulary_delete_requires_confirm():
@@ -2516,6 +2517,19 @@ def test_mcp_share_get_update_and_revoke():
     assert client.calls[-1] == ("share_revoke", "rec1")
 
 
+def test_mcp_mutate_recording_refuses_options_of_another_action():
+    client = VocabShareStub()
+    for kwargs in (
+        {"action": "trash", "confirm": True},
+        {"action": "share_get", "share_days": 3},
+        {"action": "share_create", "share_never_expires": True, "confirm": True},
+        {"action": "rename", "new_name": "X", "keep": ["0:00-1:00"]},
+    ):
+        result, payload = _mcp(client, "mutate_recording", recording_id="rec1", **kwargs)
+        assert result["isError"] is True and "applies only to action" in payload["error"]
+    assert client.calls == []
+
+
 def test_mcp_share_rejects_batch():
     result, _ = _mcp(VocabShareStub(), "mutate_recording", recording_ids=["a", "b"], action="share_get")
     assert result["isError"] is True
@@ -2523,8 +2537,8 @@ def test_mcp_share_rejects_batch():
 
 def test_cli_vocab_add_and_delete_gate():
     client = VocabShareStub()
-    payload = json.loads(run_cli(["vocab", "add", "Nguyen", "--heard-as", "Win"], client))
-    assert payload["word"]["heard_as"] == "Win"
+    payload = json.loads(run_cli(["vocab", "add", "Quorvale", "--heard-as", "Core veil"], client))
+    assert payload["word"]["heard_as"] == "Core veil"
     with pytest.raises(ValueError, match="cannot be undone"):
         run_cli(["vocab", "delete", "hw_1"], client)
     assert json.loads(run_cli(["vocab", "delete", "hw_1", "--yes"], client))["deleted"] == 1
@@ -2532,9 +2546,13 @@ def test_cli_vocab_add_and_delete_gate():
 
 def test_cli_share_create_update_and_revoke_gate():
     client = VocabShareStub()
-    run_cli(["share", "create", "rec1", "--summary"], client)
+    for command in (["share", "create", "rec1", "--summary"], ["share", "update", "rec1", "--days", "3"]):
+        with pytest.raises(ValueError, match="Re-run with --yes"):
+            run_cli(command, client)
+    assert client.calls == []
+    run_cli(["share", "create", "rec1", "--summary", "--yes"], client)
     assert client.calls[-1] == ("share_create", "rec1", 7, False, True, True)
-    run_cli(["share", "update", "rec1", "--never-expires", "--no-audio"], client)
+    run_cli(["share", "update", "rec1", "--never-expires", "--no-audio", "--yes"], client)
     assert client.calls[-1][2] == {
         "expire_days": None,
         "never_expires": True,
@@ -2546,6 +2564,13 @@ def test_cli_share_create_update_and_revoke_gate():
         run_cli(["share", "revoke", "rec1"], client)
     run_cli(["share", "revoke", "rec1", "--yes"], client)
     assert client.calls[-1] == ("share_revoke", "rec1")
+
+
+def test_cli_upload_attach_to_refuses_audio_only_flags(tmp_path):
+    doc = tmp_path / "statement.pdf"
+    doc.write_bytes(b"%PDF")
+    with pytest.raises(ValueError, match="--folder-id cannot be used with --attach-to"):
+        run_cli(["upload", str(doc), "--attach-to", "rec1", "--folder-id", "fd1"], VocabShareStub())
 
 
 # ---------------------------------------------------------------------------

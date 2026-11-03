@@ -207,7 +207,8 @@ _plaud_tools() {
                                         '--transcript[Include the transcript]' \
                                         '--no-transcript[Leave out the transcript]' \
                                         '--summary[Include the summary]' \
-                                        '--no-summary[Leave out the summary]'
+                                        '--no-summary[Leave out the summary]' \
+                                        '--yes[Confirm the change]'
                                     ;;
                                 revoke)
                                     _arguments '--yes[Confirm revoking without prompt]'

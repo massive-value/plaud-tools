@@ -60,11 +60,11 @@ narrower `since`/`until` window.
 | `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
 | `get_recording` | `include=["transcript","segments","speakers","summary","audio_url","attachments"]` — ask only for what you need; each is a large field or an extra request. `summary` also returns `extra_notes` (other summaries, each with a `note_id`); `raw_markdown=true` keeps Plaud's links. `attachments` lists documents filed with the recording. |
 | `export_transcript` | Whole transcript to a file. `format=` json / txt / srt / docx / pdf. Returns the path, not the text. |
-| `mutate_recording` | `action=` rename / trash / restore / move / trim. Accepts `recording_ids` for batch (not for rename or trim). `trim` takes `keep=["0:00-1:00","5:00-6:30"]`, the ranges to keep, and makes a new "copy" recording; the original stays. Also `share_create` / `share_get` / `share_update` / `share_revoke` for one recording's public link — see below. |
+| `mutate_recording` | `action=` rename / trash / restore / move / trim. Accepts `recording_ids` for batch (not for rename or trim). `trim` takes `keep=["0:00-1:00","5:00-6:30"]`, the ranges to keep, and makes a new "copy" recording; the original stays. Also `share_create` / `share_get` / `share_update` / `share_revoke` for one recording's public link — see below. An option meant for another action (say `confirm` on trash) is refused, not ignored. |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |
 | `edit_summary` | `action=` correct / replace. Recording must already have a summary. `note_id` edits an extra note instead. Works on raw markdown: the `[2:05]` citations you see are `plaud://` links that stay put, so don't search for them. |
-| `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. With `attach_to=<recording_id>` it attaches a document (PDF, Word, Excel, PowerPoint, TXT/MD/CSV, PNG/JPG) to that recording instead. |
+| `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. With `attach_to=<recording_id>` it attaches a document (PDF, Word, Excel, PowerPoint, TXT/MD/CSV, PNG/JPG) to that recording instead; `folder_id`, `start_time` and `timezone_offset` are refused then. |
 | `process_recording` | `action=` process (first transcript and summary; `wait=` none / transcript / summary) / resummarize (replace the summary) / add_note (an extra note from a template). See below. |
 | `merge_recordings` | Two or more → one new recording. Sources survive. |
 | `list_folders` | Get folder IDs before any folder-scoped call. `parent_id` is `"root"` or the folder it sits in. |
@@ -118,7 +118,7 @@ add only words the user asked for.
 holding the URL can open. It defaults to 7 days and transcript only; turn on
 `share_audio` or `share_summary` only when asked. Client recordings are
 sensitive, so confirm exactly what is being shared. `share_get` reads the
-link back, `share_update` (confirm-gated too) changes expiry (`share_days`, `share_never_expires`)
+link back, `share_update` (confirm-gated too) changes expiry (`share_days`, or `share_never_expires`, which only update takes)
 or contents, and `share_revoke` ends it. Plaud keeps the URL when a link is
 revoked, so sharing the same recording again brings back the same URL.
 

@@ -336,6 +336,27 @@ def _check_verbosity(verbosity: str | None) -> str:
     return verbosity
 
 
+def _summary_body(file_id: str, verbosity: str, options: dict[str, Any]) -> dict[str, Any]:
+    """The body every main-summary job starts from.
+
+    Used for ``tasks/summary``, ``trans-sum`` and ``summary-change-retry``.
+    *verbosity* is already checked and *options* come from ``summary_options``.
+    """
+    return {
+        "file_id": file_id,
+        "post_id": int(time.time() * 1000),
+        "ppc_status": 1,
+        "summary_verbosity": verbosity,
+        "summary_language": "auto",
+        **options,
+    }
+
+
+def _note_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The notes (``MD`` files) among a recording's container files."""
+    return [item for item in files if item.get("file_type") == "MD"]
+
+
 @dataclass(slots=True)
 class PlaudRecordingQuery:
     """A newest-first window of the recording list (``skip`` then ``limit``)."""
@@ -488,7 +509,13 @@ class PlaudClient:
         include_transcript: bool = False,
         include_summary: bool = False,
         transcript_block: str = DEFAULT_TRANSCRIPT_BLOCK,
+        include_attachments: bool = False,
     ) -> RecordingDetail:
+        """One recording, plus the transcript, summary and notes, or attachments when asked.
+
+        Notes and attachments both live in the recording's container folder,
+        so asking for both still lists that folder once.
+        """
         if transcript_block not in TRANSCRIPT_BLOCKS:
             raise ValueError(
                 f"transcript_block must be one of {', '.join(TRANSCRIPT_BLOCKS)}; got {transcript_block!r}"
@@ -507,10 +534,23 @@ class PlaudClient:
                 )
             )
             detail.transcript = format_transcript(segments)
-        if include_summary:
-            if detail.is_summary:
-                detail.ai_content = self._fetch_text(self._object(raw, "SUMMARY"))
-            detail.notes = self._read_notes(self._container_id_of(detail))
+        if include_summary and detail.is_summary:
+            detail.ai_content = self._fetch_text(self._object(raw, "SUMMARY"))
+        if include_summary or include_attachments:
+            files = self._container_files(detail)
+            if include_summary:
+                detail.notes = self._read_notes(files)
+            if include_attachments:
+                detail.attachments = [
+                    Attachment(
+                        id=str(item["file_id"]),
+                        filename=str(item.get("name") or ""),
+                        file_type=str(item.get("file_type") or ""),
+                        raw=item,
+                    )
+                    for item in files
+                    if item.get("file_type") not in _RECORDING_FILE_TYPES
+                ]
         return detail
 
     def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
@@ -913,14 +953,7 @@ class PlaudClient:
             return False
         if detail.is_trans and detail.is_summary:
             return False
-        body: dict[str, Any] = {
-            "file_id": detail.id,
-            "post_id": int(time.time() * 1000),
-            "ppc_status": 1,
-            "summary_verbosity": verbosity,
-            "summary_language": "auto",
-            **options,
-        }
+        body = _summary_body(detail.id, verbosity, options)
         if detail.is_trans:
             self._request_json("POST", f"{_V4}/tasks/summary", strict=True, body=body)
             return True
@@ -961,13 +994,8 @@ class PlaudClient:
         raw, detail = self._ready_for_summary(recording_id)
         route = "summary-change-retry" if detail.is_summary else "summary"
         body = {
-            "file_id": detail.id,
-            "post_id": int(time.time() * 1000),
-            "ppc_status": 1,
-            "summary_verbosity": verbosity,
-            "summary_language": "auto",
+            **_summary_body(detail.id, verbosity, options),
             "use_polished_transcript": _object_done(self._object(raw, "POLISHED_TRANSCRIPT")),
-            **options,
         }
         data = self._request_json("POST", f"{_V4}/tasks/{route}", strict=True, body=body).get("data") or {}
         if not data.get("task_id"):
@@ -1193,9 +1221,14 @@ class PlaudClient:
                 f"{kind} attachments are limited to {limit // 1024 // 1024} MB; {path.name} is larger"
             )
         source = self._normalize_recording_detail(self._get_detail_raw(recording_id))
-        container = self._container_id_of(source)
+        container = source.wrapper_id
         if not container:
-            raise PlaudApiError(f"could not find the container folder of recording {source.id}")
+            # The file sits straight in a folder; attaching there would file
+            # the document loose beside other recordings.
+            raise ValueError(
+                f"recording {source.id} has no container folder of its own, so Plaud has "
+                "nowhere to keep an attachment for it"
+            )
 
         upload_id = self._upload_parts(path, name, mime_type, extension, on_progress)
         file_id = f"f_{uuid.uuid4().hex}"
@@ -1229,27 +1262,6 @@ class PlaudClient:
             file_type=extension.upper(),
             raw=confirmed,
         )
-
-    def list_attachments(self, recording_id: str) -> list[Attachment]:
-        """The documents, images and text files attached to a recording.
-
-        Reads the recording's container folder and drops the recording
-        itself (``REC``) and its notes (``MD``).
-        """
-        source = self._normalize_recording_detail(self._get_detail_raw(recording_id))
-        container = self._container_id_of(source)
-        if not container:
-            return []
-        return [
-            Attachment(
-                id=str(item["file_id"]),
-                filename=str(item.get("name") or ""),
-                file_type=str(item.get("file_type") or ""),
-                raw=item,
-            )
-            for item in self._walk(f"{_V4}/folders/children", {"node_id": container})
-            if item.get("file_id") and item.get("file_type") not in _RECORDING_FILE_TYPES
-        ]
 
     def wait_for_transcription(
         self,
@@ -1541,8 +1553,8 @@ class PlaudClient:
         if note_id is None:
             file_id, obj = to_file_id(recording_id), self._object(raw, "SUMMARY")
         else:
-            container = self._container_id_of(self._normalize_recording_detail(raw))
-            if note_id not in {note["file_id"] for note in self._note_files(container)}:
+            files = self._container_files(self._normalize_recording_detail(raw))
+            if note_id not in {note["file_id"] for note in _note_files(files)}:
                 raise ValueError(f"{note_id} is not a note of recording {recording_id}")
             file_id, obj = note_id, self._note_object(self._get_detail_raw(note_id))
         if not _object_done(obj):
@@ -1753,6 +1765,7 @@ class PlaudClient:
         if not folder_id:
             raise ValueError("folder_id cannot be empty")
         folder = self._find_folder(folder_id)
+        version = folder.version_ms
         children = self._walk(f"{_V4}/folders/children", {"node_id": folder_id})
         if folder.parent_id not in ("", "root"):
             moves = [(folder.parent_id, children)]
@@ -1765,7 +1778,7 @@ class PlaudClient:
         for target, nodes in moves:
             if not nodes:
                 continue
-            self._node_batch(
+            moved = self._node_batch(
                 "POST",
                 "move",
                 {
@@ -1781,11 +1794,15 @@ class PlaudClient:
                     ],
                 },
             )
-        # Each step bumps the folder's version.  _node_batch remembers the new
-        # one from the reply, which a fresh listing may not show yet.
-        for method, action in (("DELETE", "trash"), ("DELETE", "delete")):
-            version = _VERSIONS.latest(folder_id, folder.version_ms)
-            self._node_batch(method, action, {"items": [{"node_id": folder_id, "origin_version": version}]})
+            # Moving children out bumps the folder's own version to the move's
+            # timestamp.  The reply may name the folder (then _VERSIONS has
+            # it), but the moved items carry that timestamp either way.
+            version = max([version, *(int(item.get("version_ms") or 0) for item in moved)])
+        # Trashing bumps it again; _node_batch remembers the new version from
+        # the reply, which a fresh listing may not show yet.
+        for action in ("trash", "delete"):
+            version = _VERSIONS.latest(folder_id, version)
+            self._node_batch("DELETE", action, {"items": [{"node_id": folder_id, "origin_version": version}]})
 
     def _find_folder(self, folder_id: str) -> Folder:
         # Most folders are top level, and the root is one request where the
@@ -2003,24 +2020,35 @@ class PlaudClient:
         not_notes = [f for f in files if f.get("file_type") != "MD"]
         return str((recordings or not_notes or [{}])[0].get("file_id") or "")
 
-    def _note_files(self, container_id: str) -> list[dict[str, Any]]:
-        """The ``MD`` file nodes in a recording's container ([] when it has none)."""
-        if not container_id:
-            return []
-        items = self._walk(f"{_V4}/folders/children", {"node_id": container_id})
-        return [item for item in items if item.get("file_type") == "MD" and item.get("file_id")]
+    def _container_files(self, detail: RecordingDetail) -> list[dict[str, Any]]:
+        """The file nodes in a recording's container: its audio, notes and attachments.
 
-    def _read_notes(self, container_id: str) -> list[RecordingNote]:
-        """Every note in a recording's container with its markdown, fetched in parallel."""
-        files = self._note_files(container_id)
+        [] for a recording with no container of its own (the file sits
+        straight in a folder): the other files there belong to other
+        recordings, not to this one.
+        """
+        if not detail.wrapper_id:
+            return []
+        items = self._walk(f"{_V4}/folders/children", {"node_id": detail.wrapper_id})
+        return [item for item in items if item.get("file_id")]
+
+    def _read_notes(self, files: list[dict[str, Any]]) -> list[RecordingNote]:
+        """Every note among a container's *files* with its markdown, fetched in parallel.
+
+        A note that fails to download comes back with ``content=None`` and the
+        reason in ``error``, so one bad note does not hide the others.
+        """
+
+        def read(item: dict[str, Any]) -> RecordingNote:
+            note = RecordingNote(note_id=str(item["file_id"]), name=str(item.get("name") or ""))
+            try:
+                note.content = self._fetch_text(self._note_object(self._get_detail_raw(note.note_id)))
+            except PlaudApiError as exc:
+                note.error = str(exc)
+            return note
+
         with ThreadPoolExecutor(max_workers=_NOTE_WORKERS) as pool:
-            texts = pool.map(
-                lambda item: self._fetch_text(self._note_object(self._get_detail_raw(item["file_id"]))), files
-            )
-            return [
-                RecordingNote(note_id=str(item["file_id"]), name=str(item.get("name") or ""), content=text)
-                for item, text in zip(files, texts, strict=True)
-            ]
+            return list(pool.map(read, _note_files(files)))
 
     @classmethod
     def _note_object(cls, raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -2097,11 +2125,6 @@ class PlaudClient:
             strict=True,
             body={"name": name, "origin_version": version},
         )
-
-    @staticmethod
-    def _container_id_of(detail: RecordingDetail) -> str:
-        """The folder holding the recording's file, notes and attachments ('' if unknown)."""
-        return detail.wrapper_id or str((detail.raw.get("node") or {}).get("parent_id") or "")
 
     @staticmethod
     def _folder_node_of(detail: RecordingDetail) -> str:

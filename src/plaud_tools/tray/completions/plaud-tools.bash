@@ -105,7 +105,7 @@ _plaud_tools_complete() {
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "create get update revoke --help" -- "$cur"))
             elif [[ "${words[2]}" == "create" || "${words[2]}" == "update" ]]; then
-                COMPREPLY=($(compgen -W "--days --never-expires --audio --no-audio --transcript --no-transcript --summary --no-summary --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "--days --never-expires --audio --no-audio --transcript --no-transcript --summary --no-summary --yes --help" -- "$cur"))
             elif [[ "${words[2]}" == "revoke" ]]; then
                 COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             fi

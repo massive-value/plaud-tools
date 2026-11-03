@@ -347,7 +347,7 @@ Without `--yes` it changes nothing and prints the plan: `folders_to_convert`, th
 
 ```
 plaud-tools vocab list
-plaud-tools vocab add "Okafor" --heard-as "Oh car for"
+plaud-tools vocab add "Zentrix" --heard-as "Zen tricks"
 plaud-tools vocab edit <word-id> --heard-as ""
 plaud-tools vocab delete <word-id> [<word-id> ...] --yes
 ```
@@ -357,15 +357,15 @@ Manages Plaud's account-wide custom vocabulary, which steers transcription of fu
 ### `share create` / `share get` / `share update` / `share revoke`
 
 ```
-plaud-tools share create <recording-id>
-plaud-tools share create <recording-id> --days 30 --audio --summary
+plaud-tools share create <recording-id> --yes
+plaud-tools share create <recording-id> --days 30 --audio --summary --yes
 plaud-tools share get <recording-id>
-plaud-tools share update <recording-id> --days 14
-plaud-tools share update <recording-id> --never-expires --no-audio
+plaud-tools share update <recording-id> --days 14 --yes
+plaud-tools share update <recording-id> --never-expires --no-audio --yes
 plaud-tools share revoke <recording-id> --yes
 ```
 
-Makes, reads, changes and ends a recording's public link. `create` defaults to a 7-day link with the transcript only; `--audio`, `--summary` and `--no-transcript` change what it includes (`--never-expires` skips the expiry). `update` changes the expiry (`--days` counts from now) and/or the included content, keeping anything you leave out. `get` prints `"shared": false` when there is no link. `revoke` requires `--yes`. Plaud does not rotate the URL: sharing the same recording again after a revoke brings back the same URL.
+Makes, reads, changes and ends a recording's public link. `create` defaults to a 7-day link with the transcript only; `--audio`, `--summary` and `--no-transcript` change what it includes (`--never-expires` skips the expiry; it and `--days` cannot be combined). `update` changes the expiry (`--days` counts from now, or `--never-expires`) and/or the included content, keeping anything you leave out. `create`, `update` and `revoke` require `--yes`, because each changes who can see the recording. `get` prints `"shared": false` when there is no link. Plaud does not rotate the URL: sharing the same recording again after a revoke brings back the same URL.
 
 ### `move`
 
@@ -470,7 +470,7 @@ Uploads a local audio file. Native formats: `.mp3`, `.opus`, `.ogg`, `.oga`. Oth
 
 By default the command waits for transcription and summary to finish. `--detach` returns immediately. `--skip-summary` waits for transcript only.
 
-With `--attach-to <recording-id>` the file is attached to that existing recording as a document instead of uploaded as audio. It sits next to the recording in Plaud and shows in the web app and in `show`. Accepted: PDF, Word, Excel, PowerPoint (15 MB), TXT/MD/CSV (2 MB), PNG/JPG (20 MB). `--title` names the attachment; the other upload options do not apply.
+With `--attach-to <recording-id>` the file is attached to that existing recording as a document instead of uploaded as audio. It sits next to the recording in Plaud and shows in the web app and in `show`. Accepted: PDF, Word, Excel, PowerPoint (15 MB), TXT/MD/CSV (2 MB), PNG/JPG (20 MB). `--title` names the attachment; the audio-only options (`--folder-id`, `--start-time`, `--timezone-offset`, `--detach`, `--skip-summary`) are refused. A recording with no container folder of its own (its file sits straight in a folder) cannot take attachments.
 
 ### `transcribe`
 

@@ -469,7 +469,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",  # noqa: E501
+        description="Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it. Options of another action are refused.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -501,7 +501,7 @@ _TOOLS: list[types.Tool] = [
                 "share_days": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Link lifetime in days from now (default 7)",  # noqa: E501
+                    "description": "share_create/share_update: link lifetime in days from now (default 7)",  # noqa: E501
                 },
                 "share_never_expires": {
                     "type": "boolean",
@@ -509,15 +509,15 @@ _TOOLS: list[types.Tool] = [
                 },
                 "share_audio": {
                     "type": "boolean",
-                    "description": "Link includes audio (default false)",  # noqa: E501
+                    "description": "share_create/share_update: link includes audio (default false)",  # noqa: E501
                 },
                 "share_transcript": {
                     "type": "boolean",
-                    "description": "Link includes transcript (default true)",
+                    "description": "share_create/share_update: link includes transcript (default true)",
                 },
                 "share_summary": {
                     "type": "boolean",
-                    "description": "Link includes summary (default false)",
+                    "description": "share_create/share_update: link includes summary (default false)",
                 },
                 "confirm": {
                     "type": "boolean",
@@ -636,7 +636,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "attach_to": {
                     "type": "string",
-                    "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB)",  # noqa: E501
+                    "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB); not with folder_id/start_time/timezone_offset",  # noqa: E501
                 },
                 "folder_id": {
                     "type": "string",

@@ -47,8 +47,18 @@ def render_summary(markdown: str | None) -> str | None:
 
 
 def notes_payload(notes: list[RecordingNote], *, raw: bool = False) -> list[dict[str, str | None]]:
-    """A recording's notes as ``{note_id, name, content}`` dicts for MCP and CLI output."""
-    return [
-        {"note_id": n.note_id, "name": n.name, "content": n.content if raw else render_summary(n.content)}
-        for n in notes
-    ]
+    """A recording's notes as ``{note_id, name, content}`` dicts for MCP and CLI output.
+
+    A note that failed to download also carries ``error``.
+    """
+    payload: list[dict[str, str | None]] = []
+    for n in notes:
+        entry = {
+            "note_id": n.note_id,
+            "name": n.name,
+            "content": n.content if raw else render_summary(n.content),
+        }
+        if n.error:
+            entry["error"] = n.error
+        payload.append(entry)
+    return payload

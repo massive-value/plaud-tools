@@ -199,7 +199,7 @@
     "name": "export_transcript"
   },
   {
-    "description": "Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",
+    "description": "Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it. Options of another action are refused.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -252,11 +252,11 @@
           "type": "array"
         },
         "share_audio": {
-          "description": "Link includes audio (default false)",
+          "description": "share_create/share_update: link includes audio (default false)",
           "type": "boolean"
         },
         "share_days": {
-          "description": "Link lifetime in days from now (default 7)",
+          "description": "share_create/share_update: link lifetime in days from now (default 7)",
           "minimum": 1,
           "type": "integer"
         },
@@ -265,11 +265,11 @@
           "type": "boolean"
         },
         "share_summary": {
-          "description": "Link includes summary (default false)",
+          "description": "share_create/share_update: link includes summary (default false)",
           "type": "boolean"
         },
         "share_transcript": {
-          "description": "Link includes transcript (default true)",
+          "description": "share_create/share_update: link includes transcript (default true)",
           "type": "boolean"
         }
       },
@@ -351,7 +351,7 @@
       "additionalProperties": false,
       "properties": {
         "attach_to": {
-          "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB)",
+          "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB); not with folder_id/start_time/timezone_offset",
           "type": "string"
         },
         "file_path": {

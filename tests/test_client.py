@@ -350,20 +350,40 @@ def test_get_recording_with_summary_returns_the_containers_notes(tmp_path):
     ]
 
 
-def test_notes_are_found_through_the_parent_folder_when_the_detail_names_no_container(tmp_path):
+def test_a_recording_straight_in_a_folder_has_no_notes_or_attachments(tmp_path):
+    doc = tmp_path / "statement.pdf"
+    doc.write_bytes(b"abc")
     routes = note_routes()
-    # Same file node, but the detail carries only parent_id (no separate container folder).
+    # No container of its own: the file sits right in the folder it is shown in,
+    # beside other recordings' files.
     routes[f"GET {V4}/files/detail/of_1"] = ok(
         {
-            "node": {"node_id": "on_f_1", "parent_id": "on_w_1", "name": "Meeting", "version_ms": 100},
+            "node": {
+                "node_id": "on_f_1",
+                "folder": {"folder_id": "on_fd_1"},
+                "display_folder": {"folder_id": "on_fd_1"},
+            },
             "meta": {"file_id": "of_1"},
             "objects": [],
             "task": {"in_progress_tasks": []},
         }
     )
+    client, transport = routed(tmp_path, routes)
+    detail = client.get_recording("of_1", include_summary=True, include_attachments=True)
+    assert (detail.notes, detail.attachments) == ([], [])
+    with pytest.raises(ValueError, match="has no container folder"):
+        client.attach_document("of_1", doc)
+    assert not transport.hit(f"GET {V4}/folders/children")
+    assert not transport.hit(f"POST {V4}/upload/create")
+
+
+def test_a_note_that_fails_to_download_does_not_hide_the_others(tmp_path):
+    routes = note_routes()
+    routes["GET https://s3.fake/n2.md"] = HttpResponse(500, b"", {})
     client, _ = routed(tmp_path, routes)
-    detail = client.get_recording("of_1", include_summary=True)
-    assert [n.note_id for n in detail.notes] == ["of_n1", "of_n2"]
+    minutes, highlights = client.get_recording("of_1", include_summary=True).notes
+    assert minutes.content == f"Budget agreed {NOTE_LINK}" and minutes.error is None
+    assert highlights.content is None and "500" in (highlights.error or "")
 
 
 def test_correct_summary_on_a_note_edits_the_raw_note_and_keeps_its_links(tmp_path):
@@ -911,9 +931,11 @@ def test_delete_folder_moves_children_to_recordings_then_trashes_and_deletes(tmp
                 ],
             }
         ),
-        # The move bumps the folder's own version, which a fresh listing may not show yet.
+        # The move bumps the folder's own version to the move's timestamp, which a
+        # fresh listing may not show yet.  Live replies also name the folder under
+        # parent_items; the moved items alone must be enough.
         f"POST {V4}/nodes/move": ok(
-            {"items": [{"node_id": "on_w_a", "version_ms": 900}, {"node_id": "on_fd_1", "version_ms": 950}]}
+            {"items": [{"node_id": "on_w_a", "version_ms": 950}, {"node_id": "on_w_b", "version_ms": 950}]}
         ),
         f"DELETE {V4}/nodes/trash": ok({"items": [{"node_id": "on_fd_1", "version_ms": 1000}]}),
         f"DELETE {V4}/nodes/delete": ok({"items": []}),
@@ -1357,15 +1379,20 @@ CONTAINER_FILES = [
 ]
 
 
-def test_list_attachments_skips_the_recording_and_its_notes(tmp_path):
+def test_get_recording_reads_notes_and_attachments_from_one_container_listing(tmp_path):
     routes = {
         f"GET {V4}/files/detail/of_1": detail_payload(),
+        f"GET {V4}/files/detail/f_note": detail_payload(obj("MD", "https://s3.fake/note.md")),
+        "GET https://s3.fake/note.md": HttpResponse(200, b"# Notes", {}),
         f"GET {V4}/folders/children": children({"on_w_1": CONTAINER_FILES}),
     }
-    client, _ = routed(tmp_path, routes)
-    assert [(a.id, a.filename, a.file_type) for a in client.list_attachments("of_1")] == [
+    client, transport = routed(tmp_path, routes)
+    detail = client.get_recording("of_1", include_summary=True, include_attachments=True)
+    assert [(a.id, a.filename, a.file_type) for a in detail.attachments] == [
         ("f_doc", "statement.pdf", "PDF")
     ]
+    assert [n.content for n in detail.notes] == ["# Notes"]
+    assert len([c for c in transport.calls if "/folders/children" in c["url"]]) == 1
 
 
 def test_attachments_do_not_hide_the_recording_from_trash_listing(tmp_path):
@@ -1802,7 +1829,7 @@ def test_session_cache_expired_session_invalidates_cache(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def hotword(word_id="hw_1", word="Okafor", heard_as="", language="en"):
+def hotword(word_id="hw_1", word="Zentrix", heard_as="", language="en"):
     return {
         "id": word_id,
         "word": word,
@@ -1813,25 +1840,25 @@ def hotword(word_id="hw_1", word="Okafor", heard_as="", language="en"):
 
 
 def test_vocabulary_add_sends_language_and_heard_as(tmp_path):
-    reply = ok({"items": [{"item": hotword(heard_as="Oh car for"), "duplicated": False}]})
+    reply = ok({"items": [{"item": hotword(heard_as="Zen tricks"), "duplicated": False}]})
     client, transport = routed(tmp_path, {f"POST {V4}/hotwords/add": reply})
-    entry = client.add_vocabulary("Okafor", heard_as="Oh car for")
-    assert (entry.id, entry.word, entry.heard_as) == ("hw_1", "Okafor", "Oh car for")
+    entry = client.add_vocabulary("Zentrix", heard_as="Zen tricks")
+    assert (entry.id, entry.word, entry.heard_as) == ("hw_1", "Zentrix", "Zen tricks")
     assert transport.sent(f"POST {V4}/hotwords/add") == [
-        {"items": [{"word": "Okafor", "language": "en", "replaced_word": "Oh car for"}]}
+        {"items": [{"word": "Zentrix", "language": "en", "replaced_word": "Zen tricks"}]}
     ]
 
 
 def test_vocabulary_update_sends_the_whole_entry_and_can_clear_heard_as(tmp_path):
     routes = {
-        f"GET {V4}/hotwords/list": ok({"items": [hotword(heard_as="Oh car for")]}),
+        f"GET {V4}/hotwords/list": ok({"items": [hotword(heard_as="Zen tricks")]}),
         f"PATCH {V4}/hotwords/update/hw_1": ok({"item": hotword()}),
     }
     client, transport = routed(tmp_path, routes)
     entry = client.update_vocabulary("hw_1", heard_as="")
     assert entry.heard_as == ""
     assert transport.sent(f"PATCH {V4}/hotwords/update/hw_1") == [
-        {"word": "Okafor", "language": "en", "replaced_word": ""}
+        {"word": "Zentrix", "language": "en", "replaced_word": ""}
     ]
     with pytest.raises(ValueError, match="no vocabulary entry"):
         client.update_vocabulary("hw_missing", word="X")

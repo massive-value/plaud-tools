@@ -90,13 +90,15 @@ class Recording:
 class RecordingNote:
     """An extra summary stored next to a recording (Plaud 4.0 "note").
 
-    ``content`` is the raw markdown, or None when Plaud has not finished it.
-    ``note_id`` is the note's file id, what ``edit_summary`` takes to edit it.
+    ``content`` is the raw markdown, or None when Plaud has not finished it
+    or it failed to download (then ``error`` says why).  ``note_id`` is the
+    note's file id, what ``edit_summary`` takes to edit it.
     """
 
     note_id: str
     name: str
     content: str | None = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -127,6 +129,8 @@ class RecordingDetail:
     ai_content: str | None = None
     # Extra summaries filed beside the recording; filled with the summary.
     notes: list[RecordingNote] = field(default_factory=list)
+    # Documents attached to the recording; filled only when asked for.
+    attachments: list[Attachment] = field(default_factory=list)
     # Node bookkeeping for writes: the file node, its per-recording container
     # (empty when the file sits directly in a folder), and the node version
     # Plaud requires on every change.

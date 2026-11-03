@@ -29,6 +29,7 @@ from ..core.folders import plan_colon_nesting
 from ..core.models import RecordingDetail
 from ..core.query import (
     SHARE_REVOKE_NOTE,
+    attachment_dict,
     detail_summary_dict,
     folder_dict,
     model_dict,
@@ -221,11 +222,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     share_create = share_sub.add_parser("create")
     share_create.add_argument("recording_id")
-    share_create.add_argument(
-        "--days", type=_positive_int, default=SHARE_DEFAULT_DAYS, help="Link lifetime in days (default 7)"
+    create_expiry = share_create.add_mutually_exclusive_group()
+    create_expiry.add_argument(
+        "--days", type=_positive_int, help=f"Link lifetime in days (default {SHARE_DEFAULT_DAYS})"
     )
-    share_create.add_argument("--never-expires", action="store_true", help="Create a link with no expiry")
+    create_expiry.add_argument("--never-expires", action="store_true", help="Create a link with no expiry")
     _add_share_content_flags(share_create)
+    share_create.add_argument("--yes", action="store_true", help="Confirm making the public link")
 
     share_get = share_sub.add_parser("get")
     share_get.add_argument("recording_id")
@@ -236,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     expiry.add_argument("--days", type=_positive_int, help="New lifetime in days from now")
     expiry.add_argument("--never-expires", action="store_true", help="Remove the expiry")
     _add_share_content_flags(share_update)
+    share_update.add_argument("--yes", action="store_true", help="Confirm changing what the link shows")
 
     share_revoke = share_sub.add_parser("revoke")
     share_revoke.add_argument("recording_id")
@@ -754,13 +758,10 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
-    detail = client.get_recording(args.recording_id, include_transcript=True)
+    detail = client.get_recording(args.recording_id, include_transcript=True, include_attachments=True)
     output = detail_summary_dict(detail)
     output["speakers"] = detail.speakers
-    output["attachments"] = [
-        {"id": a.id, "name": a.filename, "type": a.file_type}
-        for a in client.list_attachments(args.recording_id)
-    ]
+    output["attachments"] = [attachment_dict(a) for a in detail.attachments]
     return json.dumps(output, indent=2)
 
 
@@ -841,15 +842,25 @@ def _handle_share(args: argparse.Namespace, client: PlaudClient) -> str:
             payload["share"] = share_dict(link)
         return json.dumps(payload, indent=2)
     if command == "create":
+        if not args.yes:
+            raise ValueError(
+                f"Sharing {args.recording_id!r} makes a public link that anyone holding the URL can "
+                "open. Re-run with --yes to confirm."
+            )
         link = client.create_share_link(
             args.recording_id,
-            expire_days=None if args.never_expires else args.days,
+            expire_days=None if args.never_expires else (args.days or SHARE_DEFAULT_DAYS),
             audio=bool(args.audio),
             transcript=True if args.transcript is None else args.transcript,
             summary=bool(args.summary),
         )
         return json.dumps({"ok": True, "action": "create", "share": share_dict(link)}, indent=2)
     if command == "update":
+        if not args.yes:
+            raise ValueError(
+                f"Updating the share link for {args.recording_id!r} can widen who sees what "
+                "(audio, no expiry). Re-run with --yes to confirm."
+            )
         link = client.update_share_link(
             args.recording_id,
             expire_days=args.days,
@@ -1038,6 +1049,16 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
 
     path = Path(args.file)
     if args.attach_to:
+        audio_only = {
+            "--folder-id": args.folder_id,
+            "--start-time": args.start_time,
+            "--timezone-offset": args.timezone_offset,
+            "--detach": args.detach or None,
+            "--skip-summary": args.skip_summary or None,
+        }
+        given = [flag for flag, value in audio_only.items() if value is not None]
+        if given:
+            raise ValueError(f"{', '.join(given)} cannot be used with --attach-to")
         if not path.is_file():
             raise ValueError(f"file not found: {path}")
         attachment = client.attach_document(args.attach_to, path, args.title)
