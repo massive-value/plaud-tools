@@ -7,7 +7,7 @@ $_plaud_tools_subcommands = @(
     'list', 'search', 'detail', 'show', 'transcript', 'summary', 'audio', 'export',
     'rename', 'folders', 'folder', 'move', 'move-to-folder', 'rename-speaker',
     'correct-transcript', 'correct-summary', 'set-summary', 'transcribe',
-    'status', 'trash', 'restore', 'delete', 'trash-move', 'trash-restore',
+    'resummarize', 'add-note', 'templates', 'models', 'status', 'trash', 'restore', 'delete', 'trash-move', 'trash-restore',
     'upload', 'merge', 'dump', 'login', 'refresh', 'session', 'update',
     'doctor', 'ping'
 )
@@ -30,7 +30,11 @@ $_plaud_tools_flags = @{
     'correct-transcript'  = @('--help')
     'correct-summary'     = @('--help')
     'set-summary'         = @('--content', '--content-file', '--help')
-    'transcribe'          = @('--template', '--language', '--diarization', '--no-diarization', '--llm', '--wait', '--help')
+    'transcribe'          = @('--template', '--template-kind', '--llm', '--instruction', '--verbosity', '--language', '--diarization', '--no-diarization', '--wait', '--help')
+    'resummarize'         = @('--template', '--template-kind', '--llm', '--instruction', '--verbosity', '--detach', '--help')
+    'add-note'            = @('--template', '--template-kind', '--llm', '--instruction', '--name', '--detach', '--help')
+    'templates'           = @('--help')
+    'models'              = @('--help')
     'status'              = @('--help')
     'trash'               = @('--list', '--help')
     'restore'             = @('--help')

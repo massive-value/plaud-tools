@@ -37,6 +37,10 @@ _plaud_tools() {
                 'correct-summary:Find-and-replace text in a summary'
                 'set-summary:Replace a recording summary'
                 'transcribe:Trigger transcription and summarization'
+                'resummarize:Replace a recording summary with a new one'
+                'add-note:Add a note to a recording from a template'
+                'templates:Search summary templates'
+                'models:List summary AI models'
                 'status:Show processing task status'
                 'trash:Trash a recording or list trash'
                 'restore:Restore a recording from trash'
@@ -139,12 +143,33 @@ _plaud_tools() {
                     ;;
                 transcribe)
                     _arguments \
-                        '--template[Summary template name]:template' \
+                        '--template[Template id from templates]:template' \
+                        '--template-kind[Template kind]:kind:(official community custom team_community)' \
+                        '--llm[AI model from models]:llm' \
+                        '--instruction[Custom instruction for the AI]:instruction' \
+                        '--verbosity[Summary length]:verbosity:(low medium high)' \
                         '--language[Language code, e.g. "en"]:language' \
                         '--diarization[Enable speaker diarization]' \
                         '--no-diarization[Disable speaker diarization]' \
-                        '--llm[LLM to use for summarization]:llm' \
                         '--wait[Block until the given stage completes]:wait:(none transcript summary)'
+                    ;;
+                resummarize)
+                    _arguments \
+                        '--template[Template id from templates]:template' \
+                        '--template-kind[Template kind]:kind:(official community custom team_community)' \
+                        '--llm[AI model from models]:llm' \
+                        '--instruction[Custom instruction for the AI]:instruction' \
+                        '--verbosity[Summary length]:verbosity:(low medium high)' \
+                        '--detach[Return without waiting for the summary]'
+                    ;;
+                add-note)
+                    _arguments \
+                        '--template[Template id from templates]:template' \
+                        '--template-kind[Template kind]:kind:(official community custom team_community)' \
+                        '--llm[AI model from models]:llm' \
+                        '--instruction[Custom instruction for the AI]:instruction' \
+                        '--name[Note title]:name' \
+                        '--detach[Return without waiting for the note]'
                     ;;
                 trash)
                     _arguments '--list[List recordings currently in trash]'

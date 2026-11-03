@@ -14,7 +14,10 @@ from ..core.auth import PlaudAuth
 from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
+    MAX_INSTRUCTION_CHARS,
     SEARCH_RESULT_CAP,
+    SUMMARY_VERBOSITY,
+    TEMPLATE_KINDS,
     PlaudClient,
     PlaudRecordingQuery,
     describe_unstarted_process,
@@ -26,10 +29,12 @@ from ..core.query import (
     collect_filtered_paged,
     detail_summary_dict,
     folder_dict,
+    model_dict,
     parse_isoish,
     structured_segments,
     summarize_match,
     summarize_recording,
+    template_dict,
     transcript_fingerprint,
 )
 from ..core.session import PlaudSession, SessionManager, SessionStore
@@ -192,7 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     transcribe_cmd = sub.add_parser("transcribe")
     transcribe_cmd.add_argument("recording_id")
-    transcribe_cmd.add_argument("--template")
+    _add_summary_options(transcribe_cmd, verbosity=True)
     transcribe_cmd.add_argument("--language", help="Language code, e.g. 'en' (default: auto-detect).")
     transcribe_cmd.add_argument(
         "--diarization",
@@ -200,7 +205,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Enable/disable speaker diarization (default: Plaud's default).",
     )
-    transcribe_cmd.add_argument("--llm", help="LLM to use for summarization (default: auto).")
     transcribe_cmd.add_argument(
         "--wait",
         choices=["none", "transcript", "summary"],
@@ -210,6 +214,32 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: none — accept and return immediately)."
         ),
     )
+
+    resummarize_cmd = sub.add_parser(
+        "resummarize", help="Replace a recording's summary (edits included) with a newly generated one."
+    )
+    resummarize_cmd.add_argument("recording_id")
+    _add_summary_options(resummarize_cmd, verbosity=True)
+    resummarize_cmd.add_argument(
+        "--detach", action="store_true", help="Return without waiting for the summary."
+    )
+
+    add_note_cmd = sub.add_parser(
+        "add-note", help="Add an extra note to a recording from a template; the summary is kept."
+    )
+    add_note_cmd.add_argument("recording_id")
+    _add_summary_options(add_note_cmd, verbosity=False)
+    add_note_cmd.add_argument(
+        "--name", help="The note's title; required with --template (use the template's name)."
+    )
+    add_note_cmd.add_argument("--detach", action="store_true", help="Return without waiting for the note.")
+
+    templates_cmd = sub.add_parser(
+        "templates", help="Search Plaud's summary templates for ids to pass to --template."
+    )
+    templates_cmd.add_argument("query")
+
+    sub.add_parser("models", help="List the AI models --llm accepts.")
 
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("recording_id", nargs="?")
@@ -344,6 +374,33 @@ def _add_limit_or_all(cmd: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Page through the whole library (honoring filters) until it is exhausted.",
     )
+
+
+def _add_summary_options(cmd: argparse.ArgumentParser, *, verbosity: bool) -> None:
+    """Add the template/model/instruction flags shared by transcribe, resummarize and add-note."""
+    cmd.add_argument("--template", help="Template id from 'templates' (default: Plaud chooses).")
+    cmd.add_argument(
+        "--template-kind",
+        choices=TEMPLATE_KINDS,
+        help="The template's kind from 'templates'; needed for custom and team templates.",
+    )
+    cmd.add_argument("--llm", help="AI model from 'models' (default: auto).")
+    cmd.add_argument(
+        "--instruction",
+        help=f"Custom instruction for the AI ({MAX_INSTRUCTION_CHARS} characters max; not with --template).",
+    )
+    if verbosity:
+        cmd.add_argument("--verbosity", choices=SUMMARY_VERBOSITY, help="Summary length (default: medium).")
+
+
+def _summary_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """The core client's summary options from the flags _add_summary_options added."""
+    return {
+        "template_id": args.template,
+        "template_kind": args.template_kind,
+        "llm": args.llm,
+        "instruction": args.instruction,
+    }
 
 
 def _mask_token(token: str) -> str:
@@ -864,10 +921,10 @@ def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
 def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
     started = client.transcribe_and_summarize(
         args.recording_id,
-        template_type=args.template,
         language=args.language,
         diarization=args.diarization,
-        llm=args.llm,
+        verbosity=args.verbosity,
+        **_summary_kwargs(args),
     )
     if not started:
         # Plaud started no new job; report what the recording actually has.
@@ -880,14 +937,15 @@ def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
                 "is_trans": detail.is_trans,
                 "is_summary": detail.is_summary,
                 "message": describe_unstarted_process(detail)
-                + " Use 'set-summary' or 'correct-summary' to change the summary text.",
+                + " Use 'set-summary' or 'correct-summary' to change the summary text, "
+                "'resummarize' to regenerate it, or 'add-note' for an extra note.",
             },
             indent=2,
         )
     result: dict[str, Any] = {
         "accepted": True,
         "recording_id": args.recording_id,
-        "template_type": args.template or "AUTO-SELECT",
+        "template_id": args.template or "AUTO-SELECT",
     }
     if args.wait == "none":
         return json.dumps(result, indent=2)
@@ -898,6 +956,43 @@ def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
     result["is_trans"] = detail.is_trans
     result["is_summary"] = detail.is_summary
     return json.dumps(result, indent=2)
+
+
+def _handle_resummarize(args: argparse.Namespace, client: PlaudClient) -> str:
+    task_id = client.resummarize(args.recording_id, verbosity=args.verbosity, **_summary_kwargs(args))
+    result: dict[str, Any] = {"accepted": True, "recording_id": args.recording_id, "task_id": task_id}
+    if not args.detach:
+        client.wait_for_task(task_id, what="summary")
+        result["is_summary"] = True
+    return json.dumps(result, indent=2)
+
+
+def _handle_add_note(args: argparse.Namespace, client: PlaudClient) -> str:
+    job = client.generate_note(args.recording_id, note_name=args.name, **_summary_kwargs(args))
+    result: dict[str, Any] = {
+        "accepted": True,
+        "recording_id": args.recording_id,
+        "note_id": job.note_id,
+        "name": job.name,
+        "task_id": job.task_id,
+    }
+    if not args.detach:
+        # Print the note id first: a timeout or Ctrl+C during the wait must
+        # not tempt a re-run, which would add a second note.
+        print(f"note_id={job.note_id!r} - waiting for Plaud to write it", file=sys.stderr)
+        client.wait_for_task(job.task_id, what="note")
+        result["done"] = True
+    return json.dumps(result, indent=2)
+
+
+def _handle_templates(args: argparse.Namespace, client: PlaudClient) -> str:
+    return json.dumps(
+        [template_dict(t) for t in client.search_templates(args.query)], indent=2, ensure_ascii=False
+    )
+
+
+def _handle_models(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
+    return json.dumps([model_dict(m) for m in client.list_summary_models()], indent=2)
 
 
 def _handle_status(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -1044,6 +1139,10 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "upload": _handle_upload,
     "merge": _handle_merge,
     "transcribe": _handle_transcribe,
+    "resummarize": _handle_resummarize,
+    "add-note": _handle_add_note,
+    "templates": _handle_templates,
+    "models": _handle_models,
     "status": _handle_status,
     "dump": _handle_dump,
     "transcript": _handle_transcript,

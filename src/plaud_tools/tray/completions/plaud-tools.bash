@@ -12,7 +12,7 @@ _plaud_tools_complete() {
         cword=$COMP_CWORD
     }
 
-    local subcommands="list search detail show transcript summary audio export rename folders folder move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe status trash restore delete trash-move trash-restore upload merge dump login refresh session update doctor ping"
+    local subcommands="list search detail show transcript summary audio export rename folders folder move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe resummarize add-note templates models status trash restore delete trash-move trash-restore upload merge dump login refresh session update doctor ping"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands --version --help" -- "$cur"))
@@ -40,7 +40,13 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "-f --format -o --output --overwrite --polish --no-speakers --no-timestamps --expect-fingerprint --help" -- "$cur"))
             ;;
         transcribe)
-            COMPREPLY=($(compgen -W "--template --language --diarization --no-diarization --llm --wait --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --language --diarization --no-diarization --wait --help" -- "$cur"))
+            ;;
+        resummarize)
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --detach --help" -- "$cur"))
+            ;;
+        add-note)
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --name --detach --help" -- "$cur"))
             ;;
         trash)
             COMPREPLY=($(compgen -W "--list --help" -- "$cur"))

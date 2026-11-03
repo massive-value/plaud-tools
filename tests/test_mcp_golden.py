@@ -63,7 +63,12 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-_TOKEN_BUDGET_WORDS = 730
+#
+# #254: 730 -> 830.  New search_templates tool and process_recording's
+# resummarize/add_note actions (~95 words, 787 total).  The template options
+# must say where their values come from (search_templates) and which action
+# each belongs to, or an agent guesses template ids and model names.
+_TOKEN_BUDGET_WORDS = 830
 
 
 def _serialize_tools() -> str:

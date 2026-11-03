@@ -46,8 +46,10 @@ running, and the result says what that job is and how to check on it.
 }
 ```
 
-`kind` is `transcription`, `summary`, or `merge`. For process_recording `id` is
-the recording id and `poll_with` is `get_recording`. `retryable: false` means
+`kind` is `transcription`, `summary`, `note`, or `merge`. For process_recording
+`id` is the recording id and `poll_with` is `get_recording`, for every action:
+`resummarize` returns kind `summary`, and `add_note` returns kind `note` with
+the new `note_id` next to the job. Both share the same 90 s budget. `retryable: false` means
 "calling this tool again starts a new job", not "the job failed".
 
 ## Why this shape

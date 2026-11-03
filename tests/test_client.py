@@ -870,12 +870,135 @@ def test_transcribe_and_summarize_starts_whatever_is_missing(tmp_path):
         f"POST {V4}/tasks/summary": ok(),
     }
     client, transport = routed(tmp_path, routes)
-    assert client.transcribe_and_summarize("of_1", template_type="MEETING") is True
-    assert client.transcribe_and_summarize("of_1", template_type="790a48f29350244d1baae3837c4035de") is True
-    # Plaud rejects a template id sent without its kind (-400).
-    official, community = transport.sent(f"POST {V4}/tasks/summary")
+    assert client.transcribe_and_summarize("of_1", template_id="MEETING", verbosity="high") is True
+    assert client.transcribe_and_summarize("of_1", template_id="790a48f29350244d1baae3837c4035de") is True
+    assert client.transcribe_and_summarize("of_1", template_id="tpl_9", template_kind="custom") is True
+    # Plaud rejects a template id sent without its kind (-400): it is
+    # inferred for official codes and community hex ids, or given.
+    official, community, custom = transport.sent(f"POST {V4}/tasks/summary")
     assert (official["template_id"], official["template_type"]) == ("MEETING", "official")
+    assert official["summary_verbosity"] == "high"
     assert community["template_type"] == "community"
+    assert (custom["template_id"], custom["template_type"]) == ("tpl_9", "custom")
+
+
+def test_summary_options_refuse_what_plaud_would_reject(tmp_path):
+    client, transport = routed(tmp_path, {})
+    with pytest.raises(ValueError, match="only to its default template"):
+        client.generate_note("of_1", template_id="MEETING", note_name="Minutes", instruction="Be brief")
+    with pytest.raises(ValueError, match="300"):
+        client.resummarize("of_1", instruction="x" * 301)
+    with pytest.raises(ValueError, match="template_kind must be one of"):
+        client.transcribe_and_summarize("of_1", template_id="MEETING", template_kind="shared")
+    with pytest.raises(ValueError, match="verbosity"):
+        client.resummarize("of_1", verbosity="huge")
+    assert transport.calls == []  # refused before any request
+
+
+def test_resummarize_replaces_an_existing_summary_with_the_new_options(tmp_path):
+    summarized = detail_payload(
+        obj("TRANSCRIPT", "https://s3.fake/t.json"),
+        obj("POLISHED_TRANSCRIPT", "https://s3.fake/p.json", task_status=1),
+        obj("SUMMARY", "https://s3.fake/s.md"),
+    )
+    routes = {
+        f"GET {V4}/files/detail/of_1": summarized,
+        f"POST {V4}/tasks/summary-change-retry": ok({"task_id": "t_9"}),
+    }
+    client, transport = routed(tmp_path, routes)
+    assert (
+        client.resummarize("of_1", llm="claude-opus-5", verbosity="low", instruction="Flag risks.") == "t_9"
+    )
+    (body,) = transport.sent(f"POST {V4}/tasks/summary-change-retry")
+    assert (body["summary_ai_model"], body["summary_verbosity"], body["custom_instruction"]) == (
+        "claude-opus-5",
+        "low",
+        "Flag risks.",
+    )
+    assert body["use_polished_transcript"] is True
+    assert "template_id" not in body
+
+
+def test_resummarize_needs_a_transcript(tmp_path):
+    client, transport = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload()})
+    with pytest.raises(ValueError, match="no transcript yet"):
+        client.resummarize("of_1")
+    assert len(transport.calls) == 1
+
+
+def test_generate_note_names_the_note_and_returns_its_job(tmp_path):
+    routes = {
+        f"GET {V4}/files/detail/of_1": detail_payload(obj("TRANSCRIPT", "https://s3.fake/t.json")),
+        f"POST {V4}/tasks/template-note": ok({"task_id": "t_n", "note_file_id": "f_note"}),
+    }
+    client, transport = routed(tmp_path, routes)
+    job = client.generate_note("of_1", template_id="CUSTOMER-CONSULTATION", note_name="Client Needs")
+    assert (job.task_id, job.note_id, job.name) == ("t_n", "f_note", "Client Needs")
+    # The default template is sent by name only.
+    assert client.generate_note("of_1", instruction="List action items.").name == "Intelligent Generation"
+    with_template, default = transport.sent(f"POST {V4}/tasks/template-note")
+    assert (with_template["template_name"], with_template["template_type"]) == ("Client Needs", "official")
+    assert "template_id" not in default and default["custom_instruction"] == "List action items."
+    with pytest.raises(ValueError, match="note_name is required"):
+        client.generate_note("of_1", template_id="CUSTOMER-CONSULTATION")
+
+
+def test_wait_for_task_returns_when_done_and_raises_when_failed(tmp_path):
+    status = f"GET {V4}/task-status/t_1"
+    client, _ = routed(tmp_path, {status: [ok({"task_status": 0}), ok({"task_status": 1})]})
+    client.wait_for_task("t_1", what="note", timeout_s=60)
+
+    client, _ = routed(tmp_path, {status: ok({"task_status": -1800002})})
+    with pytest.raises(PlaudApiError, match="note job failed") as info:
+        client.wait_for_task("t_1", what="note", timeout_s=60)
+    assert not info.value.is_soft_deadline_timeout()
+
+    client, _ = routed(tmp_path, {status: ok({"task_status": 0})})
+    with pytest.raises(PlaudWaitTimeoutError) as timeout:
+        client.wait_for_task("t_1", what="note", timeout_s=0)
+    assert timeout.value.task_id == "t_1"
+
+
+def test_search_templates_reads_each_kind_the_way_the_web_app_does(tmp_path):
+    hits = [
+        {
+            "type": "official",
+            "template": {
+                "type": "CUSTOMER-CONSULTATION",
+                "template_id": "00000035c5824c8f87c2e87133fcd989",
+                "name": "Client Needs",
+                "description_short": "From needs to actions.",
+                "category": "CONSULTING",
+            },
+        },
+        {
+            "type": "community",
+            "template": {
+                "id": "9276c8f76532d5ed065c248666a836b4",
+                "latest_published_version": {
+                    "template_id": "9276c8f76532d5ed065c248666a836b4",
+                    "title": "Discovery Notes",
+                    "category": "Financial",
+                },
+            },
+        },
+        {"type": "custom", "template": {"id": "tpl_9", "name": "My Template"}},
+        {"type": "something-new", "template": {}},
+    ]
+    routes = {
+        "POST /summary/community/search": ok(hits),
+        "GET /summary/v4/models/config": ok([{"model_name": "auto", "name": "Auto", "des": "Picks one"}]),
+    }
+    client, transport = routed(tmp_path, routes)
+    found = [(t.id, t.kind, t.name) for t in client.search_templates("client needs")]
+    # Official templates go by their code, not their hex template_id.
+    assert found == [
+        ("CUSTOMER-CONSULTATION", "official", "Client Needs"),
+        ("9276c8f76532d5ed065c248666a836b4", "community", "Discovery Notes"),
+        ("tpl_9", "custom", "My Template"),
+    ]
+    assert transport.sent("POST /summary/community/search")[0]["query"] == "client needs"
+    assert [(m.model, m.name) for m in client.list_summary_models()] == [("auto", "Auto")]
 
 
 def test_transcribe_and_summarize_starts_nothing_when_done_or_running(tmp_path):

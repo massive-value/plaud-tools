@@ -62,7 +62,7 @@ In Claude, paste:
 List the MCP tools you have available for Plaud.
 ```
 
-You should see thirteen tools: `browse_recordings`, `search_recordings`, `get_recording`, `export_transcript`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `merge_recordings`, `edit_summary`, and `mutate_folder`.
+You should see fourteen tools: `browse_recordings`, `search_recordings`, `get_recording`, `export_transcript`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `search_templates`, `merge_recordings`, `edit_summary`, and `mutate_folder`.
 
 ---
 
@@ -166,8 +166,9 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
 | `edit_transcript` | Rename a speaker label (`action="rename_speaker"`, matches the displayed name or the original `Speaker N`) or literal find-and-replace on transcript text (`action="correct"`, supports `dry_run`) |
 | `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
-| `process_recording` | Trigger transcription + summarization; `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
+| `process_recording` | Transcribe and summarize (`action="process"`), replace the summary with a new one (`action="resummarize"`), or add an extra note from a template (`action="add_note"`); `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
 | `list_folders` | List Plaud folders (id, name, color, icon) |
+| `search_templates` | Find summary templates by name (id, kind and name to pass to `process_recording`) and list the AI models |
 | `merge_recordings` | Merge two or more recordings into a single new recording |
 | `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary |
 | `mutate_folder` | Create, edit, or delete a folder |

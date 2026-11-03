@@ -225,6 +225,39 @@ _LIST_FOLDERS_OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["folders"],
 }
 
+_SEARCH_TEMPLATES_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "templates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "string"},
+                    "template_kind": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "category": {"type": "string"},
+                },
+                "required": ["template_id", "template_kind", "name"],
+            },
+        },
+        "models": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "llm": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["llm"],
+            },
+        },
+    },
+    "required": ["templates", "models"],
+}
+
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="browse_recordings",
@@ -580,47 +613,90 @@ _TOOLS: list[types.Tool] = [
         ),
     ),
     types.Tool(
+        name="search_templates",
+        description="Find summary templates by name or topic (up to 20) and list AI models. Pass a hit's template_id, template_kind and name (as note_name) to process_recording, and a model's llm as llm.",  # noqa: E501
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "e.g. 'client needs'",
+                },
+            },
+            "required": ["query"],
+        },
+        output_schema=_SEARCH_TEMPLATES_OUTPUT_SCHEMA,
+        # Pure read — same rationale as browse_recordings.
+        annotations=types.ToolAnnotations(
+            title="Search summary templates",
+            read_only_hint=True,
+            open_world_hint=True,
+        ),
+    ),
+    types.Tool(
         name="process_recording",
-        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript). A processed recording is left unchanged (returns already_processed=true).",  # noqa: E501
+        description="Run Plaud AI on a recording. action='process' (default) transcribes and summarizes what is missing (a processed recording is left alone: already_processed=true); 'resummarize' replaces the main summary, edits included; 'add_note' adds an extra note from a template and keeps the summary.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "action": {
+                    "type": "string",
+                    "enum": ["process", "resummarize", "add_note"],
+                    "default": "process",
+                },
                 "wait": {
                     "type": "string",
                     "enum": ["none", "transcript", "summary"],
                     "default": "transcript",
-                    "description": "How long to block: none/transcript/summary. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",  # noqa: E501
+                    "description": "How long to block: none/transcript/summary; resummarize and add_note wait for their job unless none. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",  # noqa: E501
                 },
-                "template_type": {
+                "template_id": {
                     "type": "string",
-                    "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
+                    "description": "From search_templates; omit for Plaud's default",
                 },
-                "language": {
+                "template_kind": {
                     "type": "string",
-                    "description": "BCP-47 primary subtag (e.g. 'en', 'zh'); use 'auto' to detect",
+                    "enum": ["official", "community", "custom", "team_community"],
+                    "description": "From search_templates",  # noqa: E501
                 },
-                "diarization": {
-                    "type": "boolean",
-                    "description": "Enable speaker diarization",
+                "note_name": {
+                    "type": "string",
+                    "description": "add_note: the note's title; required with template_id",  # noqa: E501
+                },
+                "instruction": {
+                    "type": "string",
+                    "maxLength": 300,
+                    "description": "Custom AI instruction; not with template_id",
+                },
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Summary length; not add_note",
                 },
                 "llm": {
                     "type": "string",
-                    "description": "LLM identifier for summarization",
+                    "description": "Model from search_templates; default auto",
+                },
+                "language": {
+                    "type": "string",
+                    "description": "process only: BCP-47 primary subtag (e.g. 'en'), or 'auto'",  # noqa: E501
+                },
+                "diarization": {
+                    "type": "boolean",
+                    "description": "process only: speaker diarization",
                 },
             },
             "required": ["recording_id"],
         },
-        # Additive compute — triggers AI processing; does not delete or
-        # overwrite existing user data (the transcript/summary are new artifacts).
-        # idempotent_hint=True: re-triggering on an already-processed recording
-        # is a no-op on the Plaud side (verified live: Plaud answers status 1
-        # with the existing transcript/summary and ignores the new template),
-        # and the handler reports it as already_processed=true.
+        # action='process' is additive and a no-op on a processed recording,
+        # but 'resummarize' discards the current summary (Plaud drops the old
+        # text when the job starts, edits included) and each 'add_note' call
+        # adds another note.  So: destructive, not idempotent.
         annotations=types.ToolAnnotations(
-            title="Transcribe and summarize",
-            destructive_hint=False,
-            idempotent_hint=True,
+            title="Transcribe, summarize, or add a note",
+            destructive_hint=True,
+            idempotent_hint=False,
             open_world_hint=True,
         ),
     ),

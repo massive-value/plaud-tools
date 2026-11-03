@@ -24,7 +24,7 @@ script *why* it failed without having to match on the message:
 | `4` | Timed out waiting on a job that is **still running** on Plaud's side | Poll with `status <id>` rather than re-running the command |
 
 Code `4` matters for the long-running commands (`transcribe --wait`, `merge`,
-`upload`): the work has not failed, it just outlived the client-side wait.
+`upload`, `resummarize`, `add-note`): the work has not failed, it just outlived the client-side wait.
 Re-running the command would start a *second* job.
 
 One wrinkle: a malformed command line exits `2` as well, because that is
@@ -434,15 +434,56 @@ By default the command waits for transcription and summary to finish. `--detach`
 
 ```
 plaud-tools transcribe <recording-id>
-plaud-tools transcribe <recording-id> --template <template-type>
+plaud-tools transcribe <recording-id> --template <template-id>
 plaud-tools transcribe <recording-id> --language en --diarization --llm <llm-id>
+plaud-tools transcribe <recording-id> --verbosity low --instruction "List action items first"
 plaud-tools transcribe <recording-id> --wait transcript
 plaud-tools transcribe <recording-id> --wait summary
 ```
 
-Triggers transcription + summarization on an existing recording. `--language` is a language code (default: auto-detect); `--diarization`/`--no-diarization` enables/disables speaker diarization (default: Plaud's default); `--llm` selects the summarization model (default: auto). `--wait` controls how long to block before returning: `none` (default — accept and return immediately), `transcript`, or `summary`.
+Triggers transcription + summarization on an existing recording. `--language` is a language code (default: auto-detect); `--diarization`/`--no-diarization` enables/disables speaker diarization (default: Plaud's default); `--llm` selects the summarization model (default: auto, see `models`). `--wait` controls how long to block before returning: `none` (default — accept and return immediately), `transcript`, or `summary`.
 
-If the recording already has a transcript, Plaud keeps the existing transcript and summary and ignores `--template`/`--language`. The command then exits `0` with `"accepted": false, "already_processed": true`. To change the summary text, use `set-summary` or `correct-summary`.
+The summary options are shared with `resummarize` and `add-note`:
+
+- `--template` takes a template id from `templates`. `--template-kind` is that template's kind (`official`, `community`, `custom`, `team_community`). Official codes and 32-character community ids are recognized on their own, so the kind is only needed for custom and team templates.
+- `--instruction` is a custom instruction for the AI, 300 characters at most. Plaud applies it only to its default template, so it can't be combined with `--template`.
+- `--verbosity` is `low`, `medium` (default) or `high`.
+
+If the recording already has a transcript, Plaud keeps the existing transcript and summary and ignores these options. The command then exits `0` with `"accepted": false, "already_processed": true`. Use `resummarize` for a new summary, `add-note` for an extra note, or `set-summary`/`correct-summary` to edit the text.
+
+### `resummarize`
+
+```
+plaud-tools resummarize <recording-id> --template <template-id> --verbosity high
+plaud-tools resummarize <recording-id> --instruction "Focus on decisions" --detach
+```
+
+Replaces the recording's summary, hand edits included, with a newly generated one. Plaud drops the old summary as soon as the job starts and may also retitle the recording. It waits up to 10 minutes for the new summary unless you pass `--detach`. Exit code `4` means the job is still running.
+
+### `add-note`
+
+```
+plaud-tools add-note <recording-id> --template <template-id> --name "Client Needs"
+plaud-tools add-note <recording-id> --instruction "List open questions"
+```
+
+Adds an extra note to the recording and keeps the summary. `--name` is the note's title and is required with `--template` (use the template's name from `templates`). Without a template the note uses Plaud's default template and is called "Intelligent Generation". The command prints the new `note_id` to stderr, then waits up to 10 minutes for the note. `--detach` returns without waiting.
+
+### `templates`
+
+```
+plaud-tools templates "client needs"
+```
+
+Searches Plaud's official, community and custom summary templates by name and prints each one's `template_id`, `template_kind` and `name`. Plaud returns at most 20 matches.
+
+### `models`
+
+```
+plaud-tools models
+```
+
+Lists the AI models `--llm` accepts.
 
 ### `status`
 

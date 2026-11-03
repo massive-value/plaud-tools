@@ -1,12 +1,13 @@
 ---
 name: plaud-tools
-description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
+description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, search_templates, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
 ---
 
 # plaud-tools
 
-Eleven tools over a Plaud account. Three read, eight write. Auth lives in the
-PlaudTools tray app, not here — there is no login tool, by design.
+Fourteen tools over a Plaud account. Five only read, `export_transcript` writes
+a local file, and the rest change the account. Auth lives in the PlaudTools
+tray app, not here — there is no login tool, by design.
 
 ## The three things that go wrong most
 
@@ -64,13 +65,28 @@ narrower `since`/`until` window.
 | `edit_transcript` | `action=` rename_speaker / correct. |
 | `edit_summary` | `action=` correct / replace. Recording must already have a summary. |
 | `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. |
-| `process_recording` | Trigger transcription/summarization. `wait=` none / transcript / summary. |
+| `process_recording` | `action=` process (first transcript and summary; `wait=` none / transcript / summary) / resummarize (replace the summary) / add_note (an extra note from a template). See below. |
 | `merge_recordings` | Two or more → one new recording. Sources survive. |
 | `list_folders` | Get folder IDs before any folder-scoped call. |
+| `search_templates` | Find a summary template by name. Returns `template_id`, `template_kind` and `name` to pass to `process_recording`, plus the `llm` values. |
 | `mutate_folder` | `action=` create / edit / delete. Delete requires `confirm=true`. |
 
 To move a recording into a folder, use `mutate_recording(action="move")` — not
 `mutate_folder`.
+
+## Templates, notes and re-summarizing
+
+- To use a named template ("a Client Needs note"), call `search_templates`
+  first and pass its `template_id`, `template_kind` and, for `add_note`, its
+  `name` as `note_name`. Don't guess template ids.
+- `add_note` keeps the existing summary and adds a separate note. Prefer it
+  when the user wants another view of the meeting.
+- `resummarize` throws away the current summary the moment it starts, and
+  Plaud may retitle the recording. Ask before running it on a summary the user
+  may have edited by hand.
+- `instruction` (max 300 characters) only works without a template. Plaud
+  applies it to its default template. `verbosity` applies to the main summary,
+  not to notes.
 
 ## Saving a transcript as a file
 
@@ -128,7 +144,7 @@ message:
 | `internal` | A bug in the server. Tell the user; details are in the plaud-mcp log. |
 
 A response with `status: "still_processing"` is not an error: a transcribe,
-summary, or merge job outlived the ~90s wait and is still running on Plaud. Its
+summary, note, or merge job outlived the ~90s wait and is still running on Plaud. Its
 `job` says what is running and which tool reports on it (`poll_with`): poll that
 tool rather than re-issuing the call, because re-issuing starts a *second* job.
 `upload_recording` never returns this; it returns the new `recording_id` or an

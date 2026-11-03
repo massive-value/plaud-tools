@@ -40,8 +40,11 @@ from .models import (
     AudioLink,
     ContentMatch,
     Folder,
+    NoteJob,
     Recording,
     RecordingDetail,
+    SummaryModel,
+    SummaryTemplate,
     TaskStatus,
     base_url,
     redirect_api_domain,
@@ -94,9 +97,25 @@ _DEFAULT_FOLDER_COLOR = "folder-color-default"
 # recordings live.
 _SYSTEM_FOLDER_RECORDINGS = 1
 
-# Community summary templates have 32-hex ids; official ones use a code
-# such as MEETING.  Summary tasks must say which kind an id is.
+# Summary options.  Every summary or note request that names a template
+# must also say its kind (Plaud's ``template_type``; an id alone gets -400).
+# When the caller doesn't say, the kind is inferred: official templates use
+# codes such as MEETING, community ones 32-hex ids.  Custom and team
+# templates can't be told apart by id, so those need the kind spelled out.
+TEMPLATE_KINDS = ("official", "community", "custom", "team_community")
+SUMMARY_VERBOSITY = ("low", "medium", "high")
+# Longest custom instruction Plaud accepts.
+MAX_INSTRUCTION_CHARS = 300
+# The name the web app gives a note made with its default template.
+DEFAULT_NOTE_NAME = "Intelligent Generation"
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
+# Template ids that mean "let Plaud choose", kept from the pre-4.0 surface.
+_AUTO_TEMPLATE_IDS = ("default", "auto-select")
+
+# ``task-status`` values: 0 while running, 1 when done; anything else
+# (Plaud's negative error codes) means the job failed.
+_TASK_RUNNING = 0
+_TASK_DONE = 1
 
 # Plaud status codes worth naming.
 _STATUS_FILE_NOT_FOUND = -1800311
@@ -181,6 +200,52 @@ def count_segment_matches(segments: list[dict[str, Any]], find: str) -> tuple[in
     """
     counts = [(segment.get("content") or "").count(find) for segment in segments]
     return sum(counts), sum(1 for count in counts if count)
+
+
+def summary_options(
+    *,
+    template_id: str | None = None,
+    template_kind: str | None = None,
+    llm: str | None = None,
+    instruction: str | None = None,
+) -> dict[str, Any]:
+    """The template, model and instruction fields every summary/note request shares.
+
+    Raises ``ValueError`` before anything is sent when the options can't
+    work: an unknown kind, an instruction over ``MAX_INSTRUCTION_CHARS``, or
+    an instruction next to a template (Plaud answers -1800024 "Template and
+    custom instruction cannot be used together"; instructions apply only to
+    its default template).
+    """
+    fields: dict[str, Any] = {"summary_ai_model": llm or "auto"}
+    if template_id and template_id.strip().lower() not in _AUTO_TEMPLATE_IDS:
+        kind = template_kind or ("community" if _HEX_ID.fullmatch(template_id) else "official")
+        if kind not in TEMPLATE_KINDS:
+            raise ValueError(f"template_kind must be one of {', '.join(TEMPLATE_KINDS)}; got {kind!r}")
+        fields["template_id"] = template_id
+        fields["template_type"] = kind
+    elif template_kind:
+        raise ValueError("template_kind needs a template_id")
+    if instruction and instruction.strip():
+        if "template_id" in fields:
+            raise ValueError(
+                "instruction cannot be combined with a template: Plaud applies custom "
+                "instructions only to its default template"
+            )
+        if len(instruction) > MAX_INSTRUCTION_CHARS:
+            raise ValueError(
+                f"instruction is {len(instruction)} characters; Plaud allows {MAX_INSTRUCTION_CHARS}"
+            )
+        fields["custom_instruction"] = instruction.strip()
+    return fields
+
+
+def _check_verbosity(verbosity: str | None) -> str:
+    if verbosity is None:
+        return "medium"
+    if verbosity not in SUMMARY_VERBOSITY:
+        raise ValueError(f"verbosity must be one of {', '.join(SUMMARY_VERBOSITY)}; got {verbosity!r}")
+    return verbosity
 
 
 @dataclass(slots=True)
@@ -450,6 +515,73 @@ class PlaudClient:
         ]
 
     # ------------------------------------------------------------------
+    # Summary templates and models
+    # ------------------------------------------------------------------
+
+    def search_templates(self, query: str) -> list[SummaryTemplate]:
+        """Plaud summary templates matching *query*, best match first.
+
+        The web app's template search (``POST /summary/community/search``)
+        covers official and community templates and answers at most 20.
+        Each result carries the id and kind a summary or note request needs.
+        """
+        if not query.strip():
+            raise ValueError("query cannot be empty")
+        data = self._request_json(
+            "POST", "/summary/community/search", strict=True, body={"query": query, "language_os": "en"}
+        ).get("data")
+        templates = (self._normalize_template(entry) for entry in data or [] if isinstance(entry, dict))
+        return [template for template in templates if template is not None]
+
+    def list_summary_models(self) -> list[SummaryModel]:
+        """The AI models Plaud offers for summaries and notes (``llm`` values)."""
+        data = self._request_json("GET", "/summary/v4/models/config", strict=True).get("data")
+        return [
+            SummaryModel(
+                model=str(item.get("model_name") or ""),
+                name=str(item.get("name") or ""),
+                description=str(item.get("des") or ""),
+            )
+            for item in data or []
+            if isinstance(item, dict) and item.get("model_name")
+        ]
+
+    @staticmethod
+    def _normalize_template(entry: dict[str, Any]) -> SummaryTemplate | None:
+        """One search hit, read the way the web app reads each kind.
+
+        Official templates are named by their code (the ``type`` field, such
+        as ``CUSTOMER-CONSULTATION``), not their hex ``template_id``.
+        Community templates keep their details in a published version.
+        """
+        kind = str(entry.get("type") or "").lower().replace("-", "_")
+        template = entry.get("template") or {}
+        if kind == "official":
+            return SummaryTemplate(
+                id=str(template.get("type") or ""),
+                kind=kind,
+                name=str(template.get("name") or ""),
+                description=str(template.get("description_short") or template.get("desc") or ""),
+                category=str(template.get("trans_category") or template.get("category") or ""),
+            )
+        if kind in ("community", "team_community"):
+            version = (
+                template.get("translated_published_version") or template.get("latest_published_version") or {}
+            )
+            return SummaryTemplate(
+                id=str(version.get("template_id") or template.get("id") or ""),
+                kind=kind,
+                name=str(version.get("title") or version.get("note_tab_name") or ""),
+                description=str(version.get("description_short") or ""),
+                category=str(version.get("trans_category") or version.get("category") or ""),
+            )
+        if kind == "custom":
+            return SummaryTemplate(
+                id=str(template.get("id") or ""), kind=kind, name=str(template.get("name") or "")
+            )
+        return None
+
+    # ------------------------------------------------------------------
     # Upload, processing, merge
     # ------------------------------------------------------------------
 
@@ -585,24 +717,32 @@ class PlaudClient:
         self,
         recording_id: str,
         *,
-        template_type: str | None = None,
+        template_id: str | None = None,
+        template_kind: str | None = None,
         language: str | None = None,
         diarization: bool | None = None,
         llm: str | None = None,
+        verbosity: str | None = None,
+        instruction: str | None = None,
     ) -> bool:
         """Start whatever processing a recording is missing. False if nothing to do.
 
         No transcript yet: transcription plus summary (``tasks/trans-sum``).
         Transcript but no summary: summary only (``tasks/summary``).  Both
         present, or a job already running: nothing starts and this returns
-        False.  Never re-transcribes a finished recording, since that wipes
-        speaker renames and edits.
+        False (``resummarize`` replaces an existing summary).  Never
+        re-transcribes a finished recording, since that wipes speaker renames
+        and edits.
 
-        ``template_type`` is a Plaud summary template id; "default" or None
-        lets Plaud choose.  Plaud rejects a ``template_id`` sent without its
-        kind, so the kind is inferred: official templates use codes such as
-        ``MEETING`` or ``SALES-BANT``, community templates use hex ids.
+        ``template_id`` is a Plaud summary template id (from
+        ``search_templates``); None or "default" lets Plaud choose.  See
+        ``summary_options`` for ``template_kind``, ``llm`` and ``instruction``;
+        ``verbosity`` is low, medium (default) or high.
         """
+        options = summary_options(
+            template_id=template_id, template_kind=template_kind, llm=llm, instruction=instruction
+        )
+        verbosity = _check_verbosity(verbosity)
         raw = self._get_detail_raw(recording_id)
         detail = self._normalize_recording_detail(raw)
         if (raw.get("task") or {}).get("in_progress_tasks"):
@@ -613,13 +753,10 @@ class PlaudClient:
             "file_id": detail.id,
             "post_id": int(time.time() * 1000),
             "ppc_status": 1,
-            "summary_verbosity": "medium",
+            "summary_verbosity": verbosity,
             "summary_language": "auto",
-            "summary_ai_model": llm or "auto",
+            **options,
         }
-        if template_type and template_type.lower() not in ("default", "auto-select"):
-            body["template_id"] = template_type
-            body["template_type"] = "community" if _HEX_ID.fullmatch(template_type) else "official"
         if detail.is_trans:
             self._request_json("POST", f"{_V4}/tasks/summary", strict=True, body=body)
             return True
@@ -634,6 +771,98 @@ class PlaudClient:
         )
         self._request_json("POST", f"{_V4}/tasks/trans-sum", strict=True, body=body)
         return True
+
+    def resummarize(
+        self,
+        recording_id: str,
+        *,
+        template_id: str | None = None,
+        template_kind: str | None = None,
+        llm: str | None = None,
+        verbosity: str | None = None,
+        instruction: str | None = None,
+    ) -> str:
+        """Re-run a recording's main summary with new options; return Plaud's task id.
+
+        Replaces the existing summary, edits included: Plaud drops the old
+        text as soon as the job starts (``tasks/summary-change-retry``).  A
+        recording with a transcript but no summary yet gets its first one
+        (``tasks/summary``).  Options as for ``transcribe_and_summarize``.
+        Wait for the result with ``wait_for_task``.
+        """
+        options = summary_options(
+            template_id=template_id, template_kind=template_kind, llm=llm, instruction=instruction
+        )
+        verbosity = _check_verbosity(verbosity)
+        raw, detail = self._ready_for_summary(recording_id)
+        route = "summary-change-retry" if detail.is_summary else "summary"
+        body = {
+            "file_id": detail.id,
+            "post_id": int(time.time() * 1000),
+            "ppc_status": 1,
+            "summary_verbosity": verbosity,
+            "summary_language": "auto",
+            "use_polished_transcript": _object_done(self._object(raw, "POLISHED_TRANSCRIPT")),
+            **options,
+        }
+        data = self._request_json("POST", f"{_V4}/tasks/{route}", strict=True, body=body).get("data") or {}
+        if not data.get("task_id"):
+            raise PlaudApiError(f"Plaud {route} response had no task_id")
+        return str(data["task_id"])
+
+    def generate_note(
+        self,
+        recording_id: str,
+        *,
+        template_id: str | None = None,
+        template_kind: str | None = None,
+        note_name: str | None = None,
+        llm: str | None = None,
+        instruction: str | None = None,
+    ) -> NoteJob:
+        """Start a new note on a recording from a template (``tasks/template-note``).
+
+        A note is an extra summary that sits next to the recording; the main
+        summary is untouched.  ``note_name`` becomes the note's title.  It is
+        required with a template (pass the template's name from
+        ``search_templates``); without one Plaud's default template is used
+        and the note is called ``DEFAULT_NOTE_NAME``.  ``instruction`` works
+        only with the default template.  Wait for it with ``wait_for_task``.
+        """
+        options = summary_options(
+            template_id=template_id, template_kind=template_kind, llm=llm, instruction=instruction
+        )
+        name = (note_name or "").strip() or ("" if "template_id" in options else DEFAULT_NOTE_NAME)
+        if not name:
+            raise ValueError("note_name is required with a template_id: pass the template's name")
+        raw, detail = self._ready_for_summary(recording_id)
+        body = {
+            "file_id": detail.id,
+            "ppc_status": 1,
+            "post_id": int(time.time() * 1000),
+            "template_name": name,
+            "use_polished_transcript": _object_done(self._object(raw, "POLISHED_TRANSCRIPT")),
+            **options,
+        }
+        data = (
+            self._request_json("POST", f"{_V4}/tasks/template-note", strict=True, body=body).get("data") or {}
+        )
+        task_id, note_id = str(data.get("task_id") or ""), str(data.get("note_file_id") or "")
+        if not task_id:
+            raise PlaudApiError("Plaud template-note response had no task_id")
+        return NoteJob(task_id=task_id, note_id=note_id, name=name)
+
+    def _ready_for_summary(self, recording_id: str) -> tuple[dict[str, Any], RecordingDetail]:
+        """The detail of a recording a summary or note can run on; ValueError otherwise."""
+        raw = self._get_detail_raw(recording_id)
+        detail = self._normalize_recording_detail(raw)
+        if not detail.is_trans:
+            raise ValueError(f"recording {recording_id} has no transcript yet; process it first")
+        if (raw.get("task") or {}).get("in_progress_tasks"):
+            raise ValueError(
+                f"Plaud is already processing recording {recording_id}; check it again in a minute"
+            )
+        return raw, detail
 
     def merge_recordings(
         self,
@@ -725,6 +954,35 @@ class PlaudClient:
             what="summary",
             timeout_s=timeout_s,
             poll_interval_s=poll_interval_s,
+        )
+
+    def wait_for_task(
+        self,
+        task_id: str,
+        *,
+        what: str = "task",
+        timeout_s: float = 600.0,
+        poll_interval_s: float = 5.0,
+    ) -> None:
+        """Poll ``task-status/{task_id}`` until the job finishes.
+
+        Backs note generation and re-summarizing, where the recording's own
+        flags can't tell an old summary from the new one.  Raises
+        ``PlaudApiError`` if Plaud reports the job failed, and
+        ``PlaudWaitTimeoutError`` (with the task id) when the budget runs out.
+        """
+
+        def check() -> bool | None:
+            data = self._request_json("GET", f"{_V4}/task-status/{task_id}", strict=True).get("data") or {}
+            status = data.get("task_status")
+            if status == _TASK_DONE:
+                return True
+            if status in (_TASK_RUNNING, None):
+                return None
+            raise PlaudApiError(f"Plaud's {what} job failed (task status {status})", plaud_code=status)
+
+        self._poll_until(
+            check, what=what, timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id
         )
 
     def _poll_until(
