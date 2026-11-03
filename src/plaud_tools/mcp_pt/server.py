@@ -156,6 +156,7 @@ _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
         "language": _NULLABLE_STRING,
         "speakers": {"type": "array", "items": {"type": "string"}},
         "audio_url": _NULLABLE_STRING,
+        "attachments": {"type": "array", "items": {"type": "object"}},
         "audio_mime_type": _NULLABLE_STRING,
         "transcript": {"type": "string"},
         "transcript_segments": {"type": "array", "items": {"type": "object"}},
@@ -331,9 +332,9 @@ _TOOLS: list[types.Tool] = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["transcript", "segments", "speakers", "summary", "audio_url"],
+                        "enum": ["transcript", "segments", "speakers", "summary", "audio_url", "attachments"],
                     },
-                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",  # noqa: E501
+                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url, attachments",  # noqa: E501
                 },
                 "transcript_after": {
                     "type": "integer",
@@ -418,7 +419,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",  # noqa: E501
+        description="Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -435,11 +436,17 @@ _TOOLS: list[types.Tool] = [
                         "trash",
                         "restore",
                         "move",
+                        "trim",
                         "share_create",
                         "share_get",
                         "share_update",
                         "share_revoke",
                     ],
+                },
+                "keep": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Trim: ranges to keep, e.g. ['0:00-1:00', '5:00-6:30']",  # noqa: E501
                 },
                 "share_days": {
                     "type": "integer",
@@ -482,13 +489,14 @@ _TOOLS: list[types.Tool] = [
             "required": ["action"],
         },
         # Reversible writes (trash/restore are inverses; rename/move are
-        # undoable); no recording data is permanently lost.  The share_*
+        # undoable; trim makes a new copy and leaves the original); no
+        # recording data is permanently lost.  The share_*
         # actions publish or cut off access, so they are confirm-gated in the
         # handler and the tool is flagged destructive for clients.
         # idempotent_hint omitted: repeated renames with a different
         # new_name have different outcomes.
         annotations=types.ToolAnnotations(
-            title="Rename, move, trash, or share recordings",
+            title="Rename, move, trim, trash, or share recordings",
             destructive_hint=True,
             open_world_hint=True,
         ),
@@ -564,17 +572,21 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="upload_recording",
-        description="Upload a local audio file to Plaud; returns the new recording_id.",
+        description="Upload a local audio file to Plaud; returns the new recording_id. With attach_to, attaches a document instead.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Absolute path to the audio file",
+                    "description": "Absolute path to the audio file or document",
                 },
                 "title": {
                     "type": "string",
-                    "description": "Recording title; defaults to file stem",
+                    "description": "Recording title; defaults to file stem",  # noqa: E501
+                },
+                "attach_to": {
+                    "type": "string",
+                    "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB)",  # noqa: E501
                 },
                 "folder_id": {
                     "type": "string",

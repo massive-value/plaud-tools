@@ -105,6 +105,7 @@ def test_server_mutate_recording_enum_excludes_delete_and_rename_speaker():
         "trash",
         "restore",
         "move",
+        "trim",
         "share_create",
         "share_get",
         "share_update",

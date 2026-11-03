@@ -37,6 +37,7 @@ from urllib.parse import urlencode
 from .errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from .models import (
     BROWSER_USER_AGENT,
+    Attachment,
     AudioLink,
     ContentMatch,
     Folder,
@@ -135,6 +136,33 @@ _LEGACY_ID = re.compile(r"[0-9a-f]{32}")
 
 # Upload formats Plaud accepts, as (MIME type, file extension).
 _UPLOAD_FORMATS = {"MP3": ("audio/mpeg", "mp3"), "OGG": ("audio/ogg", "ogg"), "OPUS": ("audio/ogg", "opus")}
+
+# Documents Plaud accepts as attachments to a recording, as
+# extension -> (MIME type, kind).  Plaud caps each kind's size: see
+# ``ATTACHMENT_MAX_BYTES``.
+_ATTACHMENT_FORMATS = {
+    "pdf": ("application/pdf", "document"),
+    "doc": ("application/msword", "document"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "document"),
+    "xls": ("application/vnd.ms-excel", "document"),
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "document"),
+    "ppt": ("application/vnd.ms-powerpoint", "document"),
+    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "document"),
+    "txt": ("text/plain", "text"),
+    "md": ("text/markdown", "text"),
+    "csv": ("text/csv", "text"),
+    "png": ("image/png", "image"),
+    "jpg": ("image/jpeg", "image"),
+    "jpeg": ("image/jpeg", "image"),
+}
+# Plaud's per-kind attachment size limits, in bytes.
+_ATTACHMENT_MAX_BYTES = {"document": 15 * 1024 * 1024, "image": 20 * 1024 * 1024, "text": 2 * 1024 * 1024}
+
+# Container-folder file types that are the recording and its notes, never attachments.
+_RECORDING_FILE_TYPES = ("REC", "MD")
+
+# Most keep-ranges one trim request may carry.
+TRIM_MAX_SEGMENTS = 100
 
 _T = TypeVar("_T")
 
@@ -549,46 +577,7 @@ class PlaudClient:
         mime_type, extension = _UPLOAD_FORMATS[file_type]
         timezone = self._timezone if timezone_offset is None else _timezone_for_offset(timezone_offset)
 
-        created = (
-            self._request_json(
-                "POST",
-                f"{_V4}/upload/create",
-                strict=True,
-                body={
-                    "file_name": filename,
-                    "file_size": filesize,
-                    "file_type": mime_type,
-                    "file_extension": extension,
-                },
-            ).get("data")
-            or {}
-        )
-        part_urls = created.get("part_urls")
-        upload_id = created.get("upload_id")
-        if not isinstance(part_urls, list) or not part_urls or not isinstance(upload_id, str):
-            raise PlaudApiError("Plaud upload/create response missing fields")
-        chunk_size = int(created.get("chunk_size") or _CHUNK_SIZE)
-
-        parts: list[dict[str, Any]] = []
-        with path.open("rb") as fh:
-            for i, url in enumerate(part_urls):
-                chunk = fh.read(chunk_size)
-                if not chunk:
-                    raise PlaudApiError(
-                        f"Plaud returned {len(part_urls)} part URLs but the file ran out after {i} chunk(s)"
-                    )
-                etag = self._s3_put(str(url), chunk).headers.get("etag", "").replace('"', "")
-                if not etag:
-                    raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
-                parts.append({"etag": etag, "part_number": i + 1})
-            if fh.read(1):
-                # Fewer part URLs than chunks: merging now would store a
-                # silently truncated recording.
-                raise PlaudApiError(f"Plaud returned {len(part_urls)} part URLs but the file has more data")
-
-        self._request_json(
-            "POST", f"{_V4}/upload/merge-part", strict=True, body={"upload_id": upload_id, "parts": parts}
-        )
+        upload_id = self._upload_parts(path, filename, mime_type, extension)
 
         confirm_body: dict[str, Any] = {
             # The client names the new recording's file id.
@@ -632,6 +621,57 @@ class PlaudClient:
             version_ms=int(confirmed.get("version_ms") or 0),
             raw=confirmed,
         )
+
+    def _upload_parts(self, path: Path, filename: str, mime_type: str, extension: str) -> str:
+        """Run the shared first half of every upload; return Plaud's ``upload_id``.
+
+        upload/create, an S3 PUT per part, then merge-part.  Reads *path* one
+        chunk at a time, so a large file never sits in memory whole.  What
+        the upload becomes (recording or attachment) is decided by the
+        confirm call each caller makes next.
+        """
+        filesize = path.stat().st_size
+        created = (
+            self._request_json(
+                "POST",
+                f"{_V4}/upload/create",
+                strict=True,
+                body={
+                    "file_name": filename,
+                    "file_size": filesize,
+                    "file_type": mime_type,
+                    "file_extension": extension,
+                },
+            ).get("data")
+            or {}
+        )
+        part_urls = created.get("part_urls")
+        upload_id = created.get("upload_id")
+        if not isinstance(part_urls, list) or not part_urls or not isinstance(upload_id, str):
+            raise PlaudApiError("Plaud upload/create response missing fields")
+        chunk_size = int(created.get("chunk_size") or _CHUNK_SIZE)
+
+        parts: list[dict[str, Any]] = []
+        with path.open("rb") as fh:
+            for i, url in enumerate(part_urls):
+                chunk = fh.read(chunk_size)
+                if not chunk:
+                    raise PlaudApiError(
+                        f"Plaud returned {len(part_urls)} part URLs but the file ran out after {i} chunk(s)"
+                    )
+                etag = self._s3_put(str(url), chunk).headers.get("etag", "").replace('"', "")
+                if not etag:
+                    raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
+                parts.append({"etag": etag, "part_number": i + 1})
+            if fh.read(1):
+                # Fewer part URLs than chunks: merging now would store a
+                # silently truncated file.
+                raise PlaudApiError(f"Plaud returned {len(part_urls)} part URLs but the file has more data")
+
+        self._request_json(
+            "POST", f"{_V4}/upload/merge-part", strict=True, body={"upload_id": upload_id, "parts": parts}
+        )
+        return upload_id
 
     def _s3_put(self, url: str, chunk: bytes) -> HttpResponse:
         """PUT a chunk to a presigned S3 URL. No Plaud auth — signature is in the URL.
@@ -756,6 +796,148 @@ class PlaudClient:
         return self._poll_until(
             check, what="merge", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id or None
         )
+
+    def trim_recording(
+        self,
+        recording_id: str,
+        keep: list[tuple[int, int]],
+        *,
+        poll_interval_s: float = 3.0,
+        timeout_s: float = 300.0,
+    ) -> RecordingDetail:
+        """Cut a recording down to the *keep* ranges (ms) as a new recording; wait for it.
+
+        ``audio/trim`` leaves the original alone and files a "<name> copy"
+        next to it, carrying over the transcript for the kept ranges.  No
+        summary is generated: ``process_recording`` makes one.  Plaud names
+        the new recording's id in its reply, so on timeout
+        ``PlaudWaitTimeoutError`` carries that file id (as ``task_id``) and the
+        caller can check on the copy instead of trimming again.
+        """
+        if not 1 <= len(keep) <= TRIM_MAX_SEGMENTS:
+            raise ValueError(f"trim needs between 1 and {TRIM_MAX_SEGMENTS} ranges to keep")
+        for start_ms, end_ms in keep:
+            if start_ms < 0 or end_ms <= start_ms:
+                raise ValueError(
+                    f"trim range {start_ms}-{end_ms} ms must start at 0 or later and end after it starts"
+                )
+        source = self._normalize_recording_detail(self._get_detail_raw(recording_id))
+        if source.duration and max(end for _start, end in keep) > source.duration:
+            raise ValueError(f"trim range ends after the recording does ({source.duration // 1000} s long)")
+        data = (
+            self._request_json(
+                "POST",
+                f"{_V4}/audio/trim",
+                strict=True,
+                body={
+                    "file_id": source.id,
+                    "segments": [{"start_ms": start, "end_ms": end} for start, end in keep],
+                    "auto_generate": False,
+                    "ppc_status": 1,
+                    "post_id": int(time.time() * 1000),
+                },
+            ).get("data")
+            or {}
+        )
+        new_id = str(data.get("target_file_id") or "")
+        if not new_id:
+            raise PlaudApiError("Plaud trim response missing the new recording's id")
+
+        def check() -> RecordingDetail | None:
+            try:
+                detail = self.get_recording(new_id)
+            except PlaudApiError as exc:
+                if exc.plaud_code == _STATUS_FILE_NOT_FOUND:
+                    return None
+                raise
+            return detail if detail.duration else None
+
+        return self._poll_until(
+            check, what="trim", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=new_id
+        )
+
+    def attach_document(self, recording_id: str, path: Path, filename: str | None = None) -> Attachment:
+        """Attach a document, image or text file to a recording.
+
+        The file joins the recording's container folder next to its audio
+        and notes, and shows in the Plaud web app under that recording.  The
+        kind (by extension) sets Plaud's size limit: documents 15 MB, images
+        20 MB, text 2 MB.  Same upload flow as audio, confirmed with
+        ``upload/confirm-file-web`` aimed at the container.
+        """
+        name = (filename or path.name).strip()
+        extension = path.suffix.lstrip(".").lower()
+        if extension not in _ATTACHMENT_FORMATS:
+            raise ValueError(
+                f"cannot attach a .{extension} file; supported: {', '.join(sorted(_ATTACHMENT_FORMATS))}"
+            )
+        mime_type, kind = _ATTACHMENT_FORMATS[extension]
+        filesize = path.stat().st_size
+        if filesize == 0:
+            raise ValueError("data cannot be empty")
+        limit = _ATTACHMENT_MAX_BYTES[kind]
+        if filesize > limit:
+            raise ValueError(
+                f"{kind} attachments are limited to {limit // 1024 // 1024} MB; {path.name} is larger"
+            )
+        source = self._normalize_recording_detail(self._get_detail_raw(recording_id))
+        container = self._container_id_of(source)
+        if not container:
+            raise PlaudApiError(f"could not find the container folder of recording {source.id}")
+
+        upload_id = self._upload_parts(path, name, mime_type, extension)
+        file_id = f"f_{uuid.uuid4().hex}"
+        try:
+            confirmed = (
+                self._request_json(
+                    "POST",
+                    f"{_V4}/upload/confirm-file-web",
+                    strict=True,
+                    body={
+                        "file_id": file_id,
+                        "upload_id": upload_id,
+                        "file_name": name,
+                        "start_time": int(time.time() * 1000),
+                        "target_node_id": container,
+                    },
+                ).get("data")
+                or {}
+            )
+        except PlaudApiError as exc:
+            if not exc.network_error:
+                raise
+            # Same hazard as an audio upload: the attachment may exist already.
+            raise PlaudApiError(
+                f"{exc}. The attachment may have been added anyway; check get_recording for "
+                f"{name!r} before attaching again."
+            ) from exc
+        return Attachment(
+            id=str(confirmed.get("file_id") or file_id),
+            filename=name,
+            file_type=extension.upper(),
+            raw=confirmed,
+        )
+
+    def list_attachments(self, recording_id: str) -> list[Attachment]:
+        """The documents, images and text files attached to a recording.
+
+        Reads the recording's container folder and drops the recording
+        itself (``REC``) and its notes (``MD``).
+        """
+        source = self._normalize_recording_detail(self._get_detail_raw(recording_id))
+        container = self._container_id_of(source)
+        if not container:
+            return []
+        return [
+            Attachment(
+                id=str(item["file_id"]),
+                filename=str(item.get("name") or ""),
+                file_type=str(item.get("file_type") or ""),
+                raw=item,
+            )
+            for item in self._walk(f"{_V4}/folders/children", {"node_id": container})
+            if item.get("file_id") and item.get("file_type") not in _RECORDING_FILE_TYPES
+        ]
 
     def wait_for_transcription(
         self,
@@ -1431,6 +1613,11 @@ class PlaudClient:
             strict=True,
             body={"name": name, "origin_version": version},
         )
+
+    @staticmethod
+    def _container_id_of(detail: RecordingDetail) -> str:
+        """The folder holding the recording's file, notes and attachments ('' if unknown)."""
+        return detail.wrapper_id or str((detail.raw.get("node") or {}).get("parent_id") or "")
 
     @staticmethod
     def _folder_node_of(detail: RecordingDetail) -> str:

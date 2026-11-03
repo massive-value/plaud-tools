@@ -162,10 +162,10 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | `search_recordings` | Find recordings whose transcript or summary mentions a phrase, with a snippet per hit. Plaud returns at most 20 matches per search |
 | `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary / audio download URL |
 | `export_transcript` | Save a whole transcript to a file (JSON for archiving, or Plaud's TXT/SRT/Word/PDF) and return its path, size and SHA-256 instead of the text |
-| `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`); also manage one recording's public share link (`share_create`, `share_get`, `share_update`, `share_revoke`; all but get need `confirm=true`) |
+| `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`); `trim` cuts one recording down to the ranges you keep, as a new copy; also manage one recording's public share link (`share_create`, `share_get`, `share_update`, `share_revoke`; all but get need `confirm=true`) |
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
 | `edit_transcript` | Rename a speaker label (`action="rename_speaker"`, matches the displayed name or the original `Speaker N`) or literal find-and-replace on transcript text (`action="correct"`, supports `dry_run`) |
-| `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
+| `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed), or attach a document to a recording with `attach_to` |
 | `process_recording` | Trigger transcription + summarization; `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
 | `list_folders` | List Plaud folders (id, name, color, icon) |
 | `merge_recordings` | Merge two or more recordings into a single new recording |

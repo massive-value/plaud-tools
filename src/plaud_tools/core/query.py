@@ -105,6 +105,39 @@ def parse_isoish(value: str, field_name: str, *, end_of_day: bool = False) -> in
         raise ValueError(f"Invalid {field_name} value: {value}") from exc
 
 
+def parse_keep_ranges(specs: list[str]) -> list[tuple[int, int]]:
+    """Turn ``"mm:ss-mm:ss"`` keep ranges into ``(start_ms, end_ms)`` pairs.
+
+    Each side is ``ss``, ``mm:ss`` or ``h:mm:ss`` (seconds may carry a
+    fraction), e.g. ``"0:00-1:00"`` or ``"1:05:30-1:10:00"``.  Raises
+    ``ValueError`` naming the bad range.
+    """
+    ranges: list[tuple[int, int]] = []
+    for spec in specs:
+        start_text, dash, end_text = spec.strip().partition("-")
+        if not dash:
+            raise ValueError(f"invalid range {spec!r}: use start-end, e.g. 0:00-1:00")
+        ranges.append((_clock_to_ms(start_text, spec), _clock_to_ms(end_text, spec)))
+    return ranges
+
+
+def _clock_to_ms(text: str, spec: str) -> int:
+    """``ss``, ``mm:ss`` or ``h:mm:ss`` to milliseconds; *spec* is the range for error messages."""
+    parts = text.strip().split(":")
+    try:
+        if not 1 <= len(parts) <= 3 or any(not part.strip() for part in parts):
+            raise ValueError
+        seconds = 0.0
+        for part in parts:
+            value = float(part)
+            if value < 0:
+                raise ValueError
+            seconds = seconds * 60 + value
+    except ValueError:
+        raise ValueError(f"invalid time {text.strip()!r} in range {spec!r}: use mm:ss or h:mm:ss") from None
+    return round(seconds * 1000)
+
+
 def _is_date_only(value: str) -> bool:
     """True when *value* is a bare ISO date with no time part."""
     try:

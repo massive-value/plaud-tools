@@ -8,7 +8,7 @@ $_plaud_tools_subcommands = @(
     'rename', 'folders', 'folder', 'vocab', 'share', 'move', 'move-to-folder', 'rename-speaker',
     'correct-transcript', 'correct-summary', 'set-summary', 'transcribe',
     'status', 'trash', 'restore', 'delete', 'trash-move', 'trash-restore',
-    'upload', 'merge', 'dump', 'login', 'refresh', 'session', 'update',
+    'upload', 'merge', 'trim', 'dump', 'login', 'refresh', 'session', 'update',
     'doctor', 'ping'
 )
 
@@ -39,8 +39,9 @@ $_plaud_tools_flags = @{
     'delete'              = @('--yes', '--help')
     'trash-move'          = @('--help')
     'trash-restore'       = @('--help')
-    'upload'              = @('--title', '--folder-id', '--detach', '--skip-summary', '--start-time', '--timezone-offset', '--help')
+    'upload'              = @('--title', '--folder-id', '--attach-to', '--detach', '--skip-summary', '--start-time', '--timezone-offset', '--help')
     'merge'               = @('--title', '--help')
+    'trim'                = @('--help')
     'dump'                = @('--help')
     'login'               = @('--email', '--password', '--region', '--help')
     'refresh'             = @('--email', '--password', '--region', '--help')

@@ -31,6 +31,7 @@ from ..core.query import (
     folder_dict,
     format_transcript,
     parse_isoish,
+    parse_keep_ranges,
     share_dict,
     structured_segments,
     summarize_match,
@@ -302,7 +303,8 @@ MAX_BROWSE_LIMIT = 200
 # How long one tool call may block waiting on a Plaud job (#151).  Most MCP
 # clients give up on a call after 60-120 s, so waiting longer server-side only
 # orphans the handler.  process_recording spends this once across both of its
-# waits; merge_recordings spends it on the combine poll.  upload_recording is
+# waits; merge_recordings and mutate_recording(action="trim") spend it on the
+# poll for the new recording.  upload_recording is
 # not bounded: an upload is an active transfer, and stopping it midway leaves
 # nothing to check back on.  See ADR 007 for the job-handle response shape.
 _WAIT_TIMEOUT_S = 90.0
@@ -582,6 +584,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             notes: list[str] = []
             if "speakers" in include_set:
                 output["speakers"] = detail.speakers
+            if "attachments" in include_set:
+                output["attachments"] = [
+                    {"id": a.id, "name": a.filename, "type": a.file_type}
+                    for a in client.list_attachments(recording_id)
+                ]
             if "audio_url" in include_set:
                 link = client.get_audio_link(recording_id)
                 output["audio_url"] = link.url if link else None
@@ -647,6 +654,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         new_name: str | None = None,
         folder_id: str | None = None,
         clear_folder: bool = False,
+        keep: list[str] | None = None,
         share_days: int | None = None,
         share_never_expires: bool = False,
         share_audio: bool | None = None,
@@ -710,6 +718,45 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     )
                 client.rename_recording(ids[0], new_name)
                 return _json_result({"ok": True, "recording_id": ids[0], "new_name": new_name})
+
+            if action == "trim":
+                if is_batch:
+                    return _error_result(
+                        "action=trim does not support recording_ids (batch); pass a single recording_id",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                if not keep:
+                    return _error_result(
+                        "keep is required for action=trim: ranges to keep, e.g. ['0:00-1:00', '5:00-6:30']",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                ranges = parse_keep_ranges(keep)
+                try:
+                    detail = client.trim_recording(ids[0], ranges, timeout_s=_WAIT_TIMEOUT_S)
+                except PlaudWaitTimeoutError as exc:
+                    # Plaud already named the copy, so the handle is its recording
+                    # id.  Re-running would trim a second copy.
+                    return _still_processing(
+                        "trim",
+                        exc.task_id or "",
+                        "get_recording",
+                        "Plaud is still trimming. Do not call mutate_recording(action='trim') again; "
+                        "the copy is the job id, check it with get_recording in a minute.",
+                        recording_id=ids[0],
+                        new_recording_id=exc.task_id or "",
+                    )
+                return _json_result(
+                    {
+                        "ok": True,
+                        "action": "trim",
+                        "recording_id": ids[0],
+                        "new_recording_id": detail.id,
+                        "title": detail.filename,
+                        "duration_minutes": round(detail.duration / 60000, 1),
+                    }
+                )
 
             if action == "trash":
                 client.move_to_trash(ids)
@@ -854,11 +901,25 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         folder_id: str | None = None,
         start_time: int | str | None = None,
         timezone_offset: float | None = None,
+        attach_to: str | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             from ..core.transcode import upload_with_transcode
 
             path = Path(file_path)
+            if attach_to:
+                # A document, not audio: it joins that recording's container
+                # and the other upload options do not apply.
+                if not path.is_file():
+                    raise ValueError(f"file not found: {path}")
+                attachment = client.attach_document(attach_to, path, title)
+                return _json_result(
+                    {
+                        "ok": True,
+                        "recording_id": attach_to,
+                        "attachment": {"id": attachment.id, "name": attachment.filename},
+                    }
+                )
             rec_title = title or path.stem
             start_ms: int | None = None
             if isinstance(start_time, str):

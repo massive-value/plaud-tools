@@ -24,7 +24,7 @@ script *why* it failed without having to match on the message:
 | `4` | Timed out waiting on a job that is **still running** on Plaud's side | Poll with `status <id>` rather than re-running the command |
 
 Code `4` matters for the long-running commands (`transcribe --wait`, `merge`,
-`upload`): the work has not failed, it just outlived the client-side wait.
+`trim`, `upload`): the work has not failed, it just outlived the client-side wait.
 Re-running the command would start a *second* job.
 
 One wrinkle: a malformed command line exits `2` as well, because that is
@@ -446,6 +446,7 @@ plaud-tools upload file.mp3 --folder-id <folder-id>
 plaud-tools upload file.wav --detach
 plaud-tools upload file.wav --skip-summary
 plaud-tools upload file.wav --start-time 2025-03-15T14:30 --timezone-offset -7
+plaud-tools upload statement.pdf --attach-to <recording-id>
 ```
 
 Uploads a local audio file. Native formats: `.mp3`, `.opus`, `.ogg`, `.oga`. Other formats (`.m4a`, `.mp4`, `.wav`, `.aac`, `.flac`, `.wma`, `.amr`) are transcoded to MP3 via ffmpeg.
@@ -453,6 +454,8 @@ Uploads a local audio file. Native formats: `.mp3`, `.opus`, `.ogg`, `.oga`. Oth
 `--timezone-offset` takes whole hours only. Without it the recording gets this machine's timezone. With `--folder-id` the recording goes straight into that folder; without it, Plaud puts it in its Import folder.
 
 By default the command waits for transcription and summary to finish. `--detach` returns immediately. `--skip-summary` waits for transcript only.
+
+With `--attach-to <recording-id>` the file is attached to that existing recording as a document instead of uploaded as audio. It sits next to the recording in Plaud and shows in the web app and in `show`. Accepted: PDF, Word, Excel, PowerPoint (15 MB), TXT/MD/CSV (2 MB), PNG/JPG (20 MB). `--title` names the attachment; the other upload options do not apply.
 
 ### `transcribe`
 
@@ -489,6 +492,15 @@ plaud-tools merge <id1> <id2> <id3> <id4> --title "Day-long session"
 ```
 
 Merges two or more recordings into a single new recording. The source recordings are not modified.
+
+### `trim`
+
+```
+plaud-tools trim <recording-id> 0:00-1:00
+plaud-tools trim <recording-id> 0:00-1:00 5:00-6:30 1:05:00-1:10:00
+```
+
+Cuts a recording down to the ranges you keep (`mm:ss-mm:ss` or `h:mm:ss`, up to 100) and saves the result as a new "<name> copy" recording. The original is not modified. The copy carries over the transcript for the kept ranges but has no summary yet; run `transcribe` on it for one. The command waits for the copy and prints its `new_recording_id`. If it times out (exit `4`), the id printed on stderr is the copy: check it with `show` instead of trimming again.
 
 ---
 

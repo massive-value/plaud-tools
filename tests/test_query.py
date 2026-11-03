@@ -15,7 +15,13 @@ from datetime import UTC, datetime
 import pytest
 
 from plaud_tools.core.models import Recording
-from plaud_tools.core.query import content_snippet, filter_recordings, parse_isoish, summarize_recording
+from plaud_tools.core.query import (
+    content_snippet,
+    filter_recordings,
+    parse_isoish,
+    parse_keep_ranges,
+    summarize_recording,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -384,3 +390,18 @@ class TestContentSnippet:
 
     def test_no_hit_starts_at_the_top_and_collapses_whitespace(self):
         assert content_snippet("line one\n\nline   two", "absent", []) == "line one line two"
+
+
+class TestParseKeepRanges:
+    def test_reads_seconds_minutes_and_hours(self):
+        assert parse_keep_ranges(["0:00-1:00", " 5:00 - 6:30.5", "1:05:30-1:10:00", "90-120"]) == [
+            (0, 60_000),
+            (300_000, 390_500),
+            (3_930_000, 4_200_000),
+            (90_000, 120_000),
+        ]
+
+    @pytest.mark.parametrize("spec", ["1:00", "a:00-1:00", "0:00-", "1:2:3:4-5", "-1:00-2:00"])
+    def test_rejects_malformed_ranges_naming_the_range(self, spec):
+        with pytest.raises(ValueError, match="range|start-end"):
+            parse_keep_ranges([spec])

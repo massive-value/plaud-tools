@@ -989,6 +989,109 @@ def test_merge_recordings_rejects_bad_input(tmp_path):
         client.merge_recordings(["of_1", "of_2"], " ")
 
 
+def trim_routes(copy_detail):
+    return {
+        f"GET {V4}/files/detail/of_1": detail_payload(duration=60_000),
+        f"POST {V4}/audio/trim": ok({"task_id": "t1", "target_file_id": "f_copy"}),
+        f"GET {V4}/files/detail/f_copy": copy_detail,
+    }
+
+
+def test_trim_recording_posts_keep_ranges_and_waits_for_the_copy(tmp_path):
+    client, transport = routed(tmp_path, trim_routes(detail_payload(file_id="f_copy", duration=25_000)))
+    copy = client.trim_recording("of_1", [(0, 10_000), (30_000, 45_000)], poll_interval_s=0)
+    assert (copy.id, copy.duration) == ("f_copy", 25_000)
+    (body,) = transport.sent(f"POST {V4}/audio/trim")
+    assert body["file_id"] == "of_1"
+    assert body["segments"] == [{"start_ms": 0, "end_ms": 10_000}, {"start_ms": 30_000, "end_ms": 45_000}]
+
+
+def test_trim_recording_timeout_carries_the_copys_id(tmp_path):
+    not_found = {"status": -1800311, "msg": "file not found"}  # the copy does not exist yet
+    client, _ = routed(tmp_path, trim_routes(not_found))
+    with pytest.raises(PlaudWaitTimeoutError, match="trim timed out") as info:
+        client.trim_recording("of_1", [(0, 1000)], timeout_s=0)
+    assert info.value.task_id == "f_copy"
+
+
+def test_trim_recording_rejects_bad_ranges(tmp_path):
+    client, transport = routed(tmp_path, trim_routes(detail_payload()))
+    for keep in ([], [(5000, 5000)], [(-1, 1000)], [(0, 61_000)]):
+        with pytest.raises(ValueError, match="trim"):
+            client.trim_recording("of_1", keep)
+    assert not transport.hit(f"POST {V4}/audio/trim")
+
+
+def attach_routes(**overrides):
+    return (
+        upload_routes(
+            **{
+                f"GET {V4}/files/detail/of_1": detail_payload(),
+                f"POST {V4}/upload/confirm-file-web": ok({"file_id": "f_doc", "node_id": "n_doc"}),
+            }
+        )
+        | overrides
+    )
+
+
+def test_attach_document_uploads_then_confirms_into_the_recordings_container(tmp_path):
+    doc = tmp_path / "statement.pdf"
+    doc.write_bytes(b"abcdefghij")
+    client, transport = routed(tmp_path, attach_routes())
+    attachment = client.attach_document("of_1", doc)
+    assert (attachment.id, attachment.filename, attachment.file_type) == ("f_doc", "statement.pdf", "PDF")
+    assert transport.sent(f"POST {V4}/upload/create")[0]["file_type"] == "application/pdf"
+    confirm = transport.sent(f"POST {V4}/upload/confirm-file-web")[0]
+    assert (confirm["file_name"], confirm["target_node_id"], confirm["upload_id"]) == (
+        "statement.pdf",
+        "on_w_1",
+        "u1",
+    )
+    assert not transport.hit(f"POST {V4}/upload/confirm-audio-web")
+
+
+def test_attach_document_rejects_unsupported_and_oversized_files_before_uploading(tmp_path):
+    client, transport = routed(tmp_path, attach_routes())
+    exe = tmp_path / "setup.exe"
+    exe.write_bytes(b"x")
+    with pytest.raises(ValueError, match="cannot attach a .exe"):
+        client.attach_document("of_1", exe)
+    big_text = tmp_path / "big.txt"
+    big_text.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+    with pytest.raises(ValueError, match="text attachments are limited to 2 MB"):
+        client.attach_document("of_1", big_text)
+    assert not transport.hit(f"POST {V4}/upload/create")
+
+
+# An attachment can sort ahead of the recording in its container.
+CONTAINER_FILES = [
+    {"file_id": "f_doc", "name": "statement.pdf", "file_type": "PDF"},
+    {"file_id": "f_note", "name": "Notes", "file_type": "MD"},
+    {"file_id": "of_1", "name": "Meeting", "file_type": "REC"},
+]
+
+
+def test_list_attachments_skips_the_recording_and_its_notes(tmp_path):
+    routes = {
+        f"GET {V4}/files/detail/of_1": detail_payload(),
+        f"GET {V4}/folders/children": children({"on_w_1": CONTAINER_FILES}),
+    }
+    client, _ = routed(tmp_path, routes)
+    assert [(a.id, a.filename, a.file_type) for a in client.list_attachments("of_1")] == [
+        ("f_doc", "statement.pdf", "PDF")
+    ]
+
+
+def test_attachments_do_not_hide_the_recording_from_trash_listing(tmp_path):
+    container = {"node_id": "n_c", "type": 1, "name": "Meeting"}
+    routes = {
+        f"GET {V4}/folders/content": ok({"items": [container]}),
+        f"GET {V4}/folders/children": children({"n_c": CONTAINER_FILES}),
+    }
+    client, _ = routed(tmp_path, routes)
+    assert [rec.id for rec in client.list_trash()] == ["of_1"]
+
+
 def test_wait_for_transcription_returns_once_done_and_times_out_when_not(tmp_path):
     pending = detail_payload()
     done = detail_payload(obj("TRANSCRIPT", "https://s3.fake/t.json"))

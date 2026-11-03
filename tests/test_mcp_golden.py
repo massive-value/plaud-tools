@@ -63,9 +63,15 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-# v0.14.0: +~90 words for the mutate_vocabulary tool and the share_* actions
-# of mutate_recording (vocabulary management and public share links).
-_TOKEN_BUDGET_WORDS = 830
+#
+# v0.14.0: 730 -> 880.  Two feature sets share this bump:
+#   - mutate_vocabulary (new tool) and the share_* actions of mutate_recording
+#     (vocabulary management and public share links)
+#   - mutate_recording(action="trim") with its `keep` ranges,
+#     upload_recording(attach_to=...) and get_recording's `attachments` include
+# Each is a new capability kept to one short line per parameter.  Merged total
+# 864 words; budget set just above it.
+_TOKEN_BUDGET_WORDS = 880
 
 
 def _serialize_tools() -> str:
