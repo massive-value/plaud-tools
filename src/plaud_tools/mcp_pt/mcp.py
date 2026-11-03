@@ -41,6 +41,7 @@ from ..core.query import (
 )
 from ..core.session import SessionManager, SessionStore
 from ..core.summary import notes_payload, render_summary
+from .progress import current_progress, shifted
 
 log = logging.getLogger(__name__)
 
@@ -295,7 +296,9 @@ MAX_BROWSE_LIMIT = 200
 # waits; merge_recordings and mutate_recording(action="trim") spend it on the
 # poll for the new recording.  upload_recording is
 # not bounded: an upload is an active transfer, and stopping it midway leaves
-# nothing to check back on.  See ADR 007 for the job-handle response shape.
+# nothing to check back on.  Every one of these waits also reports progress to
+# clients that ask for it (see progress.py).  See ADR 007 for the job-handle
+# response shape.
 _WAIT_TIMEOUT_S = 90.0
 
 
@@ -466,7 +469,7 @@ def _await_job(
     if wait == "none":
         return _json_result({**fields, "accepted": True})
     try:
-        client.wait_for_task(task_id, what=kind, timeout_s=_WAIT_TIMEOUT_S)
+        client.wait_for_task(task_id, what=kind, timeout_s=_WAIT_TIMEOUT_S, on_progress=current_progress())
     except PlaudApiError as exc:
         if not exc.is_soft_deadline_timeout():
             raise
@@ -773,7 +776,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     )
                 ranges = parse_keep_ranges(keep)
                 try:
-                    detail = client.trim_recording(ids[0], ranges, timeout_s=_WAIT_TIMEOUT_S)
+                    detail = client.trim_recording(
+                        ids[0], ranges, timeout_s=_WAIT_TIMEOUT_S, on_progress=current_progress()
+                    )
                 except PlaudWaitTimeoutError as exc:
                     # Plaud already named the copy, so the handle is its recording
                     # id.  Re-running would trim a second copy.
@@ -951,7 +956,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 # and the other upload options do not apply.
                 if not path.is_file():
                     raise ValueError(f"file not found: {path}")
-                attachment = client.attach_document(attach_to, path, title)
+                attachment = client.attach_document(attach_to, path, title, on_progress=current_progress())
                 return _json_result(
                     {
                         "ok": True,
@@ -966,7 +971,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             elif isinstance(start_time, int):
                 start_ms = start_time
 
-            # No wait budget here: the call returns as soon as Plaud confirms
+            # No wait budget here (parts-sent progress goes to the client when
+            # it asked): the call returns as soon as Plaud confirms
             # the upload, with the new recording_id.  A failure is a normal
             # error (mapped by _call), never a "still processing" that would
             # invite a duplicate upload.  The folder is set in the same
@@ -978,6 +984,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 start_time=start_ms,
                 timezone_offset=timezone_offset,
                 folder_id=folder_id,
+                on_progress=current_progress(),
             )
             return _json_result(
                 {
@@ -1078,13 +1085,18 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             # One budget for the whole call: the summary wait gets whatever the
             # transcription wait left, so wait="summary" is bounded by
             # _WAIT_TIMEOUT_S in total, not per stage.
-            deadline = time.monotonic() + _WAIT_TIMEOUT_S
+            started = time.monotonic()
+            deadline = started + _WAIT_TIMEOUT_S
             stages = [("transcription", client.wait_for_transcription)]
             if wait == "summary":
                 stages.append(("summary", client.wait_for_summary))
             for kind, wait_fn in stages:
                 try:
-                    wait_fn(recording_id, timeout_s=max(0.0, deadline - time.monotonic()))
+                    wait_fn(
+                        recording_id,
+                        timeout_s=max(0.0, deadline - time.monotonic()),
+                        on_progress=shifted(current_progress(), time.monotonic() - started),
+                    )
                 except PlaudApiError as exc:
                     if not exc.is_soft_deadline_timeout():
                         raise
@@ -1165,7 +1177,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             try:
-                detail = client.merge_recordings(recording_ids, title, timeout_s=_WAIT_TIMEOUT_S)
+                detail = client.merge_recordings(
+                    recording_ids, title, timeout_s=_WAIT_TIMEOUT_S, on_progress=current_progress()
+                )
             except PlaudWaitTimeoutError as exc:
                 # The combine task keeps running on Plaud and no merged
                 # recording id exists until it finishes.  Hand back the task id

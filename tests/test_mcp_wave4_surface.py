@@ -183,8 +183,12 @@ class TestProcessRecordingBoundedWait:
 
         result = handlers["process_recording"]("r1", wait="summary")
 
-        mock_client.wait_for_transcription.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S)
-        mock_client.wait_for_summary.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S - 60)
+        mock_client.wait_for_transcription.assert_called_once_with(
+            "r1", timeout_s=_WAIT_TIMEOUT_S, on_progress=None
+        )
+        mock_client.wait_for_summary.assert_called_once_with(
+            "r1", timeout_s=_WAIT_TIMEOUT_S - 60, on_progress=None
+        )
         payload = json.loads(result["content"][0]["text"])
         assert payload["job"]["kind"] == "summary"
         assert payload["is_trans"] is True
@@ -603,7 +607,7 @@ class TestMergeRecordingsSlimResponse:
         assert payload["recording_ids"] == ["r1", "r2"]
         assert "isError" not in result
         mock_client.merge_recordings.assert_called_once_with(
-            ["r1", "r2"], "Combined", timeout_s=_WAIT_TIMEOUT_S
+            ["r1", "r2"], "Combined", timeout_s=_WAIT_TIMEOUT_S, on_progress=None
         )
 
 
@@ -627,7 +631,7 @@ class TestTrimAndAttach:
         payload = json.loads(result["content"][0]["text"])
         assert payload["new_recording_id"] == "f_copy"
         mock_client.trim_recording.assert_called_once_with(
-            "r1", [(0, 30_000), (60_000, 90_000)], timeout_s=_WAIT_TIMEOUT_S
+            "r1", [(0, 30_000), (60_000, 90_000)], timeout_s=_WAIT_TIMEOUT_S, on_progress=None
         )
 
     def test_trim_wait_timeout_hands_back_the_copy_and_says_not_to_retry(self):
@@ -662,7 +666,7 @@ class TestTrimAndAttach:
 
         payload = json.loads(result["content"][0]["text"])
         assert payload["attachment"] == {"id": "f_doc", "name": "statement.pdf"}
-        mock_client.attach_document.assert_called_once_with("r1", doc, None)
+        mock_client.attach_document.assert_called_once_with("r1", doc, None, on_progress=None)
         mock_client.upload_recording.assert_not_called()
 
     def test_get_recording_lists_attachments_when_asked(self):

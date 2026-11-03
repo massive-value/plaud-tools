@@ -230,6 +230,11 @@ TRIM_MAX_SEGMENTS = 100
 
 _T = TypeVar("_T")
 
+# Reports how far a long operation has got: (progress, total or None, message).
+# Waits report seconds elapsed out of their budget; uploads report parts sent
+# out of parts total.  Always optional; the CLI passes none.
+ProgressCallback = Callable[[float, float | None, str], None]
+
 
 def to_file_id(recording_id: str) -> str:
     """Normalize any recording id a caller may hold to a Plaud 4.0 file id.
@@ -729,6 +734,7 @@ class PlaudClient:
         start_time: int | None = None,
         timezone_offset: float | None = None,
         folder_id: str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> Recording:
         """Upload an audio file: create → S3 multipart PUT → merge-part → confirm.
 
@@ -745,6 +751,7 @@ class PlaudClient:
 
         There is deliberately no overall deadline: an upload is an active
         transfer, and each S3 PUT has its own 120 s ceiling (see ``_s3_put``).
+        ``on_progress`` hears about each part sent.
         """
         if not filename.strip():
             raise ValueError("filename cannot be empty")
@@ -756,7 +763,7 @@ class PlaudClient:
         mime_type, extension = _UPLOAD_FORMATS[file_type]
         timezone = self._timezone if timezone_offset is None else _timezone_for_offset(timezone_offset)
 
-        upload_id = self._upload_parts(path, filename, mime_type, extension)
+        upload_id = self._upload_parts(path, filename, mime_type, extension, on_progress)
 
         confirm_body: dict[str, Any] = {
             # The client names the new recording's file id.
@@ -801,13 +808,21 @@ class PlaudClient:
             raw=confirmed,
         )
 
-    def _upload_parts(self, path: Path, filename: str, mime_type: str, extension: str) -> str:
+    def _upload_parts(
+        self,
+        path: Path,
+        filename: str,
+        mime_type: str,
+        extension: str,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
         """Run the shared first half of every upload; return Plaud's ``upload_id``.
 
         upload/create, an S3 PUT per part, then merge-part.  Reads *path* one
         chunk at a time, so a large file never sits in memory whole.  What
         the upload becomes (recording or attachment) is decided by the
-        confirm call each caller makes next.
+        confirm call each caller makes next.  ``on_progress`` is told
+        "part i of n" after each part lands.
         """
         filesize = path.stat().st_size
         created = (
@@ -842,6 +857,8 @@ class PlaudClient:
                 if not etag:
                     raise PlaudApiError(f"S3 upload returned no ETag for part {i + 1}")
                 parts.append({"etag": etag, "part_number": i + 1})
+                if on_progress:
+                    on_progress(i + 1, len(part_urls), f"Uploaded part {i + 1} of {len(part_urls)}")
             if fh.read(1):
                 # Fewer part URLs than chunks: merging now would store a
                 # silently truncated file.
@@ -1018,6 +1035,7 @@ class PlaudClient:
         *,
         poll_interval_s: float = 3.0,
         timeout_s: float = 300.0,
+        on_progress: ProgressCallback | None = None,
     ) -> RecordingDetail:
         """Merge recordings into one new recording (``tasks/audio-merge``) and wait for it.
 
@@ -1070,7 +1088,12 @@ class PlaudClient:
             return None
 
         return self._poll_until(
-            check, what="merge", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id or None
+            check,
+            what="merge",
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            task_id=task_id or None,
+            on_progress=on_progress,
         )
 
     def trim_recording(
@@ -1080,6 +1103,7 @@ class PlaudClient:
         *,
         poll_interval_s: float = 3.0,
         timeout_s: float = 300.0,
+        on_progress: ProgressCallback | None = None,
     ) -> RecordingDetail:
         """Cut a recording down to the *keep* ranges (ms) as a new recording; wait for it.
 
@@ -1129,17 +1153,29 @@ class PlaudClient:
             return detail if detail.duration else None
 
         return self._poll_until(
-            check, what="trim", timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=new_id
+            check,
+            what="trim",
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            task_id=new_id,
+            on_progress=on_progress,
         )
 
-    def attach_document(self, recording_id: str, path: Path, filename: str | None = None) -> Attachment:
+    def attach_document(
+        self,
+        recording_id: str,
+        path: Path,
+        filename: str | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> Attachment:
         """Attach a document, image or text file to a recording.
 
         The file joins the recording's container folder next to its audio
         and notes, and shows in the Plaud web app under that recording.  The
         kind (by extension) sets Plaud's size limit: documents 15 MB, images
         20 MB, text 2 MB.  Same upload flow as audio, confirmed with
-        ``upload/confirm-file-web`` aimed at the container.
+        ``upload/confirm-file-web`` aimed at the container.  ``on_progress``
+        hears about each part sent.
         """
         name = (filename or path.name).strip()
         extension = path.suffix.lstrip(".").lower()
@@ -1161,7 +1197,7 @@ class PlaudClient:
         if not container:
             raise PlaudApiError(f"could not find the container folder of recording {source.id}")
 
-        upload_id = self._upload_parts(path, name, mime_type, extension)
+        upload_id = self._upload_parts(path, name, mime_type, extension, on_progress)
         file_id = f"f_{uuid.uuid4().hex}"
         try:
             confirmed = (
@@ -1221,6 +1257,7 @@ class PlaudClient:
         *,
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
+        on_progress: ProgressCallback | None = None,
     ) -> None:
         """Poll get_recording() until is_trans is True or timeout elapses."""
         self._poll_until(
@@ -1228,6 +1265,7 @@ class PlaudClient:
             what="transcription",
             timeout_s=timeout_s,
             poll_interval_s=poll_interval_s,
+            on_progress=on_progress,
         )
 
     def wait_for_summary(
@@ -1236,6 +1274,7 @@ class PlaudClient:
         *,
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
+        on_progress: ProgressCallback | None = None,
     ) -> None:
         """Poll get_recording() until is_summary is True or timeout elapses."""
         self._poll_until(
@@ -1243,6 +1282,7 @@ class PlaudClient:
             what="summary",
             timeout_s=timeout_s,
             poll_interval_s=poll_interval_s,
+            on_progress=on_progress,
         )
 
     def wait_for_task(
@@ -1252,6 +1292,7 @@ class PlaudClient:
         what: str = "task",
         timeout_s: float = 600.0,
         poll_interval_s: float = 5.0,
+        on_progress: ProgressCallback | None = None,
     ) -> None:
         """Poll ``task-status/{task_id}`` until the job finishes.
 
@@ -1271,7 +1312,12 @@ class PlaudClient:
             raise PlaudApiError(f"Plaud's {what} job failed (task status {status})", plaud_code=status)
 
         self._poll_until(
-            check, what=what, timeout_s=timeout_s, poll_interval_s=poll_interval_s, task_id=task_id
+            check,
+            what=what,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            task_id=task_id,
+            on_progress=on_progress,
         )
 
     def _poll_until(
@@ -1282,6 +1328,7 @@ class PlaudClient:
         timeout_s: float,
         poll_interval_s: float,
         task_id: str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> _T:
         """Call *check* until it returns non-None, sleeping between polls.
 
@@ -1289,7 +1336,9 @@ class PlaudClient:
         reported done even with a zero budget.  A transient error (429 / 5xx /
         network blip) counts as a skipped poll; anything else propagates.
         When the budget runs out this raises ``PlaudWaitTimeoutError`` (with
-        *task_id*, if any): the job is still running server-side.
+        *task_id*, if any): the job is still running server-side.  After
+        each poll that finds the job unfinished, *on_progress* hears the
+        seconds waited so far out of *timeout_s*.
         """
         deadline = time.monotonic() + timeout_s
         while True:
@@ -1306,6 +1355,11 @@ class PlaudClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise PlaudWaitTimeoutError(f"{what} timed out after {int(timeout_s)}s", task_id=task_id)
+            if on_progress:
+                waited = timeout_s - remaining
+                on_progress(
+                    waited, timeout_s, f"Waiting for {what}: {int(waited)}s of up to {int(timeout_s)}s"
+                )
             _sleep(min(poll_interval_s, remaining))
 
     # ------------------------------------------------------------------

@@ -654,7 +654,15 @@ class _FakeUploadClient:
         self._next_id = 0
 
     def upload_recording(
-        self, data, filename, file_type, *, start_time=None, timezone_offset=None, folder_id=None
+        self,
+        data,
+        filename,
+        file_type,
+        *,
+        start_time=None,
+        timezone_offset=None,
+        folder_id=None,
+        on_progress=None,
     ):
         from plaud_tools.core.models import Recording
 
@@ -789,3 +797,52 @@ def test_live_upload_small_mp3():
     detail = client.get_recording(recording.id, include_transcript=True)
     assert detail.is_trans, "Recording should have a transcript after processing"
     assert detail.transcript, "Transcript should be non-empty"
+
+
+# ---------------------------------------------------------------------------
+# Progress callbacks (#221)
+# ---------------------------------------------------------------------------
+
+
+def test_upload_reports_each_part_sent(tmp_path):
+    transport = StubTransport(
+        [
+            _created("https://s3.fake/p1", "https://s3.fake/p2"),
+            _s3_ok("e1"),
+            _s3_ok("e2"),
+            _ok({}),
+            _confirmed(),
+        ]
+    )
+    events: list[tuple] = []
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    client.upload_recording(
+        _audio(tmp_path, b"x" * (_CHUNK_SIZE + 1)), "t", "MP3", on_progress=lambda *args: events.append(args)
+    )
+    assert events == [(1, 2, "Uploaded part 1 of 2"), (2, 2, "Uploaded part 2 of 2")]
+
+
+def test_wait_reports_elapsed_out_of_budget_after_each_unfinished_poll(tmp_path):
+    transport = StubTransport(
+        [
+            _detail("of_aa"),
+            _ok({"data": {"task_id": "t1", "file_id": "f_m"}}),
+            _not_found(),
+            _detail("f_m", duration=0),
+            _detail("f_m"),
+        ]
+    )
+    events: list[tuple] = []
+    client = PlaudClient(_make_manager(tmp_path), transport=transport)
+    client.merge_recordings(
+        ["of_aa", "of_bb"],
+        "Merged",
+        poll_interval_s=0,
+        timeout_s=300,
+        on_progress=lambda *args: events.append(args),
+    )
+    # Two polls found the merge unfinished; the third saw it done, so no third report.
+    assert [(total, message.split(":")[0]) for _progress, total, message in events] == [
+        (300, "Waiting for merge"),
+        (300, "Waiting for merge"),
+    ]

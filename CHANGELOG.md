@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Progress while waiting (#221). When the client asks for it, the MCP server now sends progress notifications during uploads (parts sent), merges, trims, transcription and summary waits, re-summaries and note generation, so a long call no longer looks frozen. Nothing changes for clients that don't ask.
 - Manage Plaud's custom vocabulary: the new `mutate_vocabulary` MCP tool and
   `plaud-tools vocab list|add|edit|delete` list, add, edit and delete the words
   that steer transcription, with an optional misheard form Plaud corrects to

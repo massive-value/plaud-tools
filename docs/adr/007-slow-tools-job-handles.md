@@ -55,6 +55,10 @@ new copy as soon as it accepts the trim, so `id` is the copy's recording id and
 `poll_with` is `get_recording`. `retryable: false` means
 "calling this tool again starts a new job", not "the job failed".
 
+## Progress while waiting
+
+Every wait above, and the upload, also sends MCP progress notifications when the caller's request carried a progress token (#221): seconds waited out of the 90 s budget for the waits, parts sent out of parts total for uploads. The SDK drops them when there is no token. This is extra only: it never changes when a wait gives up or what the job handle looks like, and a failed send is logged and ignored. One helper, mcp_pt/progress.py, serves every tool.
+
 ## Why this shape
 
 The MCP tasks extension (SEP-2663) models a long call as a task with a `taskId`,

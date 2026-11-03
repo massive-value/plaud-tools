@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .client import PlaudClient
+    from .client import PlaudClient, ProgressCallback
     from .models import Recording
 
 # Formats the Plaud API accepts natively (no transcode needed).
@@ -143,13 +143,15 @@ def upload_with_transcode(
     start_time: int | None = None,
     timezone_offset: float | None = None,
     folder_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> UploadOutcome:
     """Upload *path* to Plaud, transcoding first if the format requires it.
 
     Raises ``ValueError`` if *path* does not exist or has an unsupported
     extension, and ``RuntimeError`` if ffmpeg fails — callers already map
     both into their respective error-reporting conventions.  *folder_id*
-    files the recording as part of the upload itself.
+    files the recording as part of the upload itself.  *on_progress* hears
+    about each part sent (see ``PlaudClient.upload_recording``).
     """
     if not path.exists():
         raise ValueError(f"file not found: {path}")
@@ -170,6 +172,7 @@ def upload_with_transcode(
                 start_time=start_time,
                 timezone_offset=timezone_offset,
                 folder_id=folder_id,
+                on_progress=on_progress,
             )
         finally:
             try:
@@ -184,6 +187,7 @@ def upload_with_transcode(
             start_time=start_time,
             timezone_offset=timezone_offset,
             folder_id=folder_id,
+            on_progress=on_progress,
         )
 
     return UploadOutcome(recording=recording, transcoded=needs_transcode)

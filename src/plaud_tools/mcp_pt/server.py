@@ -30,6 +30,7 @@ from .mcp import (
     MAX_TRANSCRIPT_UTTERANCES,
     build_handlers,
 )
+from .progress import progress_reporting
 
 log = logging.getLogger(__name__)
 
@@ -1036,7 +1037,10 @@ def _make_server() -> Server:
             # wait_for_transcription polling) does not stall the asyncio event
             # loop.  Other in-flight requests (e.g. list_tools) remain
             # responsive while a long upload or transcode waits in its thread.
-            result = await asyncio.to_thread(handler, **arguments)
+            # Progress notifications (#221) ride along: the handler's waits
+            # call back into this loop through progress_reporting.
+            with progress_reporting(ctx):
+                result = await asyncio.to_thread(handler, **arguments)
         except Exception:  # noqa: BLE001 — last line of defence, see below
             # mcp.py maps every expected failure to a structured error, so
             # reaching here means a bug.  Log the traceback and still answer
