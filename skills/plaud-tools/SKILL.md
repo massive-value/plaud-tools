@@ -81,9 +81,9 @@ To move a recording into a folder, use `mutate_recording(action="move")` — not
   `name` as `note_name`. Don't guess template ids.
 - `add_note` keeps the existing summary and adds a separate note. Prefer it
   when the user wants another view of the meeting.
-- `resummarize` throws away the current summary the moment it starts, and
-  Plaud may retitle the recording. Ask before running it on a summary the user
-  may have edited by hand.
+- `resummarize` throws away the current summary the moment it starts, hand
+  edits included, and Plaud may retitle the recording. It needs
+  `confirm=true` (see confirm gates below).
 - `instruction` (max 300 characters) only works without a template. Plaud
   applies it to its default template. `verbosity` applies to the main summary,
   not to notes.
@@ -107,7 +107,8 @@ export tool writes the exact text in code.
 
 ## Confirm gates
 
-`delete_recording` and `mutate_folder(action="delete")` refuse to run without
+`delete_recording`, `mutate_folder(action="delete")` and
+`process_recording(action="resummarize")` refuse to run without
 `confirm=true`. That flag means *the human has said yes to this specific
 irreversible thing*. Ask, get an answer, then pass it. Never set it
 pre-emptively to save a turn.

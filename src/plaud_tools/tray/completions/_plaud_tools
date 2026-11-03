@@ -160,7 +160,8 @@ _plaud_tools() {
                         '--llm[AI model from models]:llm' \
                         '--instruction[Custom instruction for the AI]:instruction' \
                         '--verbosity[Summary length]:verbosity:(low medium high)' \
-                        '--detach[Return without waiting for the summary]'
+                        '--detach[Return without waiting for the summary]' \
+                        '--yes[Confirm the current summary may be replaced]'
                     ;;
                 add-note)
                     _arguments \

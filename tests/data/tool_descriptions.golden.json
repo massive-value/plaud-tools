@@ -378,6 +378,10 @@
           ],
           "type": "string"
         },
+        "confirm": {
+          "description": "resummarize only: must be true, set after the human agrees to lose the current summary",
+          "type": "boolean"
+        },
         "diarization": {
           "description": "process only: speaker diarization",
           "type": "boolean"

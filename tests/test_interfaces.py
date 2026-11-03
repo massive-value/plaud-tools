@@ -799,9 +799,18 @@ def test_cli_add_note_waits_for_the_note_unless_detached():
     assert client.task_waits == [("t_n", "note")]
 
     client = NoteStub()
-    payload = json.loads(run_cli(["resummarize", "rec1", "--verbosity", "high", "--detach"], client))
+    payload = json.loads(run_cli(["resummarize", "rec1", "--verbosity", "high", "--detach", "--yes"], client))
     assert (payload["task_id"], client.resummarize_call[1]["verbosity"]) == ("t_s", "high")
     assert client.task_waits == []
+
+
+def test_cli_resummarize_requires_yes_flag():
+    import pytest
+
+    client = NoteStub()
+    with pytest.raises(ValueError, match="--yes"):
+        run_cli(["resummarize", "rec1"], client)
+    assert client.resummarize_call is None
 
 
 def test_cli_transcribe_no_diarization_flag():
@@ -1917,7 +1926,9 @@ def test_mcp_process_recording_add_note_waits_for_the_note():
 def test_mcp_process_recording_resummarize_timeout_returns_a_job_handle():
     client = NoteStub(wait_error=PlaudWaitTimeoutError("summary timed out after 90s", task_id="t_s"))
     handlers = build_handlers(lambda: client)
-    result = handlers["process_recording"]("rec1", action="resummarize", verbosity="low", llm="auto")
+    result = handlers["process_recording"](
+        "rec1", action="resummarize", verbosity="low", llm="auto", confirm=True
+    )
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "still_processing"
     assert payload["job"] == {"kind": "summary", "id": "rec1", "poll_with": "get_recording"}
@@ -1931,10 +1942,25 @@ def test_mcp_process_recording_resummarize_timeout_returns_a_job_handle():
 def test_mcp_process_recording_refuses_options_of_another_action():
     client = NoteStub()
     handlers = build_handlers(lambda: client)
-    for kwargs in ({"action": "resummarize", "note_name": "X"}, {"action": "add_note", "language": "en"}):
+    for kwargs in (
+        {"action": "resummarize", "note_name": "X", "confirm": True},
+        {"action": "add_note", "language": "en"},
+        {"action": "add_note", "confirm": True},
+    ):
         result = handlers["process_recording"]("rec1", **kwargs)
         assert json.loads(result["content"][0]["text"])["error_code"] == "validation"
     assert client.note_call is None and client.resummarize_call is None
+
+
+def test_mcp_process_recording_resummarize_requires_confirm():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", action="resummarize")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["error_code"] == "validation"
+    assert "replaces the recording's current summary" in payload["error"]
+    assert "confirm=true" in payload["error"]
+    assert client.resummarize_call is None
 
 
 def test_mcp_search_templates_returns_templates_and_models():

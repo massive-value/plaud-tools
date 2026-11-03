@@ -686,13 +686,18 @@ _TOOLS: list[types.Tool] = [
                     "type": "boolean",
                     "description": "process only: speaker diarization",
                 },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "resummarize only: must be true, set after the human agrees to lose the current summary",  # noqa: E501
+                },
             },
             "required": ["recording_id"],
         },
         # action='process' is additive and a no-op on a processed recording,
         # but 'resummarize' discards the current summary (Plaud drops the old
         # text when the job starts, edits included) and each 'add_note' call
-        # adds another note.  So: destructive, not idempotent.
+        # adds another note.  So: destructive, not idempotent, and
+        # resummarize needs confirm=true like delete_recording.
         annotations=types.ToolAnnotations(
             title="Transcribe, summarize, or add a note",
             destructive_hint=True,

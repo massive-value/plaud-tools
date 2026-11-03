@@ -454,11 +454,11 @@ If the recording already has a transcript, Plaud keeps the existing transcript a
 ### `resummarize`
 
 ```
-plaud-tools resummarize <recording-id> --template <template-id> --verbosity high
-plaud-tools resummarize <recording-id> --instruction "Focus on decisions" --detach
+plaud-tools resummarize <recording-id> --template <template-id> --verbosity high --yes
+plaud-tools resummarize <recording-id> --instruction "Focus on decisions" --detach --yes
 ```
 
-Replaces the recording's summary, hand edits included, with a newly generated one. Plaud drops the old summary as soon as the job starts and may also retitle the recording. It waits up to 10 minutes for the new summary unless you pass `--detach`. Exit code `4` means the job is still running.
+Replaces the recording's summary, hand edits included, with a newly generated one. Plaud drops the old summary as soon as the job starts and may also retitle the recording. Neither can be undone, so the command refuses to run without `--yes`. It waits up to 10 minutes for the new summary unless you pass `--detach`. Exit code `4` means the job is still running.
 
 ### `add-note`
 

@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than about 90 s, the MCP returns a job handle with the new `note_id`.
 - Re-run a recording's main summary with a different template, AI model,
   length or custom instruction: `process_recording(action="resummarize")`,
-  CLI `resummarize`. This replaces the current summary, edits included.
+  CLI `resummarize`. This replaces the current summary, edits included, and
+  Plaud may retitle the recording, so it needs `confirm=true` in the MCP and
+  `--yes` in the CLI.
 - New MCP tool `search_templates` (14 tools now) and CLI `templates` find
   templates by name, such as "client needs", and return the id and kind to
   pass back. The MCP tool also lists the AI models; CLI `models` does the
@@ -27,11 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `process_recording`'s `template_type` parameter is now `template_id`, next
-  to a new `template_kind` (official, community, custom or team_community).
-  The kind is still worked out for official codes and community ids; custom
-  and team templates need it given. The CLI's `transcribe` output key
-  `template_type` is now `template_id`.
+- **BREAKING:** `process_recording`'s `template_type` parameter is renamed
+  `template_id`, next to a new `template_kind` (official, community, custom
+  or team_community). The MCP schema rejects the old name, so agents or
+  scripts that pass `template_type` must switch. The kind is still worked out
+  for official codes and community ids; custom and team templates need it
+  given.
+- **BREAKING:** the CLI `transcribe` output key `template_type` is renamed
+  `template_id`.
 - `process_recording` is now marked destructive and not idempotent, because
   `resummarize` discards the old summary and each `add_note` adds a note.
 

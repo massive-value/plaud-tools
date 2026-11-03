@@ -43,7 +43,7 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --language --diarization --no-diarization --wait --help" -- "$cur"))
             ;;
         resummarize)
-            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --detach --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --detach --yes --help" -- "$cur"))
             ;;
         add-note)
             COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --name --detach --help" -- "$cur"))

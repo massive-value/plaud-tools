@@ -223,6 +223,9 @@ def build_parser() -> argparse.ArgumentParser:
     resummarize_cmd.add_argument(
         "--detach", action="store_true", help="Return without waiting for the summary."
     )
+    resummarize_cmd.add_argument(
+        "--yes", action="store_true", help="Confirm the current summary may be replaced."
+    )
 
     add_note_cmd = sub.add_parser(
         "add-note", help="Add an extra note to a recording from a template; the summary is kept."
@@ -959,6 +962,11 @@ def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_resummarize(args: argparse.Namespace, client: PlaudClient) -> str:
+    if not args.yes:
+        raise ValueError(
+            f"Resummarizing {args.recording_id!r} replaces its current summary, hand edits included, "
+            "and Plaud may change its title. This cannot be undone. Re-run with --yes to confirm."
+        )
     task_id = client.resummarize(args.recording_id, verbosity=args.verbosity, **_summary_kwargs(args))
     result: dict[str, Any] = {"accepted": True, "recording_id": args.recording_id, "task_id": task_id}
     if not args.detach:

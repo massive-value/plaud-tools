@@ -328,15 +328,31 @@ PROCESS_ACTIONS = ("process", "resummarize", "add_note")
 
 
 def _process_option_problem(
-    action: str, note_name: str | None, language: str | None, diarization: bool | None, verbosity: str | None
+    action: str,
+    note_name: str | None,
+    language: str | None,
+    diarization: bool | None,
+    verbosity: str | None,
+    confirm: bool,
 ) -> str | None:
     """Why these process_recording options don't fit *action*, or None when they do.
 
     Options another action owns are refused rather than silently ignored, so
-    an agent learns its choice had no effect.
+    an agent learns its choice had no effect. resummarize is confirm-gated like
+    delete_recording: Plaud drops the old summary (hand edits included) the
+    moment the job starts, and there is no undo.
     """
     if action not in PROCESS_ACTIONS:
         return f"action must be one of: {', '.join(PROCESS_ACTIONS)}"
+    if action == "resummarize" and not confirm:
+        return (
+            "resummarize requires explicit confirmation. It replaces the recording's current "
+            "summary, including any hand edits, and Plaud may change the recording's title; "
+            "neither can be undone. Re-invoke with confirm=true only after the human has "
+            "confirmed they want the summary replaced."
+        )
+    if confirm and action != "resummarize":
+        return "confirm applies only to action='resummarize'"
     if note_name is not None and action != "add_note":
         return "note_name applies only to action='add_note'"
     if (language is not None or diarization is not None) and action != "process":
@@ -830,6 +846,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         verbosity: str | None = None,
         instruction: str | None = None,
         wait: str = "transcript",
+        confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if wait not in PROCESS_WAIT_MODES:
@@ -838,7 +855,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     error_code="validation",
                     retryable=False,
                 )
-            problem = _process_option_problem(action, note_name, language, diarization, verbosity)
+            problem = _process_option_problem(action, note_name, language, diarization, verbosity, confirm)
             if problem:
                 return _error_result(problem, error_code="validation", retryable=False)
             options = {
