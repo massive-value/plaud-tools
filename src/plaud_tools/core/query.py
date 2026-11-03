@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Collection
 from datetime import date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # client.py imports this module, so these are for type hints only.
+    from .client import PlaudClient
+    from .models import Recording
 
 
 def format_transcript(segments: list[dict[str, Any]]) -> str:
@@ -117,24 +122,19 @@ def _is_date_only(value: str) -> bool:
 def filter_recordings(
     items: list[Any],
     *,
-    since_ms: int | None,
-    until_ms: int | None,
-    query: str | None,
-    folder_id: str | None,
+    since_ms: int | None = None,
+    until_ms: int | None = None,
+    query: str | None = None,
+    folder_ids: Collection[str] | None = None,
     unfiled: bool = False,
 ) -> list[Any]:
-    """Filter and sort a list of Recording objects.
+    """Filter Recording objects in memory and sort them newest first.
 
-    Reconciliation notes:
-    - cli.py accepted an explicit ``unfiled`` boolean kwarg and used an
-      ``elif folder_id is not None`` branch so that ``unfiled=True`` took
-      priority over any ``folder_id``.
-    - mcp.py had no ``unfiled`` kwarg and instead used ``folder_id=""`` as the
-      sentinel for "no folder assigned"; it now translates its own
-      ``folder=""`` MCP parameter into ``unfiled=True`` before calling here
-      (Wave 5, §7.8), so ``unfiled=True`` is the single internal convention.
-    - mcp.py did NOT sort; cli.py sorted descending by start_time.  The sort is
-      included here so callers get consistent ordering regardless of surface.
+    ``query`` is a case-insensitive title substring.  ``folder_ids`` keeps
+    recordings filed in any of those folders; ``unfiled=True`` keeps only
+    recordings in no folder and wins over ``folder_ids``.  The MCP surface
+    passes ``folder=""`` for "unfiled" and translates it to ``unfiled=True``
+    before calling here, so ``unfiled`` is the one internal convention.
     """
     filtered = list(items)
     if since_ms is not None:
@@ -146,87 +146,50 @@ def filter_recordings(
         filtered = [item for item in filtered if query_lower in item.filename.lower()]
     if unfiled:
         filtered = [item for item in filtered if not item.folder_id]
-    elif folder_id is not None:
-        filtered = [item for item in filtered if item.folder_id == folder_id]
+    elif folder_ids is not None:
+        filtered = [item for item in filtered if item.folder_id in folder_ids]
     filtered.sort(key=lambda item: item.start_time, reverse=True)
     return filtered
 
 
-# Upstream page size for incremental filtered browse (shared by cli.py and mcp.py).
-BROWSE_PAGE_SIZE = 200
-# Safety stop for exhaustive paging: 1000 pages x 200 = 200k recordings, far
-# beyond any real library. Only hit if the upstream ignores ``skip``.
-MAX_BROWSE_PAGES = 1000
-
-
-def collect_filtered_paged(
-    fetch_page: Callable[[int, int], list[Any]],
-    page_size: int,
+def query_recordings(
+    client: PlaudClient,
     *,
-    since_ms: int | None,
-    until_ms: int | None,
-    query: str | None,
-    folder_id: str | None,
+    trash: bool = False,
+    since_ms: int | None = None,
+    until_ms: int | None = None,
+    query: str | None = None,
+    folder_id: str | None = None,
     unfiled: bool = False,
     after: int = 0,
-    limit: int | None,
-) -> tuple[list[Any], bool]:
-    """Incrementally fetch upstream pages, filter each one, and stop early.
+    limit: int | None = None,
+) -> tuple[list[Recording], bool]:
+    """One page of recordings matching the filters, and whether more follow.
 
-    ``fetch_page(skip, page_size)`` must return a list of Recording-like objects
-    for the given upstream window.  Paging stops when either:
-    - ``after + limit + 1`` filtered matches have been collected (enough to
-      resolve ``has_more`` without over-fetching), or
-    - the upstream returns fewer than ``page_size`` items (list exhausted), or
-    - with ``since_ms`` set, a batch reaches back past ``since_ms``.  This
-      relies on ``fetch_page`` returning newest-first (``list_recordings``
-      always does): every later page is older still, so none of it can
-      match.  Without it, a narrow date filter on a
-      big library scanned the whole library.
+    The one list query behind CLI ``list``/``search``/``trash --list`` and MCP
+    ``browse_recordings``.  Plaud 4.0 returns a whole library in one request
+    (about 0.3 s for 800 recordings), so this fetches the full list once
+    (active recordings, or the trash), filters it in memory, and slices
+    ``[after : after + limit]``.  ``limit=None`` returns every match from
+    ``after`` on, with ``has_more`` False.
 
-    ``limit=None`` means "everything": paging only stops at upstream
-    exhaustion (backs CLI ``list --all``), and ``has_more`` is always False.
-    Each request is still bounded to ``page_size``; if the upstream never runs
-    dry within ``MAX_BROWSE_PAGES`` requests this raises instead of returning a
-    list that merely looks complete.
-
-    Returns ``(page, has_more)`` where ``page`` is the slice
-    ``matched[after:after+limit]`` and ``has_more`` is True when a subsequent
-    page would be non-empty.
+    Trashed recordings carry no folder in Plaud 4.0, so a folder or unfiled
+    filter on the trash is refused rather than answered with nothing.
     """
-    need = None if limit is None else after + limit + 1
-    matched: list[Any] = []
-    upstream_skip = 0
-
-    while need is None or len(matched) < need:
-        if upstream_skip >= MAX_BROWSE_PAGES * page_size:
-            raise RuntimeError(
-                f"recording list did not end after {MAX_BROWSE_PAGES} pages of {page_size}; "
-                "refusing to return a possibly incomplete list"
-            )
-        batch = fetch_page(upstream_skip, page_size)
-        if not batch:
-            break
-        filtered = filter_recordings(
-            batch,
-            since_ms=since_ms,
-            until_ms=until_ms,
-            query=query,
-            folder_id=folder_id,
-            unfiled=unfiled,
-        )
-        matched.extend(filtered)
-        if len(batch) < page_size:
-            break
-        if since_ms is not None and min(item.start_time for item in batch) < since_ms:
-            break
-        upstream_skip += page_size
-
+    if trash and (folder_id is not None or unfiled):
+        raise ValueError("trashed recordings have no folder, so the trash cannot be filtered by folder")
+    items = client.list_trash() if trash else client.list_recordings()
+    matched = filter_recordings(
+        items,
+        since_ms=since_ms,
+        until_ms=until_ms,
+        query=query,
+        folder_ids=None if folder_id is None else {folder_id},
+        unfiled=unfiled,
+    )
     if limit is None:
         return matched[after:], False
-    page = matched[after : after + limit]
-    has_more = len(matched) > after + limit
-    return page, has_more
+    return matched[after : after + limit], len(matched) > after + limit
 
 
 def folder_dict(folder: Any) -> dict[str, Any]:

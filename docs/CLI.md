@@ -141,7 +141,7 @@ plaud-tools list --unfiled
 
 Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles.
 
-`--all` returns every matching recording instead of one page. It reads Plaud's list to the end, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
+`--all` returns every matching recording instead of one page. `--all` and `--limit` can't be combined. `search` and `trash --list` take `--all` too. Every listing reads your whole library from Plaud in one request and filters it locally, so a filter never misses an older recording.
 
 ```
 plaud-tools list --all --folder-id <folder-id> > recordings.json
@@ -394,11 +394,12 @@ Overwrites a recording's AI summary entirely with new markdown. `--content` and 
 ```
 plaud-tools trash <recording-id>
 plaud-tools trash --list
+plaud-tools trash --list --since 2026-09-01 --limit 5
 plaud-tools restore <recording-id>
 plaud-tools delete <recording-id> --yes
 ```
 
-`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash; a bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
+`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash, 20 at a time like `list`; it takes `--limit`/`--all`, `--since`/`--until` and `--query` too. Trashed recordings have no folder, so there is no folder filter. A bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
 
 ### `trash-move` / `trash-restore`
 

@@ -15,12 +15,7 @@ from plaud_tools.mcp_pt.mcp import build_handlers
 
 
 class StubClient:
-    # Full fixture set — returned for both the unfiltered path (no query) and
-    # the incremental filtered path (query with limit=BROWSE_PAGE_SIZE).  The
-    # old assertion `query.limit == 2` is removed: the direct unfiltered path
-    # passes `limit=args.limit`, while the incremental path passes
-    # `limit=BROWSE_PAGE_SIZE`.  Client-side filtering via collect_filtered_paged
-    # is responsible for narrowing results.
+    # The whole library: query_recordings fetches it once and filters it.
     _ALL_RECORDINGS = [
         Recording(
             id="r1",
@@ -38,20 +33,6 @@ class StubClient:
     ]
 
     def list_recordings(self, query=None):
-        if query is not None and query.limit is not None and query.limit <= 5:
-            # Direct unfiltered path (no filter flags): passes the exact CLI limit.
-            # Return only the first record to satisfy the shape test.
-            return [
-                Recording(
-                    id="r1",
-                    filename="meeting",
-                    start_time=1_746_000_000_000,
-                    duration=600_000,
-                    folder_id="tag1",
-                )
-            ]
-        # Incremental filtered path (limit=BROWSE_PAGE_SIZE) or no-query path:
-        # return all records so client-side filtering can narrow them.
         return list(self._ALL_RECORDINGS)
 
     def merge_recordings(self, ids: list[str], filename: str, **kwargs):
@@ -182,12 +163,12 @@ def test_cli_list_shapes_output():
     from datetime import datetime
 
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
-    output = run_cli(["list", "--limit", "2"], StubClient())
+    output = run_cli(["list", "--limit", "1"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
             "id": "r1",
-            "title": "meeting",
+            "title": "Q4 Review",
             "date": expected_date,
             "duration_minutes": 10,
             "folder_id": "tag1",
@@ -500,7 +481,7 @@ def test_cli_segments_and_fingerprint_match_mcp_pages():
 
 
 class LibraryStub(StubClient):
-    """A library of ``size`` recordings served in upstream pages; every third is in tag1."""
+    """A library of ``size`` recordings; every third is in tag1."""
 
     def __init__(self, size: int):
         self.library = [
@@ -512,21 +493,19 @@ class LibraryStub(StubClient):
             )
             for i in range(size)
         ]
-        self.requests: list[tuple[int, int]] = []
+        self.requests = 0
 
     def list_recordings(self, query=None):
-        skip = query.skip or 0
-        self.requests.append((skip, query.limit))
-        return self.library[skip : skip + query.limit]
+        self.requests += 1
+        return list(self.library)
 
 
-def test_cli_list_all_pages_a_filtered_library_to_exhaustion():
+def test_cli_list_all_returns_a_whole_filtered_library_in_one_request():
     stub = LibraryStub(650)
     payload = json.loads(run_cli(["list", "--all", "--folder-id", "tag1"], stub))
     assert len(payload) == 217  # ceil(650 / 3): far more than the 20 default
     assert {item["folder_id"] for item in payload} == {"tag1"}
-    # Bounded requests, stopping at the first short page.
-    assert stub.requests == [(0, 200), (200, 200), (400, 200), (600, 200)]
+    assert stub.requests == 1
 
 
 def test_cli_list_all_without_filters_returns_everything():
@@ -1273,14 +1252,14 @@ def test_cli_main_oserror_exits_cleanly_with_message(capsys, monkeypatch):
 
 def test_mcp_browse_recordings_returns_curated_list():
     handlers = build_handlers(lambda: StubClient())
-    result = handlers["browse_recordings"](limit=2)
+    result = handlers["browse_recordings"](limit=1)
     payload = json.loads(result["content"][0]["text"])
     assert "items" in payload
-    assert "next_after" in payload
+    assert payload["next_after"] == 1
     assert len(payload["items"]) == 1
     item = payload["items"][0]
     assert item["id"] == "r1"
-    assert item["title"] == "meeting"
+    assert item["title"] == "Q4 Review"
     assert item["duration_minutes"] == 10
     assert item["folder_id"] == "tag1"
     # date is local time — just check shape, not exact value

@@ -264,7 +264,7 @@ _TOOLS: list[types.Tool] = [
                 "trash": {
                     "type": "boolean",
                     "default": False,
-                    "description": "List trashed recordings instead of active ones",
+                    "description": "List trashed recordings instead of active ones (trashed recordings have no folder, so not with `folder`)",  # noqa: E501
                 },
             },
         },

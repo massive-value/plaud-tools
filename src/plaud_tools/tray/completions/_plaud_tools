@@ -147,7 +147,13 @@ _plaud_tools() {
                         '--wait[Block until the given stage completes]:wait:(none transcript summary)'
                     ;;
                 trash)
-                    _arguments '--list[List recordings currently in trash]'
+                    _arguments \
+                        '--list[List recordings currently in trash]' \
+                        '--limit[Max results to return]:limit' \
+                        '--all[List the whole trash]' \
+                        '--since[ISO 8601 start-date filter]:date' \
+                        '--until[ISO 8601 end-date filter]:date' \
+                        '--query[Title substring filter]:query'
                     ;;
                 delete)
                     _arguments '--yes[Confirm permanent deletion without prompt]'

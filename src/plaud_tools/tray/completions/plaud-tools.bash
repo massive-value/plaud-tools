@@ -43,7 +43,7 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "--template --language --diarization --no-diarization --llm --wait --help" -- "$cur"))
             ;;
         trash)
-            COMPREPLY=($(compgen -W "--list --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--list --limit --all --since --until --query --help" -- "$cur"))
             ;;
         delete)
             COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))

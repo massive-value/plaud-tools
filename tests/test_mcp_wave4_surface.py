@@ -549,25 +549,25 @@ class TestGetRecordingTranscriptBlock:
 
 
 class TestBrowseRecordingsTrash:
-    def test_trash_true_queries_with_is_trash_one(self):
+    def test_trash_true_lists_the_trash(self):
         mock_client = MagicMock()
-        mock_client.list_recordings.return_value = []
+        mock_client.list_trash.return_value = []
         handlers = build_handlers(lambda: mock_client)
 
         handlers["browse_recordings"](limit=5, trash=True)
 
-        call_query = mock_client.list_recordings.call_args[0][0]
-        assert call_query.is_trash == 1
+        mock_client.list_trash.assert_called_once_with()
+        mock_client.list_recordings.assert_not_called()
 
-    def test_trash_false_default_queries_with_is_trash_zero(self):
+    def test_trash_false_default_lists_active_recordings(self):
         mock_client = MagicMock()
         mock_client.list_recordings.return_value = []
         handlers = build_handlers(lambda: mock_client)
 
         handlers["browse_recordings"](limit=5)
 
-        call_query = mock_client.list_recordings.call_args[0][0]
-        assert call_query.is_trash == 0
+        mock_client.list_recordings.assert_called_once_with()
+        mock_client.list_trash.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

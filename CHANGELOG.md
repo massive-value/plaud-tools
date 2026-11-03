@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `trash --list` takes the same filters as `list`: `--since`, `--until`,
+  `--query`, `--limit` and `--all`.
+
+### Changed
+
+- `trash --list` now shows 20 recordings at a time like `list`. Add `--all`
+  for the whole trash.
+- Listing and browsing make one request to Plaud instead of several. The CLI
+  and MCP now share one list query, so a fix to one reaches both.
+- Filtering the trash by folder (`browse_recordings` with `trash` and
+  `folder`) is now an error. Trashed recordings have no folder in Plaud 4.0,
+  so it always came back empty.
+
 ## [0.13.1] - 2026-11-03
 
 ### Fixed
