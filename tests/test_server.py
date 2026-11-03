@@ -24,6 +24,7 @@ _EXPECTED_TOOL_NAMES = {
     "upload_recording",
     "process_recording",
     "list_folders",
+    "search_templates",
     "merge_recordings",
     "edit_summary",
     "mutate_folder",

@@ -46,11 +46,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `folder nest-colon-names` turns colon-named folders such as
   `Client Meetings:Prospects` into real subfolders. It prints the plan and
   changes nothing until you re-run it with `--yes`.
+- Add a note to a recording from any Plaud template without touching its
+  summary: `process_recording(action="add_note")` in the MCP, `add-note` in
+  the CLI. The note is named after `note_name` (`--name`). If it takes longer
+  than about 90 s, the MCP returns a job handle with the new `note_id`.
+- Re-run a recording's main summary with a different template, AI model,
+  length or custom instruction: `process_recording(action="resummarize")`,
+  CLI `resummarize`. This replaces the current summary, edits included, and
+  Plaud may retitle the recording, so it needs `confirm=true` in the MCP and
+  `--yes` in the CLI.
+- New MCP tool `search_templates` and CLI `templates` find
+  templates by name, such as "client needs", and return the id and kind to
+  pass back. The MCP tool also lists the AI models; CLI `models` does the
+  same.
+- `process_recording` and `transcribe` take `verbosity` (low, medium, high),
+  a custom `instruction` of up to 300 characters, and `template_kind`.
+  Plaud refuses an instruction combined with a template, so plaud-tools
+  rejects that pair before sending it.
 
 ### Changed
 
-- The MCP tool count is now 14, and `mutate_recording` is flagged destructive
-  to clients because it can now publish and revoke share links.
+- The MCP tool count is now 15 (new `mutate_vocabulary` and
+  `search_templates`), and `mutate_recording` is flagged destructive to
+  clients because it can now publish and revoke share links.
 - Summaries and notes read as prose. Plaud's invisible citation links become `[2:05]`-style
   timestamps, and the image and highlight card markup is dropped. Pass `raw_markdown=true`
   (MCP) or `--raw` (CLI) to get Plaud's markdown unchanged. Edits always run on the raw
@@ -67,6 +85,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it always came back empty.
 - A folder filter (`browse_recordings` `folder`, `list --folder-id`) now
   includes recordings in that folder's subfolders.
+- **BREAKING:** `process_recording`'s `template_type` parameter is renamed
+  `template_id`, next to a new `template_kind` (official, community, custom
+  or team_community). The MCP schema rejects the old name, so agents or
+  scripts that pass `template_type` must switch. The kind is still worked out
+  for official codes and community ids; custom and team templates need it
+  given.
+- **BREAKING:** the CLI `transcribe` output key `template_type` is renamed
+  `template_id`.
+- `process_recording` is now marked destructive and not idempotent, because
+  `resummarize` discards the old summary and each `add_note` adds a note.
 
 ### Fixed
 

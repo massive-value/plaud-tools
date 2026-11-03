@@ -225,6 +225,44 @@ class AudioLink:
 
 
 @dataclass(slots=True)
+class SummaryTemplate:
+    """A Plaud summary template, as template search returns it.
+
+    ``kind`` is Plaud's ``template_type`` (official, community, custom or
+    team_community).  Summary and note requests need it next to ``id``,
+    because ids alone don't say which kind they are.
+    """
+
+    id: str
+    kind: str
+    name: str
+    description: str = ""
+    category: str = ""
+
+
+@dataclass(slots=True)
+class SummaryModel:
+    """An AI model Plaud offers for summaries (``model`` is what requests send)."""
+
+    model: str
+    name: str = ""
+    description: str = ""
+
+
+@dataclass(slots=True)
+class NoteJob:
+    """A note Plaud has started generating from a template.
+
+    ``note_id`` is the new note's file id (it sits next to the recording);
+    ``task_id`` is the job to poll with ``PlaudClient.wait_for_task``.
+    """
+
+    task_id: str
+    note_id: str
+    name: str
+
+
+@dataclass(slots=True)
 class TaskStatus:
     """One in-progress Plaud job on a recording (transcription, summary, ...)."""
 

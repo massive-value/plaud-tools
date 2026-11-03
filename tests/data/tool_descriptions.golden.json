@@ -395,32 +395,90 @@
     "name": "list_folders"
   },
   {
-    "description": "Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript). A processed recording is left unchanged (returns already_processed=true).",
+    "description": "Find summary templates by name or topic (up to 20) and list AI models. Pass a hit's template_id, template_kind and name (as note_name) to process_recording, and a model's llm as llm.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
-        "diarization": {
-          "description": "Enable speaker diarization",
+        "query": {
+          "description": "e.g. 'client needs'",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search_templates"
+  },
+  {
+    "description": "Run Plaud AI on a recording. action='process' (default) transcribes and summarizes what is missing (a processed recording is left alone: already_processed=true); 'resummarize' replaces the main summary, edits included; 'add_note' adds an extra note from a template and keeps the summary.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "default": "process",
+          "enum": [
+            "process",
+            "resummarize",
+            "add_note"
+          ],
+          "type": "string"
+        },
+        "confirm": {
+          "description": "resummarize only: must be true, set after the human agrees to lose the current summary",
           "type": "boolean"
         },
+        "diarization": {
+          "description": "process only: speaker diarization",
+          "type": "boolean"
+        },
+        "instruction": {
+          "description": "Custom AI instruction; not with template_id",
+          "maxLength": 300,
+          "type": "string"
+        },
         "language": {
-          "description": "BCP-47 primary subtag (e.g. 'en', 'zh'); use 'auto' to detect",
+          "description": "process only: BCP-47 primary subtag (e.g. 'en'), or 'auto'",
           "type": "string"
         },
         "llm": {
-          "description": "LLM identifier for summarization",
+          "description": "Model from search_templates; default auto",
+          "type": "string"
+        },
+        "note_name": {
+          "description": "add_note: the note's title; required with template_id",
           "type": "string"
         },
         "recording_id": {
           "type": "string"
         },
-        "template_type": {
-          "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
+        "template_id": {
+          "description": "From search_templates; omit for Plaud's default",
+          "type": "string"
+        },
+        "template_kind": {
+          "description": "From search_templates",
+          "enum": [
+            "official",
+            "community",
+            "custom",
+            "team_community"
+          ],
+          "type": "string"
+        },
+        "verbosity": {
+          "description": "Summary length; not add_note",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
           "type": "string"
         },
         "wait": {
           "default": "transcript",
-          "description": "How long to block: none/transcript/summary. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",
+          "description": "How long to block: none/transcript/summary; resummarize and add_note wait for their job unless none. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",
           "enum": [
             "none",
             "transcript",

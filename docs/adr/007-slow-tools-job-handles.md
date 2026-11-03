@@ -46,11 +46,13 @@ running, and the result says what that job is and how to check on it.
 }
 ```
 
-`kind` is `transcription`, `summary`, `merge`, or `trim`. For process_recording
-`id` is the recording id and `poll_with` is `get_recording`. `mutate_recording`
-with `action="trim"` follows the same shape: Plaud names the new copy as soon as
-it accepts the trim, so `id` is the copy's recording id and `poll_with` is
-`get_recording`. `retryable: false` means
+`kind` is `transcription`, `summary`, `note`, `merge`, or `trim`. For process_recording
+`id` is the recording id and `poll_with` is `get_recording`, for every action:
+`resummarize` returns kind `summary`, and `add_note` returns kind `note` with
+the new `note_id` next to the job. Both share the same 90 s budget.
+`mutate_recording` with `action="trim"` follows the same shape: Plaud names the
+new copy as soon as it accepts the trim, so `id` is the copy's recording id and
+`poll_with` is `get_recording`. `retryable: false` means
 "calling this tool again starts a new job", not "the job failed".
 
 ## Why this shape

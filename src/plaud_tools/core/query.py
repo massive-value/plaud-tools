@@ -275,6 +275,27 @@ def share_dict(link: Any) -> dict[str, Any]:
     }
 
 
+def template_dict(template: Any) -> dict[str, Any]:
+    """A summary template as CLI and MCP template search show it.
+
+    The keys match process_recording's options, so a hit can be passed
+    straight back: ``template_id``, ``template_kind`` and ``name`` (the
+    ``note_name`` for add_note).
+    """
+    return {
+        "template_id": template.id,
+        "template_kind": template.kind,
+        "name": template.name,
+        "description": template.description,
+        "category": template.category,
+    }
+
+
+def model_dict(model: Any) -> dict[str, Any]:
+    """A summary model; ``llm`` is the value process_recording takes."""
+    return {"llm": model.model, "name": model.name, "description": model.description}
+
+
 def detail_summary_dict(detail: Any) -> dict[str, Any]:
     """Produce the base summary dict for a RecordingDetail (a "show" view).
 

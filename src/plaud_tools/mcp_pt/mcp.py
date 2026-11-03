@@ -27,6 +27,7 @@ from ..core.query import (
     detail_summary_dict,
     folder_dict,
     format_transcript,
+    model_dict,
     parse_isoish,
     parse_keep_ranges,
     query_recordings,
@@ -34,6 +35,7 @@ from ..core.query import (
     structured_segments,
     summarize_match,
     summarize_recording,
+    template_dict,
     transcript_fingerprint,
     vocabulary_dict,
 )
@@ -406,6 +408,70 @@ def _share_action(
             "note": SHARE_REVOKE_NOTE,
         }
     )
+
+
+PROCESS_ACTIONS = ("process", "resummarize", "add_note")
+
+
+def _process_option_problem(
+    action: str,
+    note_name: str | None,
+    language: str | None,
+    diarization: bool | None,
+    verbosity: str | None,
+    confirm: bool,
+) -> str | None:
+    """Why these process_recording options don't fit *action*, or None when they do.
+
+    Options another action owns are refused rather than silently ignored, so
+    an agent learns its choice had no effect. resummarize is confirm-gated like
+    delete_recording: Plaud drops the old summary (hand edits included) the
+    moment the job starts, and there is no undo.
+    """
+    if action not in PROCESS_ACTIONS:
+        return f"action must be one of: {', '.join(PROCESS_ACTIONS)}"
+    if action == "resummarize" and not confirm:
+        return (
+            "resummarize requires explicit confirmation. It replaces the recording's current "
+            "summary, including any hand edits, and Plaud may change the recording's title; "
+            "neither can be undone. Re-invoke with confirm=true only after the human has "
+            "confirmed they want the summary replaced."
+        )
+    if confirm and action != "resummarize":
+        return "confirm applies only to action='resummarize'"
+    if note_name is not None and action != "add_note":
+        return "note_name applies only to action='add_note'"
+    if (language is not None or diarization is not None) and action != "process":
+        return "language and diarization apply only to action='process' (they set up transcription)"
+    if verbosity is not None and action == "add_note":
+        return "verbosity applies to the main summary, not to notes"
+    return None
+
+
+def _await_job(
+    client: PlaudClient,
+    task_id: str,
+    kind: str,
+    recording_id: str,
+    wait: str,
+    fields: dict[str, Any],
+    still_running: str,
+) -> dict[str, Any]:
+    """Wait up to ``_WAIT_TIMEOUT_S`` for a note or re-summarize job (ADR 007).
+
+    ``wait='none'`` returns as soon as Plaud accepts the job.  A job that
+    outlives the budget comes back as a ``still_processing`` job handle
+    polled with get_recording, the same as process_recording's other waits.
+    """
+    if wait == "none":
+        return _json_result({**fields, "accepted": True})
+    try:
+        client.wait_for_task(task_id, what=kind, timeout_s=_WAIT_TIMEOUT_S)
+    except PlaudApiError as exc:
+        if not exc.is_soft_deadline_timeout():
+            raise
+        return _still_processing(kind, recording_id, "get_recording", still_running, **fields)
+    return _json_result({"ok": True, **fields})
 
 
 def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Callable[..., dict[str, Any]]]:
@@ -926,11 +992,17 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
     def process_recording(
         recording_id: str,
-        template_type: str | None = None,
+        action: str = "process",
+        template_id: str | None = None,
+        template_kind: str | None = None,
+        note_name: str | None = None,
         language: str | None = None,
         diarization: bool | None = None,
         llm: str | None = None,
+        verbosity: str | None = None,
+        instruction: str | None = None,
         wait: str = "transcript",
+        confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if wait not in PROCESS_WAIT_MODES:
@@ -939,12 +1011,46 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     error_code="validation",
                     retryable=False,
                 )
+            problem = _process_option_problem(action, note_name, language, diarization, verbosity, confirm)
+            if problem:
+                return _error_result(problem, error_code="validation", retryable=False)
+            options = {
+                "template_id": template_id,
+                "template_kind": template_kind,
+                "llm": llm,
+                "instruction": instruction,
+            }
+            if action == "add_note":
+                job = client.generate_note(recording_id, note_name=note_name, **options)
+                fields = {"recording_id": recording_id, "note_id": job.note_id, "name": job.name}
+                return _await_job(
+                    client,
+                    job.task_id,
+                    "note",
+                    recording_id,
+                    wait,
+                    fields,
+                    "Plaud is still writing the note. Do not call process_recording again (that adds "
+                    "a second note); check get_recording in a minute.",
+                )
+            if action == "resummarize":
+                task_id = client.resummarize(recording_id, verbosity=verbosity, **options)
+                return _await_job(
+                    client,
+                    task_id,
+                    "summary",
+                    recording_id,
+                    wait,
+                    {"recording_id": recording_id},
+                    "Plaud is still rewriting the summary. Do not call process_recording again; "
+                    "check get_recording in a minute.",
+                )
             started = client.transcribe_and_summarize(
                 recording_id,
-                template_type=template_type,
                 language=language,
                 diarization=diarization,
-                llm=llm,
+                verbosity=verbosity,
+                **options,
             )
             if not started:
                 # Plaud keeps the existing output and ignores the new options,
@@ -958,7 +1064,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         "is_trans": detail.is_trans,
                         "is_summary": detail.is_summary,
                         "message": describe_unstarted_process(detail)
-                        + " Use get_recording to read it, or edit_summary to change the summary.",
+                        + " Use get_recording to read it, edit_summary to change the summary, "
+                        "action='resummarize' to regenerate it, or action='add_note' for an extra note.",
                     }
                 )
             if wait == "none":
@@ -1036,6 +1143,19 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
     def list_folders() -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             return _json_result({"folders": [folder_dict(folder) for folder in client.list_folders()]})
+
+        return _call(get_client, inner)
+
+    def search_templates(query: str) -> dict[str, Any]:
+        # The model list is included so one call returns everything
+        # process_recording's template and llm options need.
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            return _json_result(
+                {
+                    "templates": [template_dict(t) for t in client.search_templates(query)],
+                    "models": [model_dict(m) for m in client.list_summary_models()],
+                }
+            )
 
         return _call(get_client, inner)
 
@@ -1279,6 +1399,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "upload_recording": upload_recording,
         "process_recording": process_recording,
         "list_folders": list_folders,
+        "search_templates": search_templates,
         "merge_recordings": merge_recordings,
         "edit_summary": edit_summary,
         "mutate_folder": mutate_folder,

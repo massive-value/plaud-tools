@@ -9,15 +9,19 @@ import pytest
 
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
+from plaud_tools.core.errors import PlaudWaitTimeoutError
 from plaud_tools.core.models import (
     Attachment,
     AudioLink,
     ContentMatch,
     Folder,
+    NoteJob,
     Recording,
     RecordingDetail,
     RecordingNote,
     ShareLink,
+    SummaryModel,
+    SummaryTemplate,
     VocabularyWord,
 )
 from plaud_tools.core.session import PlaudSession, SessionStore
@@ -151,9 +155,17 @@ class StubClient:
         return {"file_id": recording_id, "file_name": "meeting", "content_list": [], "extra_data": {}}
 
     def transcribe_and_summarize(
-        self, recording_id, template_type=None, language=None, diarization=None, llm=None
+        self,
+        recording_id,
+        template_id=None,
+        template_kind=None,
+        language=None,
+        diarization=None,
+        llm=None,
+        verbosity=None,
+        instruction=None,
     ):
-        self.transcribe_call = (recording_id, template_type, language, diarization, llm)
+        self.transcribe_call = (recording_id, template_id, language, diarization, llm)
         return True
 
     def get_task_status(self, recording_id=None):
@@ -746,7 +758,7 @@ def test_cli_transcribe_shapes_accept_response():
     assert payload == {
         "accepted": True,
         "recording_id": "rec1",
-        "template_type": "MEETING-CONSULT",
+        "template_id": "MEETING-CONSULT",
     }
 
 
@@ -765,6 +777,30 @@ def test_cli_transcribe_passes_language_diarization_llm():
         client,
     )
     assert client.transcribe_call == ("rec1", None, "en-US", True, "gpt-4")
+
+
+def test_cli_add_note_waits_for_the_note_unless_detached():
+    client = NoteStub()
+    output = run_cli(
+        ["add-note", "rec1", "--template", "CUSTOMER-CONSULTATION", "--name", "Client Needs"], client
+    )
+    assert json.loads(output)["done"] is True
+    assert client.note_call[1]["note_name"] == "Client Needs"
+    assert client.task_waits == [("t_n", "note")]
+
+    client = NoteStub()
+    payload = json.loads(run_cli(["resummarize", "rec1", "--verbosity", "high", "--detach", "--yes"], client))
+    assert (payload["task_id"], client.resummarize_call[1]["verbosity"]) == ("t_s", "high")
+    assert client.task_waits == []
+
+
+def test_cli_resummarize_requires_yes_flag():
+    import pytest
+
+    client = NoteStub()
+    with pytest.raises(ValueError, match="--yes"):
+        run_cli(["resummarize", "rec1"], client)
+    assert client.resummarize_call is None
 
 
 def test_cli_transcribe_no_diarization_flag():
@@ -1881,12 +1917,108 @@ def test_mcp_process_recording_already_processed_reports_real_state(is_trans, is
         id=recording_id, filename="m", is_trans=is_trans, is_summary=is_summary
     )
     handlers = build_handlers(lambda: client)
-    result = handlers["process_recording"]("rec1", template_type="MEETING", wait="summary")
+    result = handlers["process_recording"]("rec1", template_id="MEETING", wait="summary")
     payload = json.loads(result["content"][0]["text"])
     assert payload["already_processed"] is True
     assert (payload["is_trans"], payload["is_summary"]) == (is_trans, is_summary)
     assert expected in payload["message"]
     assert client.wait_call is None
+
+
+class NoteStub(MutateStub):
+    """Records add_note / resummarize calls; ``wait_error`` makes the job wait raise."""
+
+    def __init__(self, wait_error=None):
+        super().__init__()
+        self.note_call = None
+        self.resummarize_call = None
+        self.task_waits = []
+        self.wait_error = wait_error
+
+    def generate_note(self, recording_id, **kwargs):
+        self.note_call = (recording_id, kwargs)
+        return NoteJob(
+            task_id="t_n", note_id="f_note", name=kwargs.get("note_name") or "Intelligent Generation"
+        )
+
+    def resummarize(self, recording_id, **kwargs):
+        self.resummarize_call = (recording_id, kwargs)
+        return "t_s"
+
+    def wait_for_task(self, task_id, **kwargs):
+        self.task_waits.append((task_id, kwargs["what"]))
+        if self.wait_error:
+            raise self.wait_error
+
+
+def test_mcp_process_recording_add_note_waits_for_the_note():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"](
+        "rec1", action="add_note", template_id="CUSTOMER-CONSULTATION", note_name="Client Needs"
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {"ok": True, "recording_id": "rec1", "note_id": "f_note", "name": "Client Needs"}
+    assert client.note_call[1]["template_id"] == "CUSTOMER-CONSULTATION"
+    assert client.task_waits == [("t_n", "note")]
+    assert client.transcribe_call is None
+
+
+def test_mcp_process_recording_resummarize_timeout_returns_a_job_handle():
+    client = NoteStub(wait_error=PlaudWaitTimeoutError("summary timed out after 90s", task_id="t_s"))
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"](
+        "rec1", action="resummarize", verbosity="low", llm="auto", confirm=True
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "still_processing"
+    assert payload["job"] == {"kind": "summary", "id": "rec1", "poll_with": "get_recording"}
+    assert payload["retryable"] is False
+    assert client.resummarize_call == (
+        "rec1",
+        {"verbosity": "low", "template_id": None, "template_kind": None, "llm": "auto", "instruction": None},
+    )
+
+
+def test_mcp_process_recording_refuses_options_of_another_action():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    for kwargs in (
+        {"action": "resummarize", "note_name": "X", "confirm": True},
+        {"action": "add_note", "language": "en"},
+        {"action": "add_note", "confirm": True},
+    ):
+        result = handlers["process_recording"]("rec1", **kwargs)
+        assert json.loads(result["content"][0]["text"])["error_code"] == "validation"
+    assert client.note_call is None and client.resummarize_call is None
+
+
+def test_mcp_process_recording_resummarize_requires_confirm():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", action="resummarize")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["error_code"] == "validation"
+    assert "replaces the recording's current summary" in payload["error"]
+    assert "confirm=true" in payload["error"]
+    assert client.resummarize_call is None
+
+
+def test_mcp_search_templates_returns_templates_and_models():
+    client = StubClient()
+    client.search_templates = lambda query: [SummaryTemplate(id="MEETING", kind="official", name="Meeting")]
+    client.list_summary_models = lambda: [SummaryModel(model="auto", name="Auto")]
+    payload = json.loads(
+        build_handlers(lambda: client)["search_templates"](query="meeting")["content"][0]["text"]
+    )
+    assert payload["templates"][0] == {
+        "template_id": "MEETING",
+        "template_kind": "official",
+        "name": "Meeting",
+        "description": "",
+        "category": "",
+    }
+    assert payload["models"] == [{"llm": "auto", "name": "Auto", "description": ""}]
 
 
 def test_mcp_merge_recordings_returns_slim_summary():
