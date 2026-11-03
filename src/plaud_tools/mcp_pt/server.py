@@ -418,7 +418,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update, share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",  # noqa: E501
+        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -464,7 +464,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "Required for share_create and share_revoke, after the human agrees",  # noqa: E501
+                    "description": "Required for share_create, share_update and share_revoke, after the human agrees",  # noqa: E501
                 },
                 "new_name": {
                     "type": "string",

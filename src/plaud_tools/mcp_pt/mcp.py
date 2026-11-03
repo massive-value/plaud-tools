@@ -385,6 +385,11 @@ def _share_action(
         )
 
     if action == "share_update":
+        if not confirm:
+            return _validation_error(
+                "share_update can widen who sees what (audio, no expiry). "
+                "Re-invoke with confirm=true only after the human has confirmed the change."
+            )
         link = client.update_share_link(
             recording_id,
             expire_days=days,

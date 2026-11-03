@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public share links: `mutate_recording` gains `share_create`, `share_get`,
   `share_update` and `share_revoke`, and the CLI gains
   `plaud-tools share create|get|update|revoke`. Links default to 7 days and
-  transcript only. Creating or revoking a link needs `confirm=true` (MCP);
+  transcript only. Creating, updating or revoking a link needs `confirm=true` (MCP);
   revoking needs `--yes` (CLI). Plaud keeps the URL after a revoke, so sharing
   again brings the same URL back, and the revoke reply says so.
 

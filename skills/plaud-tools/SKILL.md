@@ -101,15 +101,15 @@ add only words the user asked for.
 holding the URL can open. It defaults to 7 days and transcript only; turn on
 `share_audio` or `share_summary` only when asked. Client recordings are
 sensitive, so confirm exactly what is being shared. `share_get` reads the
-link back, `share_update` changes expiry (`share_days`, `share_never_expires`)
+link back, `share_update` (confirm-gated too) changes expiry (`share_days`, `share_never_expires`)
 or contents, and `share_revoke` ends it. Plaud keeps the URL when a link is
 revoked, so sharing the same recording again brings back the same URL.
 
 ## Confirm gates
 
 `delete_recording`, `mutate_folder(action="delete")`,
-`mutate_vocabulary(action="delete")`, `mutate_recording(action="share_create")`
-and `mutate_recording(action="share_revoke")` refuse to run without
+`mutate_vocabulary(action="delete")`, `mutate_recording(action="share_create")`,
+`mutate_recording(action="share_update")` and `mutate_recording(action="share_revoke")` refuse to run without
 `confirm=true`. That flag means *the human has said yes to this specific
 irreversible thing*. Ask, get an answer, then pass it. Never set it
 pre-emptively to save a turn.

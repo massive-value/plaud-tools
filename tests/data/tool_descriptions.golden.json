@@ -193,7 +193,7 @@
     "name": "export_transcript"
   },
   {
-    "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update, share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",
+    "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -215,7 +215,7 @@
           "type": "boolean"
         },
         "confirm": {
-          "description": "Required for share_create and share_revoke, after the human agrees",
+          "description": "Required for share_create, share_update and share_revoke, after the human agrees",
           "type": "boolean"
         },
         "folder_id": {

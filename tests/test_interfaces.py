@@ -2270,6 +2270,16 @@ def test_mcp_share_get_update_and_revoke():
         share_days=30,
         share_audio=True,
     )
+    assert client.calls == []  # refused without confirm
+    _mcp(
+        client,
+        "mutate_recording",
+        recording_id="rec1",
+        action="share_update",
+        share_days=30,
+        share_audio=True,
+        confirm=True,
+    )
     assert client.calls[-1] == (
         "share_update",
         "rec1",
