@@ -87,6 +87,21 @@ class Recording:
 
 
 @dataclass(slots=True)
+class RecordingNote:
+    """An extra summary stored next to a recording (Plaud 4.0 "note").
+
+    ``content`` is the raw markdown, or None when Plaud has not finished it
+    or it failed to download (then ``error`` says why).  ``note_id`` is the
+    note's file id, what ``edit_summary`` takes to edit it.
+    """
+
+    note_id: str
+    name: str
+    content: str | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class RecordingDetail:
     id: str
     filename: str
@@ -112,6 +127,10 @@ class RecordingDetail:
     # *could* have asked for instead of an unexplained empty transcript.
     transcript_blocks_available: list[str] = field(default_factory=list)
     ai_content: str | None = None
+    # Extra summaries filed beside the recording; filled with the summary.
+    notes: list[RecordingNote] = field(default_factory=list)
+    # Documents attached to the recording; filled only when asked for.
+    attachments: list[Attachment] = field(default_factory=list)
     # Node bookkeeping for writes: the file node, its per-recording container
     # (empty when the file sits directly in a folder), and the node version
     # Plaud requires on every change.
@@ -154,6 +173,49 @@ class Folder:
 
 
 @dataclass(slots=True)
+class VocabularyWord:
+    """One entry in the account-wide custom vocabulary that steers transcription."""
+
+    id: str
+    word: str
+    # The misheard form Plaud should correct to ``word``; empty when none.
+    heard_as: str = ""
+    language: str = ""
+    # How many transcript corrections Plaud has made with this entry.
+    correction_count: int = 0
+    created_at_ms: int = 0
+
+
+@dataclass(slots=True)
+class ShareLink:
+    """A recording's public share link and what it exposes."""
+
+    url: str
+    key: str
+    # ISO UTC time the link stops working; None for a link that never expires.
+    expires_at: str | None = None
+    audio: bool = False
+    transcript: bool = False
+    summary: bool = False
+    created_at: str = ""
+
+
+@dataclass(slots=True)
+class Attachment:
+    """A document, image or text file attached to a recording.
+
+    It sits in the recording's container folder next to the audio.
+    ``file_type`` is Plaud's own label for it (the REC and MD kinds are the
+    recording and its notes, so never an attachment).
+    """
+
+    id: str
+    filename: str
+    file_type: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class AudioLink:
     """A presigned, short-lived download link for a recording's audio."""
 
@@ -164,6 +226,44 @@ class AudioLink:
     def extension(self) -> str:
         """File extension matching the audio format, e.g. ``.mp3`` or ``.ogg``."""
         return {"audio/ogg": ".ogg", "audio/opus": ".opus", "audio/wav": ".wav"}.get(self.mime_type, ".mp3")
+
+
+@dataclass(slots=True)
+class SummaryTemplate:
+    """A Plaud summary template, as template search returns it.
+
+    ``kind`` is Plaud's ``template_type`` (official, community, custom or
+    team_community).  Summary and note requests need it next to ``id``,
+    because ids alone don't say which kind they are.
+    """
+
+    id: str
+    kind: str
+    name: str
+    description: str = ""
+    category: str = ""
+
+
+@dataclass(slots=True)
+class SummaryModel:
+    """An AI model Plaud offers for summaries (``model`` is what requests send)."""
+
+    model: str
+    name: str = ""
+    description: str = ""
+
+
+@dataclass(slots=True)
+class NoteJob:
+    """A note Plaud has started generating from a template.
+
+    ``note_id`` is the new note's file id (it sits next to the recording);
+    ``task_id`` is the job to poll with ``PlaudClient.wait_for_task``.
+    """
+
+    task_id: str
+    note_id: str
+    name: str
 
 
 @dataclass(slots=True)

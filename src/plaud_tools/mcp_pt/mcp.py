@@ -13,27 +13,36 @@ from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
     SEARCH_RESULT_CAP,
+    SHARE_DEFAULT_DAYS,
     TRANSCRIPT_BLOCKS,
+    VOCAB_LANGUAGE,
     PlaudClient,
-    PlaudRecordingQuery,
     describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.export import TranscriptExportError
 from ..core.export import export_transcript as _export_transcript
 from ..core.query import (
-    BROWSE_PAGE_SIZE,
-    collect_filtered_paged,
+    SHARE_REVOKE_NOTE,
+    attachment_dict,
     detail_summary_dict,
     folder_dict,
     format_transcript,
+    model_dict,
     parse_isoish,
+    parse_keep_ranges,
+    query_recordings,
+    share_dict,
     structured_segments,
     summarize_match,
     summarize_recording,
+    template_dict,
     transcript_fingerprint,
+    vocabulary_dict,
 )
 from ..core.session import SessionManager, SessionStore
+from ..core.summary import notes_payload, render_summary
+from .progress import current_progress, shifted
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +172,24 @@ def _error_result(
     return _json_result(payload, is_error=True)
 
 
+def _validation_error(message: str) -> dict[str, Any]:
+    """The error for a bad argument: the caller must change the call, not retry it."""
+    return _error_result(message, error_code="validation", retryable=False)
+
+
+def _foreign_option(action: str, options: dict[str, tuple[bool, tuple[str, ...]]]) -> str | None:
+    """Why an option was given to an action that does not use it, or None.
+
+    *options* maps each option name to (was it given, the actions that use
+    it).  Options another action owns are refused rather than silently
+    ignored, so an agent learns its choice had no effect.
+    """
+    for name, (given, actions) in options.items():
+        if given and action not in actions:
+            return f"{name} applies only to action {' or '.join(repr(a) for a in actions)}"
+    return None
+
+
 def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClient], Any]) -> Any:
     client = get_client()
     if client is None:
@@ -200,7 +227,7 @@ def _call(get_client: Callable[[], PlaudClient | None], fn: Callable[[PlaudClien
             http_status=exc.http_status,
         )
     except ValueError as exc:
-        return _error_result(str(exc), error_code="validation", retryable=False)
+        return _validation_error(str(exc))
     except RuntimeError as exc:
         return _error_result(str(exc), error_code="api_error", retryable=False)
     except OSError as exc:
@@ -276,30 +303,21 @@ def _transcript_unavailable_note(detail: Any, requested_block: str) -> str | Non
     return None
 
 
-def _count_summary_matches(client: PlaudClient, recording_id: str, find: str) -> int:
-    """Count literal occurrences of ``find`` in a recording's AI summary, read-only.
-
-    Backs ``edit_summary(action="correct", dry_run=True)``.  The transcript
-    equivalent is ``PlaudClient.count_transcript_matches``.
-    """
-    detail = client.get_recording(recording_id, include_summary=True)
-    if not detail.ai_content:
-        raise ValueError(f"recording {recording_id} has no summary text to edit")
-    return detail.ai_content.count(find)
-
-
 PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 
-# Largest browse page.  Matches the upstream page size, so one browse call is
-# at most one Plaud request plus a look-ahead item.
+# Largest browse page.  Every browse is one Plaud list request whatever the
+# limit; the cap keeps a single response small enough for an agent's context.
 MAX_BROWSE_LIMIT = 200
 
 # How long one tool call may block waiting on a Plaud job (#151).  Most MCP
 # clients give up on a call after 60-120 s, so waiting longer server-side only
 # orphans the handler.  process_recording spends this once across both of its
-# waits; merge_recordings spends it on the combine poll.  upload_recording is
+# waits; merge_recordings and mutate_recording(action="trim") spend it on the
+# poll for the new recording.  upload_recording is
 # not bounded: an upload is an active transfer, and stopping it midway leaves
-# nothing to check back on.  See ADR 007 for the job-handle response shape.
+# nothing to check back on.  Every one of these waits also reports progress to
+# clients that ask for it (see progress.py).  See ADR 007 for the job-handle
+# response shape.
 _WAIT_TIMEOUT_S = 90.0
 
 
@@ -322,6 +340,157 @@ def _still_processing(kind: str, job_id: str, poll_with: str, message: str, **fi
     )
 
 
+# mutate_recording actions that manage a recording's public share link.
+_SHARE_ACTIONS = ("share_create", "share_get", "share_update", "share_revoke")
+MUTATE_ACTIONS = ("rename", "trash", "restore", "move", "trim", *_SHARE_ACTIONS)
+
+
+def _share_action(
+    client: PlaudClient,
+    action: str,
+    recording_id: str,
+    *,
+    days: int | None,
+    never_expires: bool,
+    audio: bool | None,
+    transcript: bool | None,
+    summary: bool | None,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Run one share_* action of mutate_recording and shape its result.
+
+    Creating a link publishes client information to anyone holding the URL,
+    and revoking one cuts off people relying on it, so both need confirm=true
+    (the stdio surface can show no prompt).  Creation defaults to a 7-day,
+    transcript-only link.
+    """
+    if action == "share_get":
+        link = client.get_share_link(recording_id)
+        if link is None:
+            return _json_result({"ok": True, "recording_id": recording_id, "shared": False})
+        return _json_result(
+            {"ok": True, "recording_id": recording_id, "shared": True, "share": share_dict(link)}
+        )
+
+    if action == "share_create":
+        if not confirm:
+            return _validation_error(
+                "share_create makes a public link that anyone holding the URL can open. "
+                "Re-invoke with confirm=true only after the human has confirmed "
+                "they want to share this recording."
+            )
+        link = client.create_share_link(
+            recording_id,
+            expire_days=SHARE_DEFAULT_DAYS if days is None else days,
+            audio=bool(audio),
+            transcript=True if transcript is None else transcript,
+            summary=bool(summary),
+        )
+        return _json_result(
+            {"ok": True, "recording_id": recording_id, "action": action, "share": share_dict(link)}
+        )
+
+    if action == "share_update":
+        if not confirm:
+            return _validation_error(
+                "share_update can widen who sees what (audio, no expiry). "
+                "Re-invoke with confirm=true only after the human has confirmed the change."
+            )
+        link = client.update_share_link(
+            recording_id,
+            expire_days=days,
+            never_expires=never_expires,
+            audio=audio,
+            transcript=transcript,
+            summary=summary,
+        )
+        return _json_result(
+            {"ok": True, "recording_id": recording_id, "action": action, "share": share_dict(link)}
+        )
+
+    # share_revoke
+    if not confirm:
+        return _validation_error(
+            "share_revoke stops the public link from working. "
+            "Re-invoke with confirm=true only after the human has confirmed they want to revoke it."
+        )
+    client.revoke_share_link(recording_id)
+    return _json_result(
+        {
+            "ok": True,
+            "recording_id": recording_id,
+            "action": action,
+            "note": SHARE_REVOKE_NOTE,
+        }
+    )
+
+
+PROCESS_ACTIONS = ("process", "resummarize", "add_note")
+
+
+def _process_option_problem(
+    action: str,
+    note_name: str | None,
+    language: str | None,
+    diarization: bool | None,
+    verbosity: str | None,
+    confirm: bool,
+) -> str | None:
+    """Why these process_recording options don't fit *action*, or None when they do.
+
+    Options another action owns are refused (see ``_foreign_option``).
+    resummarize is confirm-gated like
+    delete_recording: Plaud drops the old summary (hand edits included) the
+    moment the job starts, and there is no undo.
+    """
+    if action not in PROCESS_ACTIONS:
+        return f"action must be one of: {', '.join(PROCESS_ACTIONS)}"
+    if action == "resummarize" and not confirm:
+        return (
+            "resummarize requires explicit confirmation. It replaces the recording's current "
+            "summary, including any hand edits, and Plaud may change the recording's title; "
+            "neither can be undone. Re-invoke with confirm=true only after the human has "
+            "confirmed they want the summary replaced."
+        )
+    return _foreign_option(
+        action,
+        {
+            "confirm": (confirm, ("resummarize",)),
+            "note_name": (note_name is not None, ("add_note",)),
+            "language": (language is not None, ("process",)),
+            "diarization": (diarization is not None, ("process",)),
+            # Verbosity shapes the main summary; notes have none.
+            "verbosity": (verbosity is not None, ("process", "resummarize")),
+        },
+    )
+
+
+def _await_job(
+    client: PlaudClient,
+    task_id: str,
+    kind: str,
+    recording_id: str,
+    wait: str,
+    fields: dict[str, Any],
+    still_running: str,
+) -> dict[str, Any]:
+    """Wait up to ``_WAIT_TIMEOUT_S`` for a note or re-summarize job (ADR 007).
+
+    ``wait='none'`` returns as soon as Plaud accepts the job.  A job that
+    outlives the budget comes back as a ``still_processing`` job handle
+    polled with get_recording, the same as process_recording's other waits.
+    """
+    if wait == "none":
+        return _json_result({**fields, "accepted": True})
+    try:
+        client.wait_for_task(task_id, what=kind, timeout_s=_WAIT_TIMEOUT_S, on_progress=current_progress())
+    except PlaudApiError as exc:
+        if not exc.is_soft_deadline_timeout():
+            raise
+        return _still_processing(kind, recording_id, "get_recording", still_running, **fields)
+    return _json_result({"ok": True, **fields})
+
+
 def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Callable[..., dict[str, Any]]]:
     def browse_recordings(
         limit: int = 20,
@@ -338,54 +507,27 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         # direct handler callers (tests, non-validating MCP clients) are also
         # protected.
         if not 1 <= limit <= MAX_BROWSE_LIMIT:
-            return _error_result(
-                f"limit must be between 1 and {MAX_BROWSE_LIMIT}",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error(f"limit must be between 1 and {MAX_BROWSE_LIMIT}")
         if after < 0:
-            return _error_result(
-                "after must be a non-negative integer (>= 0)",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error("after must be a non-negative integer (>= 0)")
 
         def inner(client: PlaudClient) -> dict[str, Any]:
-            since_ms = parse_isoish(since, "since") if since else None
-            until_ms = parse_isoish(until, "until", end_of_day=True) if until else None
-            has_filters = any(value is not None for value in (since, until, query, folder))
+            # The MCP `folder` parameter documents "" as the unfiled sentinel
+            # (see server.py's tool schema); query.py's convention is unfiled=True.
+            is_unfiled = folder == ""
             # trash=True lists the trash instead of active recordings, so an
             # agent can discover trashed IDs to restore.
-            is_trash_flag = 1 if trash else 0
-            # The MCP `folder` parameter documents "" as the unfiled sentinel
-            # (see server.py's tool schema); translate it into query.py's
-            # single internal `unfiled` convention here rather than relying
-            # on filter_recordings' own folder_id=="" special case (§7.8).
-            is_unfiled = folder == ""
-            if has_filters:
-                page, has_more = collect_filtered_paged(
-                    lambda skip, page_size: client.list_recordings(
-                        PlaudRecordingQuery(skip=skip, limit=page_size, is_trash=is_trash_flag)
-                    ),
-                    BROWSE_PAGE_SIZE,
-                    since_ms=since_ms,
-                    until_ms=until_ms,
-                    query=query,
-                    folder_id=None if is_unfiled else folder,
-                    unfiled=is_unfiled,
-                    after=after,
-                    limit=limit,
-                )
-            else:
-                # Ask for one extra item: a full page alone can't tell "more
-                # exist" from "the library is an exact multiple of limit".
-                fetched = client.list_recordings(
-                    PlaudRecordingQuery(
-                        skip=after if after else None, limit=limit + 1, is_trash=is_trash_flag
-                    )
-                )
-                page = fetched[:limit]
-                has_more = len(fetched) > limit
+            page, has_more = query_recordings(
+                client,
+                trash=trash,
+                since_ms=parse_isoish(since, "since") if since else None,
+                until_ms=parse_isoish(until, "until", end_of_day=True) if until else None,
+                query=query,
+                folder_id=None if is_unfiled else folder,
+                unfiled=is_unfiled,
+                after=after,
+                limit=limit,
+            )
             next_after = after + len(page) if has_more else None
             return _json_result(
                 {
@@ -407,19 +549,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         # no server paging, so after/limit page over that fixed list.  Each
         # page re-runs the search; the ranking is stable between calls.
         if not query or not query.strip():
-            return _error_result("query must not be empty", error_code="validation", retryable=False)
+            return _validation_error("query must not be empty")
         if not 1 <= limit <= SEARCH_RESULT_CAP:
-            return _error_result(
-                f"limit must be between 1 and {SEARCH_RESULT_CAP}",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error(f"limit must be between 1 and {SEARCH_RESULT_CAP}")
         if after < 0:
-            return _error_result(
-                "after must be a non-negative integer (>= 0)",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error("after must be a non-negative integer (>= 0)")
 
         def inner(client: PlaudClient) -> dict[str, Any]:
             matches = client.search_content(
@@ -449,25 +583,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         transcript_after: int = 0,
         transcript_limit: int = DEFAULT_TRANSCRIPT_UTTERANCES,
         transcript_block: str = DEFAULT_TRANSCRIPT_BLOCK,
+        raw_markdown: bool = False,
     ) -> dict[str, Any]:
         if transcript_block not in TRANSCRIPT_BLOCKS:
-            return _error_result(
-                f"transcript_block must be one of: {', '.join(TRANSCRIPT_BLOCKS)}",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error(f"transcript_block must be one of: {', '.join(TRANSCRIPT_BLOCKS)}")
         if transcript_after < 0:
-            return _error_result(
-                "transcript_after must be a non-negative integer (>= 0)",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error("transcript_after must be a non-negative integer (>= 0)")
         if not 1 <= transcript_limit <= MAX_TRANSCRIPT_UTTERANCES:
-            return _error_result(
-                f"transcript_limit must be between 1 and {MAX_TRANSCRIPT_UTTERANCES}",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error(f"transcript_limit must be between 1 and {MAX_TRANSCRIPT_UTTERANCES}")
 
         def inner(client: PlaudClient) -> dict[str, Any]:
             include_set = set(include or [])
@@ -478,6 +601,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 include_transcript=need_transcript,
                 include_summary=need_summary,
                 transcript_block=transcript_block,
+                include_attachments="attachments" in include_set,
             )
             output = _summarize_detail(detail)
             # Every explanation for a missing piece goes here; several can
@@ -485,6 +609,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             notes: list[str] = []
             if "speakers" in include_set:
                 output["speakers"] = detail.speakers
+            if "attachments" in include_set:
+                output["attachments"] = [attachment_dict(a) for a in detail.attachments]
             if "audio_url" in include_set:
                 link = client.get_audio_link(recording_id)
                 output["audio_url"] = link.url if link else None
@@ -536,7 +662,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         "few moments."
                     )
                 else:
-                    output["summary"] = detail.ai_content
+                    output["summary"] = (
+                        detail.ai_content if raw_markdown else render_summary(detail.ai_content)
+                    )
+                # Not "notes": that key already carries this response's advisory messages.
+                output["extra_notes"] = notes_payload(detail.notes, raw=raw_markdown)
             if notes:
                 output["notes"] = notes
             return _json_result(output)
@@ -550,44 +680,107 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         new_name: str | None = None,
         folder_id: str | None = None,
         clear_folder: bool = False,
+        keep: list[str] | None = None,
+        share_days: int | None = None,
+        share_never_expires: bool = False,
+        share_audio: bool | None = None,
+        share_transcript: bool | None = None,
+        share_summary: bool | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if not action:
-                return _error_result(
-                    "action is required",
-                    error_code="validation",
-                    retryable=False,
-                )
+                return _validation_error("action is required")
+            if action not in MUTATE_ACTIONS:
+                return _validation_error(f"unknown action: {action!r}")
+            share_options = ("share_create", "share_update")
+            problem = _foreign_option(
+                action,
+                {
+                    "new_name": (bool(new_name), ("rename",)),
+                    "folder_id": (folder_id is not None, ("move",)),
+                    "clear_folder": (clear_folder, ("move",)),
+                    "keep": (bool(keep), ("trim",)),
+                    "share_days": (share_days is not None, share_options),
+                    "share_never_expires": (share_never_expires, ("share_update",)),
+                    "share_audio": (share_audio is not None, share_options),
+                    "share_transcript": (share_transcript is not None, share_options),
+                    "share_summary": (share_summary is not None, share_options),
+                    "confirm": (confirm, ("share_create", "share_update", "share_revoke")),
+                },
+            )
+            if problem:
+                return _validation_error(problem)
             if recording_id is not None and recording_ids is not None:
-                return _error_result(
-                    "pass either recording_id or recording_ids, not both",
-                    error_code="validation",
-                    retryable=False,
-                )
+                return _validation_error("pass either recording_id or recording_ids, not both")
             ids = recording_ids if recording_ids is not None else ([recording_id] if recording_id else None)
             if not ids:
-                return _error_result(
-                    "recording_id or recording_ids is required",
-                    error_code="validation",
-                    retryable=False,
-                )
+                return _validation_error("recording_id or recording_ids is required")
             is_batch = recording_ids is not None
+
+            if action in _SHARE_ACTIONS:
+                if is_batch:
+                    return _validation_error(
+                        f"action={action} does not support recording_ids (batch); pass a single recording_id"
+                    )
+                return _share_action(
+                    client,
+                    action,
+                    ids[0],
+                    days=share_days,
+                    never_expires=share_never_expires,
+                    audio=share_audio,
+                    transcript=share_transcript,
+                    summary=share_summary,
+                    confirm=confirm,
+                )
 
             if action == "rename":
                 if is_batch:
-                    return _error_result(
-                        "action=rename does not support recording_ids (batch); pass a single recording_id",
-                        error_code="validation",
-                        retryable=False,
+                    return _validation_error(
+                        "action=rename does not support recording_ids (batch); pass a single recording_id"
                     )
                 if not new_name:
-                    return _error_result(
-                        "new_name required for action=rename",
-                        error_code="validation",
-                        retryable=False,
-                    )
+                    return _validation_error("new_name required for action=rename")
                 client.rename_recording(ids[0], new_name)
                 return _json_result({"ok": True, "recording_id": ids[0], "new_name": new_name})
+
+            if action == "trim":
+                if is_batch:
+                    return _validation_error(
+                        "action=trim does not support recording_ids (batch); pass a single recording_id"
+                    )
+                if not keep:
+                    return _validation_error(
+                        "keep is required for action=trim: ranges to keep, e.g. ['0:00-1:00', '5:00-6:30']"
+                    )
+                ranges = parse_keep_ranges(keep)
+                try:
+                    detail = client.trim_recording(
+                        ids[0], ranges, timeout_s=_WAIT_TIMEOUT_S, on_progress=current_progress()
+                    )
+                except PlaudWaitTimeoutError as exc:
+                    # Plaud already named the copy, so the handle is its recording
+                    # id.  Re-running would trim a second copy.
+                    return _still_processing(
+                        "trim",
+                        exc.task_id or "",
+                        "get_recording",
+                        "Plaud is still trimming. Do not call mutate_recording(action='trim') again; "
+                        "the copy is the job id, check it with get_recording in a minute.",
+                        recording_id=ids[0],
+                        new_recording_id=exc.task_id or "",
+                    )
+                return _json_result(
+                    {
+                        "ok": True,
+                        "action": "trim",
+                        "recording_id": ids[0],
+                        "new_recording_id": detail.id,
+                        "title": detail.filename,
+                        "duration_minutes": round(detail.duration / 60000, 1),
+                    }
+                )
 
             if action == "trash":
                 client.move_to_trash(ids)
@@ -611,11 +804,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 # The schema already documents folder_id as required for move
                 # unless clear_folder=true — enforce that at runtime too.
                 if folder_id is None and not clear_folder:
-                    return _error_result(
-                        "folder_id is required for action=move unless clear_folder=true",
-                        error_code="validation",
-                        retryable=False,
-                    )
+                    return _validation_error("folder_id is required for action=move unless clear_folder=true")
                 actual_folder_id = None if (clear_folder or folder_id in ("", "-")) else folder_id
                 client.set_recording_folder(ids, actual_folder_id)
                 if is_batch:
@@ -630,11 +819,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     )
                 return _json_result({"ok": True, "recording_id": ids[0], "folder_id": actual_folder_id})
 
-            return _error_result(
-                f"unknown action: {action!r}",
-                error_code="validation",
-                retryable=False,
-            )
+            raise AssertionError(f"unhandled mutate_recording action: {action}")
 
         return _call(get_client, inner)
 
@@ -648,12 +833,10 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         # This mirrors the CLI's --yes flag but is enforced server-side so that
         # even clients that ignore ToolAnnotations cannot silently hard-delete.
         if not confirm:
-            return _error_result(
+            return _validation_error(
                 "delete_recording requires explicit confirmation. "
                 "Re-invoke with confirm=true only after the human has confirmed "
-                "they want to permanently and irreversibly delete this recording.",
-                error_code="validation",
-                retryable=False,
+                "they want to permanently and irreversibly delete this recording."
             )
 
         def inner(client: PlaudClient) -> dict[str, Any]:
@@ -674,10 +857,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         def inner(client: PlaudClient) -> dict[str, Any]:
             if action == "rename_speaker":
                 if original_label is None or new_name is None:
-                    return _error_result(
-                        "original_label and new_name are required for action=rename_speaker",
-                        error_code="validation",
-                        retryable=False,
+                    return _validation_error(
+                        "original_label and new_name are required for action=rename_speaker"
                     )
                 result = client.rename_speaker(recording_id, original_label, new_name)
                 return _json_result(
@@ -691,11 +872,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
             if action == "correct":
                 if find is None or replace is None:
-                    return _error_result(
-                        "find and replace are required for action=correct",
-                        error_code="validation",
-                        retryable=False,
-                    )
+                    return _validation_error("find and replace are required for action=correct")
                 if dry_run:
                     matches = client.count_transcript_matches(recording_id, find)
                     return _json_result(
@@ -718,11 +895,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     }
                 )
 
-            return _error_result(
-                f"unknown action: {action!r} (expected 'rename_speaker' or 'correct')",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error(f"unknown action: {action!r} (expected 'rename_speaker' or 'correct')")
 
         return _call(get_client, inner)
 
@@ -732,11 +905,36 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         folder_id: str | None = None,
         start_time: int | str | None = None,
         timezone_offset: float | None = None,
+        attach_to: str | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             from ..core.transcode import upload_with_transcode
 
             path = Path(file_path)
+            if attach_to:
+                # A document, not audio: it joins that recording's container,
+                # so the audio-only options are refused rather than ignored.
+                audio_only = {
+                    "folder_id": folder_id,
+                    "start_time": start_time,
+                    "timezone_offset": timezone_offset,
+                }
+                given = [name for name, value in audio_only.items() if value is not None]
+                if given:
+                    return _validation_error(
+                        f"{', '.join(given)} cannot be used with attach_to: an attachment goes "
+                        "into the recording's own folder and has no recording time"
+                    )
+                if not path.is_file():
+                    raise ValueError(f"file not found: {path}")
+                attachment = client.attach_document(attach_to, path, title, on_progress=current_progress())
+                return _json_result(
+                    {
+                        "ok": True,
+                        "recording_id": attach_to,
+                        "attachment": {"id": attachment.id, "name": attachment.filename},
+                    }
+                )
             rec_title = title or path.stem
             start_ms: int | None = None
             if isinstance(start_time, str):
@@ -744,7 +942,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             elif isinstance(start_time, int):
                 start_ms = start_time
 
-            # No wait budget here: the call returns as soon as Plaud confirms
+            # No wait budget here (parts-sent progress goes to the client when
+            # it asked): the call returns as soon as Plaud confirms
             # the upload, with the new recording_id.  A failure is a normal
             # error (mapped by _call), never a "still processing" that would
             # invite a duplicate upload.  The folder is set in the same
@@ -756,6 +955,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 start_time=start_ms,
                 timezone_offset=timezone_offset,
                 folder_id=folder_id,
+                on_progress=current_progress(),
             )
             return _json_result(
                 {
@@ -770,25 +970,61 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
     def process_recording(
         recording_id: str,
-        template_type: str | None = None,
+        action: str = "process",
+        template_id: str | None = None,
+        template_kind: str | None = None,
+        note_name: str | None = None,
         language: str | None = None,
         diarization: bool | None = None,
         llm: str | None = None,
+        verbosity: str | None = None,
+        instruction: str | None = None,
         wait: str = "transcript",
+        confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if wait not in PROCESS_WAIT_MODES:
-                return _error_result(
-                    "wait must be one of: none, transcript, summary",
-                    error_code="validation",
-                    retryable=False,
+                return _validation_error("wait must be one of: none, transcript, summary")
+            problem = _process_option_problem(action, note_name, language, diarization, verbosity, confirm)
+            if problem:
+                return _validation_error(problem)
+            options = {
+                "template_id": template_id,
+                "template_kind": template_kind,
+                "llm": llm,
+                "instruction": instruction,
+            }
+            if action == "add_note":
+                job = client.generate_note(recording_id, note_name=note_name, **options)
+                fields = {"recording_id": recording_id, "note_id": job.note_id, "name": job.name}
+                return _await_job(
+                    client,
+                    job.task_id,
+                    "note",
+                    recording_id,
+                    wait,
+                    fields,
+                    "Plaud is still writing the note. Do not call process_recording again (that adds "
+                    "a second note); check get_recording in a minute.",
+                )
+            if action == "resummarize":
+                task_id = client.resummarize(recording_id, verbosity=verbosity, **options)
+                return _await_job(
+                    client,
+                    task_id,
+                    "summary",
+                    recording_id,
+                    wait,
+                    {"recording_id": recording_id},
+                    "Plaud is still rewriting the summary. Do not call process_recording again; "
+                    "check get_recording in a minute.",
                 )
             started = client.transcribe_and_summarize(
                 recording_id,
-                template_type=template_type,
                 language=language,
                 diarization=diarization,
-                llm=llm,
+                verbosity=verbosity,
+                **options,
             )
             if not started:
                 # Plaud keeps the existing output and ignores the new options,
@@ -802,7 +1038,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         "is_trans": detail.is_trans,
                         "is_summary": detail.is_summary,
                         "message": describe_unstarted_process(detail)
-                        + " Use get_recording to read it, or edit_summary to change the summary.",
+                        + " Use get_recording to read it, edit_summary to change the summary, "
+                        "action='resummarize' to regenerate it, or action='add_note' for an extra note.",
                     }
                 )
             if wait == "none":
@@ -815,13 +1052,18 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             # One budget for the whole call: the summary wait gets whatever the
             # transcription wait left, so wait="summary" is bounded by
             # _WAIT_TIMEOUT_S in total, not per stage.
-            deadline = time.monotonic() + _WAIT_TIMEOUT_S
+            wait_began = time.monotonic()
+            deadline = wait_began + _WAIT_TIMEOUT_S
             stages = [("transcription", client.wait_for_transcription)]
             if wait == "summary":
                 stages.append(("summary", client.wait_for_summary))
             for kind, wait_fn in stages:
                 try:
-                    wait_fn(recording_id, timeout_s=max(0.0, deadline - time.monotonic()))
+                    wait_fn(
+                        recording_id,
+                        timeout_s=max(0.0, deadline - time.monotonic()),
+                        on_progress=shifted(current_progress(), time.monotonic() - wait_began),
+                    )
                 except PlaudApiError as exc:
                     if not exc.is_soft_deadline_timeout():
                         raise
@@ -883,13 +1125,28 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def search_templates(query: str) -> dict[str, Any]:
+        # The model list is included so one call returns everything
+        # process_recording's template and llm options need.
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            return _json_result(
+                {
+                    "templates": [template_dict(t) for t in client.search_templates(query)],
+                    "models": [model_dict(m) for m in client.list_summary_models()],
+                }
+            )
+
+        return _call(get_client, inner)
+
     def merge_recordings(
         recording_ids: list[str],
         title: str,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             try:
-                detail = client.merge_recordings(recording_ids, title, timeout_s=_WAIT_TIMEOUT_S)
+                detail = client.merge_recordings(
+                    recording_ids, title, timeout_s=_WAIT_TIMEOUT_S, on_progress=current_progress()
+                )
             except PlaudWaitTimeoutError as exc:
                 # The combine task keeps running on Plaud and no merged
                 # recording id exists until it finishes.  Hand back the task id
@@ -917,17 +1174,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         replace: str | None = None,
         content: str | None = None,
         dry_run: bool = False,
+        note_id: str | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if action == "correct":
                 if find is None or replace is None:
-                    return _error_result(
-                        "find and replace are required for action=correct",
-                        error_code="validation",
-                        retryable=False,
-                    )
+                    return _validation_error("find and replace are required for action=correct")
                 if dry_run:
-                    matches = _count_summary_matches(client, recording_id, find)
+                    matches = client.count_summary_matches(recording_id, find, note_id)
                     return _json_result(
                         {
                             "ok": True,
@@ -937,7 +1191,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                             "matches": matches,
                         }
                     )
-                result = client.correct_summary(recording_id, find, replace)
+                result = client.correct_summary(recording_id, find, replace, note_id)
                 return _json_result(
                     {
                         "ok": True,
@@ -949,19 +1203,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
             if action == "replace":
                 if content is None:
-                    return _error_result(
-                        "content is required for action=replace",
-                        error_code="validation",
-                        retryable=False,
-                    )
-                client.set_summary(recording_id, content)
+                    return _validation_error("content is required for action=replace")
+                client.set_summary(recording_id, content, note_id)
                 return _json_result({"ok": True, "recording_id": recording_id, "action": "replace"})
 
-            return _error_result(
-                f"unknown action: {action!r} (expected 'correct' or 'replace')",
-                error_code="validation",
-                retryable=False,
-            )
+            return _validation_error(f"unknown action: {action!r} (expected 'correct' or 'replace')")
 
         return _call(get_client, inner)
 
@@ -971,17 +1217,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         name: str | None = None,
         color: str | None = None,
         icon: str | None = None,
+        parent_id: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if action == "create":
                 if not name:
-                    return _error_result(
-                        "name is required for action=create",
-                        error_code="validation",
-                        retryable=False,
-                    )
-                folder = client.create_folder(name, color=color, icon=icon)
+                    return _validation_error("name is required for action=create")
+                folder = client.create_folder(name, color=color, icon=icon, parent_id=parent_id)
                 return _json_result(
                     {
                         "ok": True,
@@ -992,17 +1235,9 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
             if action == "edit":
                 if not folder_id:
-                    return _error_result(
-                        "folder_id is required for action=edit",
-                        error_code="validation",
-                        retryable=False,
-                    )
+                    return _validation_error("folder_id is required for action=edit")
                 if name is None and color is None and icon is None:
-                    return _error_result(
-                        "action=edit requires at least one of name, color, icon",
-                        error_code="validation",
-                        retryable=False,
-                    )
+                    return _validation_error("action=edit requires at least one of name, color, icon")
                 folder = client.update_folder(folder_id, name=name, color=color, icon=icon)
                 return _json_result(
                     {
@@ -1014,35 +1249,93 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
             if action == "delete":
                 if not folder_id:
-                    return _error_result(
-                        "folder_id is required for action=delete",
-                        error_code="validation",
-                        retryable=False,
-                    )
-                # Deleting a folder is irreversible (the folder is gone; the
-                # recordings inside survive but become unfiled).  Gate it behind
-                # an explicit confirm, mirroring delete_recording — the stdio
+                    return _validation_error("folder_id is required for action=delete")
+                # Deleting a folder is irreversible (the folder is gone; what
+                # was inside survives one level up).  Gate it behind an
+                # explicit confirm, mirroring delete_recording — the stdio
                 # surface can show no interactive prompt.
                 if not confirm:
-                    return _error_result(
-                        "Deleting a folder cannot be undone (recordings inside are kept but "
-                        "become unfiled). Re-invoke with confirm=true only after the human has "
-                        "confirmed they want to delete this folder.",
-                        error_code="validation",
-                        retryable=False,
+                    return _validation_error(
+                        "Deleting a folder cannot be undone (what is inside is kept and moves up "
+                        "one level). Re-invoke with confirm=true only after the human has "
+                        "confirmed they want to delete this folder."
                     )
                 client.delete_folder(folder_id)
                 return _json_result({"ok": True, "action": "delete", "folder_id": folder_id})
 
-            return _error_result(
-                f"unknown action: {action!r} (expected 'create', 'edit', or 'delete')",
-                error_code="validation",
-                retryable=False,
+            if action == "move":
+                # parent_id is required, never defaulted: an omitted target
+                # must not silently move a folder to the top level (#140).
+                if not folder_id or not parent_id:
+                    return _validation_error(
+                        'folder_id and parent_id are required for action=move (parent_id="root" '
+                        "for the top level)"
+                    )
+                folder = client.move_folder(folder_id, parent_id)
+                return _json_result({"ok": True, "action": "move", "folder": folder_dict(folder)})
+
+            return _validation_error(
+                f"unknown action: {action!r} (expected 'create', 'edit', 'move', or 'delete')"
+            )
+
+        return _call(get_client, inner)
+
+    def mutate_vocabulary(
+        action: str,
+        word: str | None = None,
+        heard_as: str | None = None,
+        language: str | None = None,
+        word_id: str | None = None,
+        word_ids: list[str] | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            if action == "list":
+                entries = client.list_vocabulary()
+                return _json_result(
+                    {
+                        "ok": True,
+                        "action": "list",
+                        "count": len(entries),
+                        "words": [vocabulary_dict(e) for e in entries],
+                    }
+                )
+
+            if action == "add":
+                if not word:
+                    return _validation_error("word is required for action=add")
+                entry = client.add_vocabulary(word, heard_as=heard_as, language=language or VOCAB_LANGUAGE)
+                return _json_result({"ok": True, "action": "add", "word": vocabulary_dict(entry)})
+
+            if action == "edit":
+                if not word_id:
+                    return _validation_error("word_id is required for action=edit")
+                if word is None and heard_as is None and language is None:
+                    return _validation_error("action=edit requires at least one of word, heard_as, language")
+                entry = client.update_vocabulary(word_id, word=word, heard_as=heard_as, language=language)
+                return _json_result({"ok": True, "action": "edit", "word": vocabulary_dict(entry)})
+
+            if action == "delete":
+                ids = word_ids or ([word_id] if word_id else [])
+                if not ids:
+                    return _validation_error("word_ids (or word_id) is required for action=delete")
+                if not confirm:
+                    return _validation_error(
+                        "Deleting vocabulary words cannot be undone. Re-invoke with confirm=true only after "
+                        "the human has confirmed they want to delete them."
+                    )
+                return _json_result(
+                    {"ok": True, "action": "delete", "deleted": client.delete_vocabulary(ids)}
+                )
+
+            return _validation_error(
+                f"unknown action: {action!r} (expected 'list', 'add', 'edit', or 'delete')"
             )
 
         return _call(get_client, inner)
 
     return {
+        "mutate_vocabulary": mutate_vocabulary,
         "browse_recordings": browse_recordings,
         "search_recordings": search_recordings,
         "get_recording": get_recording,
@@ -1053,6 +1346,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         "upload_recording": upload_recording,
         "process_recording": process_recording,
         "list_folders": list_folders,
+        "search_templates": search_templates,
         "merge_recordings": merge_recordings,
         "edit_summary": edit_summary,
         "mutate_folder": mutate_folder,

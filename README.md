@@ -83,6 +83,7 @@ PlaudTools gives your AI assistant a set of tools for working with your Plaud ac
 | Fix a transcript or summary | *"Fix the spelling of the client's name in yesterday's summary."* |
 | Upload audio | *"Upload this audio file and transcribe it."* (with attachment) |
 | Transcribe and summarize | *"Transcribe and summarize yesterday's recording."* |
+| Add a note from a template | *"Add a Client Needs note to this morning's call."* |
 | List and manage folders | *"Create a 'Client Calls' folder"* / *"What folders do I have in Plaud?"* |
 | Merge recordings | *"Merge these three call segments into one recording."* |
 | Download the audio | *"Save the audio from yesterday's client call."* |
@@ -93,7 +94,7 @@ Plaud now ships its own MCP server and CLI (`@plaud-ai/mcp`, `@plaud-ai/cli`). T
 
 **They are read-only.** The official developer API behind them exposes three endpoints — list recordings, get one recording, get the current user. There are no write endpoints, so the official tools cannot change anything in your Plaud account. That's the difference between the two projects, and it isn't a gap that closes with their next release.
 
-PlaudTools drives Plaud's web API instead, which is how it can write. Most of our 13 tools have no official equivalent:
+PlaudTools drives Plaud's web API instead, which is how it can write. Most of our 15 tools have no official equivalent:
 
 | | PlaudTools | Official |
 |---|---|---|
@@ -101,14 +102,18 @@ PlaudTools drives Plaud's web API instead, which is how it can write. Most of ou
 | Search inside transcripts and summaries | ✅ | ❌ |
 | Rename recordings | ✅ | ❌ |
 | Trash / restore / permanently delete | ✅ | ❌ |
-| Folders — list, create, edit, delete, move into | ✅ | ❌ |
+| Folders — list, create, edit, nest, delete, move into | ✅ | ❌ |
 | Name speakers in a transcript | ✅ | ❌ |
 | Fix transcript text (find-and-replace) | ✅ | ❌ |
 | Edit AI summaries | ✅ | ❌ |
 | Upload local audio (auto-transcoded) | ✅ | ❌ |
 | Download original audio | ✅ | ✅ |
 | Trigger transcription / summarization | ✅ | ❌ |
+| Add notes from templates, re-run summaries | ✅ | ❌ |
 | Merge recordings | ✅ | ❌ |
+| Trim recordings, attach documents | ✅ | ❌ |
+| Public share links | ✅ | ❌ |
+| Custom vocabulary | ✅ | ❌ |
 | Browse trash | ✅ | ❌ |
 | Batch operations | ✅ | ❌ |
 | Search your whole library | ✅ | ⚠️ newest 500 recordings only |

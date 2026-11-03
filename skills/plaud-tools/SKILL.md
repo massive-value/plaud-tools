@@ -1,12 +1,13 @@
 ---
 name: plaud-tools
-description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
+description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording (rename, trash, restore, move, trim, share links), edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, search_templates, mutate_folder, mutate_vocabulary, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
 ---
 
 # plaud-tools
 
-Eleven tools over a Plaud account. Three read, eight write. Auth lives in the
-PlaudTools tray app, not here — there is no login tool, by design.
+Fifteen tools over a Plaud account. Five only read, `export_transcript` writes
+a local file, and the rest change the account. Auth lives in the PlaudTools
+tray app, not here — there is no login tool, by design.
 
 ## The three things that go wrong most
 
@@ -57,20 +58,37 @@ narrower `since`/`until` window.
 |---|---|
 | `browse_recordings` | Filters: `query` (title substring), `since`/`until` (ISO 8601), `folder`, `trash`. Paginate with `after` ← `next_after`. |
 | `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
-| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
+| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url","attachments"]` — ask only for what you need; each is a large field or an extra request. `summary` also returns `extra_notes` (other summaries, each with a `note_id`); `raw_markdown=true` keeps Plaud's links. `attachments` lists documents filed with the recording. |
 | `export_transcript` | Whole transcript to a file. `format=` json / txt / srt / docx / pdf. Returns the path, not the text. |
-| `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
+| `mutate_recording` | `action=` rename / trash / restore / move / trim. Accepts `recording_ids` for batch (not for rename or trim). `trim` takes `keep=["0:00-1:00","5:00-6:30"]`, the ranges to keep, and makes a new "copy" recording; the original stays. Also `share_create` / `share_get` / `share_update` / `share_revoke` for one recording's public link — see below. An option meant for another action (say `confirm` on trash) is refused, not ignored. |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |
-| `edit_summary` | `action=` correct / replace. Recording must already have a summary. |
-| `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. |
-| `process_recording` | Trigger transcription/summarization. `wait=` none / transcript / summary. |
+| `edit_summary` | `action=` correct / replace. Recording must already have a summary. `note_id` edits an extra note instead. Works on raw markdown: the `[2:05]` citations you see are `plaud://` links that stay put, so don't search for them. |
+| `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. With `attach_to=<recording_id>` it attaches a document (PDF, Word, Excel, PowerPoint, TXT/MD/CSV, PNG/JPG) to that recording instead; `folder_id`, `start_time` and `timezone_offset` are refused then. |
+| `process_recording` | `action=` process (first transcript and summary; `wait=` none / transcript / summary) / resummarize (replace the summary) / add_note (an extra note from a template). See below. |
 | `merge_recordings` | Two or more → one new recording. Sources survive. |
-| `list_folders` | Get folder IDs before any folder-scoped call. |
-| `mutate_folder` | `action=` create / edit / delete. Delete requires `confirm=true`. |
+| `list_folders` | Get folder IDs before any folder-scoped call. `parent_id` is `"root"` or the folder it sits in. |
+| `search_templates` | Find a summary template by name. Returns `template_id`, `template_kind` and `name` to pass to `process_recording`, plus the `llm` values. |
+| `mutate_folder` | `action=` create / edit / move / delete. `parent_id` puts a new folder inside another, and is required for move (`"root"` = top level). Delete requires `confirm=true`. |
+| `mutate_vocabulary` | `action=` list / add / edit / delete. Account-wide custom vocabulary. Delete requires `confirm=true`. |
 
 To move a recording into a folder, use `mutate_recording(action="move")` — not
-`mutate_folder`.
+`mutate_folder`. `browse_recordings(folder=...)` includes the folder's
+subfolders; each item's `folder_id` says exactly where it is.
+
+## Templates, notes and re-summarizing
+
+- To use a named template ("a Client Needs note"), call `search_templates`
+  first and pass its `template_id`, `template_kind` and, for `add_note`, its
+  `name` as `note_name`. Don't guess template ids.
+- `add_note` keeps the existing summary and adds a separate note. Prefer it
+  when the user wants another view of the meeting.
+- `resummarize` throws away the current summary the moment it starts, hand
+  edits included, and Plaud may retitle the recording. It needs
+  `confirm=true` (see confirm gates below).
+- `instruction` (max 300 characters) only works without a template. Plaud
+  applies it to its default template. `verbosity` applies to the main summary,
+  not to notes.
 
 ## Saving a transcript as a file
 
@@ -89,9 +107,27 @@ export tool writes the exact text in code.
   the call fails with `file_exists`, unless `overwrite=true`. Ask before
   overwriting.
 
+## Vocabulary and share links
+
+`mutate_vocabulary` edits the account's custom vocabulary: words that steer
+future transcription, optionally with a misheard form (`heard_as`) Plaud
+corrects to the word. It affects every later transcription, so list first and
+add only words the user asked for.
+
+`mutate_recording(action="share_create")` makes a public link that anyone
+holding the URL can open. It defaults to 7 days and transcript only; turn on
+`share_audio` or `share_summary` only when asked. Client recordings are
+sensitive, so confirm exactly what is being shared. `share_get` reads the
+link back, `share_update` (confirm-gated too) changes expiry (`share_days`, or `share_never_expires`, which only update takes)
+or contents, and `share_revoke` ends it. Plaud keeps the URL when a link is
+revoked, so sharing the same recording again brings back the same URL.
+
 ## Confirm gates
 
-`delete_recording` and `mutate_folder(action="delete")` refuse to run without
+`delete_recording`, `mutate_folder(action="delete")`,
+`mutate_vocabulary(action="delete")`, `mutate_recording(action="share_create")`,
+`mutate_recording(action="share_update")`, `mutate_recording(action="share_revoke")` and
+`process_recording(action="resummarize")` refuse to run without
 `confirm=true`. That flag means *the human has said yes to this specific
 irreversible thing*. Ask, get an answer, then pass it. Never set it
 pre-emptively to save a turn.
@@ -128,7 +164,7 @@ message:
 | `internal` | A bug in the server. Tell the user; details are in the plaud-mcp log. |
 
 A response with `status: "still_processing"` is not an error: a transcribe,
-summary, or merge job outlived the ~90s wait and is still running on Plaud. Its
+summary, note, merge, or trim job outlived the ~90s wait and is still running on Plaud. Its
 `job` says what is running and which tool reports on it (`poll_with`): poll that
 tool rather than re-issuing the call, because re-issuing starts a *second* job.
 `upload_recording` never returns this; it returns the new `recording_id` or an

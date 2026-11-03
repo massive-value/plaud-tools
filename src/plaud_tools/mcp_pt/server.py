@@ -30,6 +30,7 @@ from .mcp import (
     MAX_TRANSCRIPT_UTTERANCES,
     build_handlers,
 )
+from .progress import progress_reporting
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +157,7 @@ _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
         "language": _NULLABLE_STRING,
         "speakers": {"type": "array", "items": {"type": "string"}},
         "audio_url": _NULLABLE_STRING,
+        "attachments": {"type": "array", "items": {"type": "object"}},
         "audio_mime_type": _NULLABLE_STRING,
         "transcript": {"type": "string"},
         "transcript_segments": {"type": "array", "items": {"type": "object"}},
@@ -163,6 +165,17 @@ _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
         "transcript_next_after": _NULLABLE_INT,
         "transcript_fingerprint": _NULLABLE_STRING,
         "summary": _NULLABLE_STRING,
+        "extra_notes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "content": _NULLABLE_STRING,
+                },
+            },
+        },
         "notes": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["id"],
@@ -225,6 +238,39 @@ _LIST_FOLDERS_OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["folders"],
 }
 
+_SEARCH_TEMPLATES_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "templates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "template_id": {"type": "string"},
+                    "template_kind": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "category": {"type": "string"},
+                },
+                "required": ["template_id", "template_kind", "name"],
+            },
+        },
+        "models": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "llm": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["llm"],
+            },
+        },
+    },
+    "required": ["templates", "models"],
+}
+
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="browse_recordings",
@@ -253,7 +299,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); pass empty string for recordings in no folder",  # noqa: E501
+                    "description": "Folder ID (from `list_folders`); includes its subfolders. Pass empty string for recordings in no folder",  # noqa: E501
                 },
                 "after": {
                     "type": "integer",
@@ -264,7 +310,7 @@ _TOOLS: list[types.Tool] = [
                 "trash": {
                     "type": "boolean",
                     "default": False,
-                    "description": "List trashed recordings instead of active ones",
+                    "description": "List trashed recordings instead of active ones (trashed recordings have no folder, so not with `folder`)",  # noqa: E501
                 },
             },
         },
@@ -331,9 +377,14 @@ _TOOLS: list[types.Tool] = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["transcript", "segments", "speakers", "summary", "audio_url"],
+                        "enum": ["transcript", "segments", "speakers", "summary", "audio_url", "attachments"],
                     },
-                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",  # noqa: E501
+                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary (+ extra_notes: other summaries as {note_id, name, content}), audio_url, attachments",  # noqa: E501
+                },
+                "raw_markdown": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Keep Plaud's raw summary markdown (plaud:// links) instead of [2:05] citations",  # noqa: E501
                 },
                 "transcript_after": {
                     "type": "integer",
@@ -418,7 +469,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",  # noqa: E501
+        description="Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it. Options of another action are refused.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -430,7 +481,47 @@ _TOOLS: list[types.Tool] = [
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["rename", "trash", "restore", "move"],
+                    "enum": [
+                        "rename",
+                        "trash",
+                        "restore",
+                        "move",
+                        "trim",
+                        "share_create",
+                        "share_get",
+                        "share_update",
+                        "share_revoke",
+                    ],
+                },
+                "keep": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Trim: ranges to keep, e.g. ['0:00-1:00', '5:00-6:30']",  # noqa: E501
+                },
+                "share_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "share_create/share_update: link lifetime in days from now (default 7)",  # noqa: E501
+                },
+                "share_never_expires": {
+                    "type": "boolean",
+                    "description": "share_update: remove the expiry",
+                },
+                "share_audio": {
+                    "type": "boolean",
+                    "description": "share_create/share_update: link includes audio (default false)",  # noqa: E501
+                },
+                "share_transcript": {
+                    "type": "boolean",
+                    "description": "share_create/share_update: link includes transcript (default true)",
+                },
+                "share_summary": {
+                    "type": "boolean",
+                    "description": "share_create/share_update: link includes summary (default false)",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Required for share_create, share_update and share_revoke, after the human agrees",  # noqa: E501
                 },
                 "new_name": {
                     "type": "string",
@@ -447,13 +538,16 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["action"],
         },
-        # Reversible write (trash/restore are inverses; rename/move are
-        # undoable).  destructive_hint=False signals the client that no
-        # data is permanently lost.  idempotent_hint omitted: repeated
-        # renames with a different new_name have different outcomes.
+        # Reversible writes (trash/restore are inverses; rename/move are
+        # undoable; trim makes a new copy and leaves the original); no
+        # recording data is permanently lost.  The share_*
+        # actions publish or cut off access, so they are confirm-gated in the
+        # handler and the tool is flagged destructive for clients.
+        # idempotent_hint omitted: repeated renames with a different
+        # new_name have different outcomes.
         annotations=types.ToolAnnotations(
-            title="Rename, move, or trash recordings",
-            destructive_hint=False,
+            title="Rename, move, trim, trash, or share recordings",
+            destructive_hint=True,
             open_world_hint=True,
         ),
     ),
@@ -528,17 +622,21 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="upload_recording",
-        description="Upload a local audio file to Plaud; returns the new recording_id.",
+        description="Upload a local audio file to Plaud; returns the new recording_id. With attach_to, attaches a document instead.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Absolute path to the audio file",
+                    "description": "Absolute path to the audio file or document",
                 },
                 "title": {
                     "type": "string",
-                    "description": "Recording title; defaults to file stem",
+                    "description": "Recording title; defaults to file stem",  # noqa: E501
+                },
+                "attach_to": {
+                    "type": "string",
+                    "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB); not with folder_id/start_time/timezone_offset",  # noqa: E501
                 },
                 "folder_id": {
                     "type": "string",
@@ -566,7 +664,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="list_folders",
-        description="List Plaud folders, returning id, name, color, icon, and parent_id for each.",
+        description='List Plaud folders, returning id, name, color, icon, and parent_id ("root" at the top level, else the folder it sits in) for each.',  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {},
@@ -580,47 +678,95 @@ _TOOLS: list[types.Tool] = [
         ),
     ),
     types.Tool(
+        name="search_templates",
+        description="Find summary templates by name or topic (up to 20) and list AI models. Pass a hit's template_id, template_kind and name (as note_name) to process_recording, and a model's llm as llm.",  # noqa: E501
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "e.g. 'client needs'",
+                },
+            },
+            "required": ["query"],
+        },
+        output_schema=_SEARCH_TEMPLATES_OUTPUT_SCHEMA,
+        # Pure read — same rationale as browse_recordings.
+        annotations=types.ToolAnnotations(
+            title="Search summary templates",
+            read_only_hint=True,
+            open_world_hint=True,
+        ),
+    ),
+    types.Tool(
         name="process_recording",
-        description="Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript). A processed recording is left unchanged (returns already_processed=true).",  # noqa: E501
+        description="Run Plaud AI on a recording. action='process' (default) transcribes and summarizes what is missing (a processed recording is left alone: already_processed=true); 'resummarize' replaces the main summary, edits included; 'add_note' adds an extra note from a template and keeps the summary.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "action": {
+                    "type": "string",
+                    "enum": ["process", "resummarize", "add_note"],
+                    "default": "process",
+                },
                 "wait": {
                     "type": "string",
                     "enum": ["none", "transcript", "summary"],
                     "default": "transcript",
-                    "description": "How long to block: none/transcript/summary. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",  # noqa: E501
+                    "description": "How long to block: none/transcript/summary; resummarize and add_note wait for their job unless none. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",  # noqa: E501
                 },
-                "template_type": {
+                "template_id": {
                     "type": "string",
-                    "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
+                    "description": "From search_templates; omit for Plaud's default",
                 },
-                "language": {
+                "template_kind": {
                     "type": "string",
-                    "description": "BCP-47 primary subtag (e.g. 'en', 'zh'); use 'auto' to detect",
+                    "enum": ["official", "community", "custom", "team_community"],
+                    "description": "From search_templates",  # noqa: E501
                 },
-                "diarization": {
-                    "type": "boolean",
-                    "description": "Enable speaker diarization",
+                "note_name": {
+                    "type": "string",
+                    "description": "add_note: the note's title; required with template_id",  # noqa: E501
+                },
+                "instruction": {
+                    "type": "string",
+                    "maxLength": 300,
+                    "description": "Custom AI instruction; not with template_id",
+                },
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Summary length; not add_note",
                 },
                 "llm": {
                     "type": "string",
-                    "description": "LLM identifier for summarization",
+                    "description": "Model from search_templates; default auto",
+                },
+                "language": {
+                    "type": "string",
+                    "description": "process only: BCP-47 primary subtag (e.g. 'en'), or 'auto'",  # noqa: E501
+                },
+                "diarization": {
+                    "type": "boolean",
+                    "description": "process only: speaker diarization",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "resummarize only: must be true, set after the human agrees to lose the current summary",  # noqa: E501
                 },
             },
             "required": ["recording_id"],
         },
-        # Additive compute — triggers AI processing; does not delete or
-        # overwrite existing user data (the transcript/summary are new artifacts).
-        # idempotent_hint=True: re-triggering on an already-processed recording
-        # is a no-op on the Plaud side (verified live: Plaud answers status 1
-        # with the existing transcript/summary and ignores the new template),
-        # and the handler reports it as already_processed=true.
+        # action='process' is additive and a no-op on a processed recording,
+        # but 'resummarize' discards the current summary (Plaud drops the old
+        # text when the job starts, edits included) and each 'add_note' call
+        # adds another note.  So: destructive, not idempotent, and
+        # resummarize needs confirm=true like delete_recording.
         annotations=types.ToolAnnotations(
-            title="Transcribe and summarize",
-            destructive_hint=False,
-            idempotent_hint=True,
+            title="Transcribe, summarize, or add a note",
+            destructive_hint=True,
+            idempotent_hint=False,
             open_world_hint=True,
         ),
     ),
@@ -654,11 +800,15 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="edit_summary",
-        description="Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",  # noqa: E501
+        description="Edit a recording's AI summary, or an extra note via note_id. action='correct' does a literal find-and-replace on the raw markdown (shown [2:05] citations are plaud:// links; they are kept); action='replace' overwrites everything, so include any plaud:// links to keep.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "note_id": {
+                    "type": "string",
+                    "description": "Edit this extra note (from get_recording) instead of the summary",  # noqa: E501
+                },
                 "action": {
                     "type": "string",
                     "enum": ["correct", "replace"],
@@ -695,17 +845,21 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_folder",
-        description="Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",  # noqa: E501
+        description="Manage Plaud folders: create (optionally inside parent_id), edit name/color/icon, move under another folder, or delete. To move a recording into a folder, use mutate_recording(action='move') instead.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "edit", "delete"],
+                    "enum": ["create", "edit", "move", "delete"],
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); required for edit and delete",
+                    "description": "Folder ID (from `list_folders`); required for edit, move and delete",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": 'Target folder for create (optional) and move (required); "root" = top level',  # noqa: E501
                 },
                 "name": {
                     "type": "string",
@@ -721,17 +875,64 @@ _TOOLS: list[types.Tool] = [
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. Its recordings are kept and move to Plaud's main Recordings list.",  # noqa: E501
+                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. What is inside is kept and moves up one level.",  # noqa: E501
                 },
             },
             "required": ["action"],
         },
-        # create/edit are reversible; delete is irreversible for the folder
-        # itself (recordings survive), so it is gated by a required confirm=true
+        # create/edit/move are reversible; delete is irreversible for the folder
+        # itself (its contents survive), so it is gated by a required confirm=true
         # in the handler.  destructive_hint=True flags the delete path to clients;
         # idempotent_hint=False because deleting a missing folder errors, not no-ops.
         annotations=types.ToolAnnotations(
-            title="Create, edit, or delete folder",
+            title="Create, edit, move, or delete folder",
+            destructive_hint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    ),
+    types.Tool(
+        name="mutate_vocabulary",
+        description="Manage Plaud's account-wide custom vocabulary (names, jargon that steer transcription): list, add, edit, or delete (confirm=true) words.",  # noqa: E501
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "add", "edit", "delete"],
+                },
+                "word": {
+                    "type": "string",
+                    "description": "Correct spelling; required for add",
+                },
+                "heard_as": {
+                    "type": "string",
+                    "description": "Misheard form to auto-correct to `word`; empty clears it on edit",  # noqa: E501
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Language code (default en)",
+                },
+                "word_id": {
+                    "type": "string",
+                    "description": "Entry ID from list; for edit or single delete",
+                },
+                "word_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entry IDs to delete",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Required for delete, after the human agrees",  # noqa: E501
+                },
+            },
+            "required": ["action"],
+        },
+        # Account-wide, so even edits touch every future transcription; delete is
+        # irreversible and gated by confirm=true in the handler.
+        annotations=types.ToolAnnotations(
+            title="List, add, edit, or delete vocabulary",
             destructive_hint=True,
             idempotent_hint=False,
             open_world_hint=True,
@@ -836,7 +1037,10 @@ def _make_server() -> Server:
             # wait_for_transcription polling) does not stall the asyncio event
             # loop.  Other in-flight requests (e.g. list_tools) remain
             # responsive while a long upload or transcode waits in its thread.
-            result = await asyncio.to_thread(handler, **arguments)
+            # Progress notifications (#221) ride along: the handler's waits
+            # call back into this loop through progress_reporting.
+            with progress_reporting(ctx):
+                result = await asyncio.to_thread(handler, **arguments)
         except Exception:  # noqa: BLE001 — last line of defence, see below
             # mcp.py maps every expected failure to a structured error, so
             # reaching here means a bug.  Log the traceback and still answer

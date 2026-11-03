@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaud-tools"
-version = "0.13.1"
+version = "0.14.0"
 description = "CLI, MCP server, and Windows tray app for managing Plaud recordings."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -65,7 +65,7 @@ include = ["plaud_tools*"]
 plaud_tools = ["py.typed"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy==2.3.1", "ruff==0.16.9"]
+dev = ["pytest>=8", "pytest-cov>=5", "pyinstaller>=6", "build>=1.0", "mypy==2.3.1", "ruff==0.17.3"]
 tray = ["pystray>=0.19", "Pillow>=10", "sv-ttk>=2.6", "comtypes>=1.4"]
 
 [tool.pytest.ini_options]

@@ -11,7 +11,7 @@
           "type": "integer"
         },
         "folder": {
-          "description": "Folder ID (from `list_folders`); pass empty string for recordings in no folder",
+          "description": "Folder ID (from `list_folders`); includes its subfolders. Pass empty string for recordings in no folder",
           "type": "string"
         },
         "limit": {
@@ -31,7 +31,7 @@
         },
         "trash": {
           "default": false,
-          "description": "List trashed recordings instead of active ones",
+          "description": "List trashed recordings instead of active ones (trashed recordings have no folder, so not with `folder`)",
           "type": "boolean"
         },
         "until": {
@@ -87,18 +87,24 @@
       "additionalProperties": false,
       "properties": {
         "include": {
-          "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",
+          "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary (+ extra_notes: other summaries as {note_id, name, content}), audio_url, attachments",
           "items": {
             "enum": [
               "transcript",
               "segments",
               "speakers",
               "summary",
-              "audio_url"
+              "audio_url",
+              "attachments"
             ],
             "type": "string"
           },
           "type": "array"
+        },
+        "raw_markdown": {
+          "default": false,
+          "description": "Keep Plaud's raw summary markdown (plaud:// links) instead of [2:05] citations",
+          "type": "boolean"
         },
         "recording_id": {
           "type": "string"
@@ -193,7 +199,7 @@
     "name": "export_transcript"
   },
   {
-    "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",
+    "description": "Change one or more recordings: rename, trash, restore, move, or trim (keep only some ranges, as a new copy; a slow trim returns status='still_processing', do not call again). Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it. Options of another action are refused.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -202,7 +208,12 @@
             "rename",
             "trash",
             "restore",
-            "move"
+            "move",
+            "trim",
+            "share_create",
+            "share_get",
+            "share_update",
+            "share_revoke"
           ],
           "type": "string"
         },
@@ -210,9 +221,20 @@
           "description": "When true, moves the recording out of its folder into Plaud's main Recordings list (use instead of a magic folder_id value)",
           "type": "boolean"
         },
+        "confirm": {
+          "description": "Required for share_create, share_update and share_revoke, after the human agrees",
+          "type": "boolean"
+        },
         "folder_id": {
           "description": "Folder ID (from `list_folders`); required for move unless clear_folder is true",
           "type": "string"
+        },
+        "keep": {
+          "description": "Trim: ranges to keep, e.g. ['0:00-1:00', '5:00-6:30']",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "new_name": {
           "description": "Required for rename",
@@ -228,6 +250,27 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "share_audio": {
+          "description": "share_create/share_update: link includes audio (default false)",
+          "type": "boolean"
+        },
+        "share_days": {
+          "description": "share_create/share_update: link lifetime in days from now (default 7)",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "share_never_expires": {
+          "description": "share_update: remove the expiry",
+          "type": "boolean"
+        },
+        "share_summary": {
+          "description": "share_create/share_update: link includes summary (default false)",
+          "type": "boolean"
+        },
+        "share_transcript": {
+          "description": "share_create/share_update: link includes transcript (default true)",
+          "type": "boolean"
         }
       },
       "required": [
@@ -303,12 +346,16 @@
     "name": "edit_transcript"
   },
   {
-    "description": "Upload a local audio file to Plaud; returns the new recording_id.",
+    "description": "Upload a local audio file to Plaud; returns the new recording_id. With attach_to, attaches a document instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "attach_to": {
+          "description": "Recording ID to attach the file to (PDF, Office, text or image; max 15/2/20 MB); not with folder_id/start_time/timezone_offset",
+          "type": "string"
+        },
         "file_path": {
-          "description": "Absolute path to the audio file",
+          "description": "Absolute path to the audio file or document",
           "type": "string"
         },
         "folder_id": {
@@ -339,7 +386,7 @@
     "name": "upload_recording"
   },
   {
-    "description": "List Plaud folders, returning id, name, color, icon, and parent_id for each.",
+    "description": "List Plaud folders, returning id, name, color, icon, and parent_id (\"root\" at the top level, else the folder it sits in) for each.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -348,32 +395,90 @@
     "name": "list_folders"
   },
   {
-    "description": "Trigger transcription and summarization for a recording; the `wait` mode controls how long to block (default: transcript). A processed recording is left unchanged (returns already_processed=true).",
+    "description": "Find summary templates by name or topic (up to 20) and list AI models. Pass a hit's template_id, template_kind and name (as note_name) to process_recording, and a model's llm as llm.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
-        "diarization": {
-          "description": "Enable speaker diarization",
+        "query": {
+          "description": "e.g. 'client needs'",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search_templates"
+  },
+  {
+    "description": "Run Plaud AI on a recording. action='process' (default) transcribes and summarizes what is missing (a processed recording is left alone: already_processed=true); 'resummarize' replaces the main summary, edits included; 'add_note' adds an extra note from a template and keeps the summary.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "default": "process",
+          "enum": [
+            "process",
+            "resummarize",
+            "add_note"
+          ],
+          "type": "string"
+        },
+        "confirm": {
+          "description": "resummarize only: must be true, set after the human agrees to lose the current summary",
           "type": "boolean"
         },
+        "diarization": {
+          "description": "process only: speaker diarization",
+          "type": "boolean"
+        },
+        "instruction": {
+          "description": "Custom AI instruction; not with template_id",
+          "maxLength": 300,
+          "type": "string"
+        },
         "language": {
-          "description": "BCP-47 primary subtag (e.g. 'en', 'zh'); use 'auto' to detect",
+          "description": "process only: BCP-47 primary subtag (e.g. 'en'), or 'auto'",
           "type": "string"
         },
         "llm": {
-          "description": "LLM identifier for summarization",
+          "description": "Model from search_templates; default auto",
+          "type": "string"
+        },
+        "note_name": {
+          "description": "add_note: the note's title; required with template_id",
           "type": "string"
         },
         "recording_id": {
           "type": "string"
         },
-        "template_type": {
-          "description": "Summary template (e.g. 'AUTO-SELECT', 'MEETING')",
+        "template_id": {
+          "description": "From search_templates; omit for Plaud's default",
+          "type": "string"
+        },
+        "template_kind": {
+          "description": "From search_templates",
+          "enum": [
+            "official",
+            "community",
+            "custom",
+            "team_community"
+          ],
+          "type": "string"
+        },
+        "verbosity": {
+          "description": "Summary length; not add_note",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
           "type": "string"
         },
         "wait": {
           "default": "transcript",
-          "description": "How long to block: none/transcript/summary. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",
+          "description": "How long to block: none/transcript/summary; resummarize and add_note wait for their job unless none. One ~90s budget; if unfinished returns status='still_processing' with a job handle. Then poll get_recording instead of calling again.",
           "enum": [
             "none",
             "transcript",
@@ -415,7 +520,7 @@
     "name": "merge_recordings"
   },
   {
-    "description": "Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",
+    "description": "Edit a recording's AI summary, or an extra note via note_id. action='correct' does a literal find-and-replace on the raw markdown (shown [2:05] citations are plaud:// links; they are kept); action='replace' overwrites everything, so include any plaud:// links to keep.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -438,6 +543,10 @@
           "description": "Exact text to find (case-sensitive, literal); required for action=correct",
           "type": "string"
         },
+        "note_id": {
+          "description": "Edit this extra note (from get_recording) instead of the summary",
+          "type": "string"
+        },
         "recording_id": {
           "type": "string"
         },
@@ -455,7 +564,7 @@
     "name": "edit_summary"
   },
   {
-    "description": "Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",
+    "description": "Manage Plaud folders: create (optionally inside parent_id), edit name/color/icon, move under another folder, or delete. To move a recording into a folder, use mutate_recording(action='move') instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -463,6 +572,7 @@
           "enum": [
             "create",
             "edit",
+            "move",
             "delete"
           ],
           "type": "string"
@@ -472,11 +582,11 @@
           "type": "string"
         },
         "confirm": {
-          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. Its recordings are kept and move to Plaud's main Recordings list.",
+          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. What is inside is kept and moves up one level.",
           "type": "boolean"
         },
         "folder_id": {
-          "description": "Folder ID (from `list_folders`); required for edit and delete",
+          "description": "Folder ID (from `list_folders`); required for edit, move and delete",
           "type": "string"
         },
         "icon": {
@@ -486,6 +596,10 @@
         "name": {
           "description": "Folder name; required for create, optional for edit",
           "type": "string"
+        },
+        "parent_id": {
+          "description": "Target folder for create (optional) and move (required); \"root\" = top level",
+          "type": "string"
         }
       },
       "required": [
@@ -494,5 +608,54 @@
       "type": "object"
     },
     "name": "mutate_folder"
+  },
+  {
+    "description": "Manage Plaud's account-wide custom vocabulary (names, jargon that steer transcription): list, add, edit, or delete (confirm=true) words.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "add",
+            "edit",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "confirm": {
+          "description": "Required for delete, after the human agrees",
+          "type": "boolean"
+        },
+        "heard_as": {
+          "description": "Misheard form to auto-correct to `word`; empty clears it on edit",
+          "type": "string"
+        },
+        "language": {
+          "description": "Language code (default en)",
+          "type": "string"
+        },
+        "word": {
+          "description": "Correct spelling; required for add",
+          "type": "string"
+        },
+        "word_id": {
+          "description": "Entry ID from list; for edit or single delete",
+          "type": "string"
+        },
+        "word_ids": {
+          "description": "Entry IDs to delete",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "mutate_vocabulary"
   }
 ]

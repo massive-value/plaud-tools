@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-03
+
+### Changed
+
+- **BREAKING:** `process_recording`'s `template_type` parameter is renamed
+  `template_id`, next to a new `template_kind` (official, community, custom or
+  team_community). The MCP schema rejects the old name, so agents and scripts
+  that pass `template_type` must switch. plaud-tools still works out the kind
+  for official codes and community ids; custom and team templates need it
+  given.
+- **BREAKING:** the CLI `transcribe` output key `template_type` is renamed
+  `template_id`.
+- **BREAKING:** `mutate_recording`, `process_recording` and
+  `upload_recording(attach_to=...)` refuse an option that belongs to another
+  action instead of ignoring it. Examples: `new_name` with `trash`, `confirm`
+  with `move`, `share_days` with `share_get`, `folder_id` with `attach_to`. The
+  error names the action the option belongs to.
+- **BREAKING:** filtering the trash by folder (`browse_recordings` with
+  `trash` and `folder`) is now an error. Trashed recordings have no folder in
+  Plaud 4.0, so it always came back empty.
+- The MCP server has 15 tools (new `mutate_vocabulary` and
+  `search_templates`). `mutate_recording` and `process_recording` are marked
+  destructive, because they can publish or revoke share links and replace a
+  summary.
+- Summaries and notes read as prose. Plaud's hidden citation links become
+  `[2:05]` timestamps, and the image and highlight card markup is dropped.
+  Pass `raw_markdown=true` (MCP) or `--raw` (CLI) for Plaud's markdown as is.
+  Edits always run on the raw markdown, so every `plaud://` link and `- [ ]`
+  to-do survives. Find text copied from the readable form will not match a
+  citation. `export_transcript` is unchanged and does not include notes.
+- A folder filter (`browse_recordings` `folder`, `list --folder-id`) now
+  includes recordings in that folder's subfolders.
+- `trash --list` shows 20 recordings at a time, like `list`. Add `--all` for
+  the whole trash.
+- Listing and browsing make one request to Plaud instead of several, and the
+  CLI and MCP share one list query.
+
+### Added
+
+- Public share links. `mutate_recording` gains `share_create`, `share_get`,
+  `share_update` and `share_revoke`, and the CLI gains
+  `plaud-tools share create|get|update|revoke`. A new link lasts 7 days and
+  includes only the transcript unless you ask for more. Creating, updating or
+  revoking a link needs `confirm=true` (MCP) or `--yes` (CLI). Plaud keeps the
+  URL after a revoke, so sharing the same recording again brings the old URL
+  back, and the revoke reply says so.
+- Custom vocabulary. The new `mutate_vocabulary` MCP tool and
+  `plaud-tools vocab list|add|edit|delete` manage the words that steer
+  transcription, each with an optional misheard form Plaud corrects to the
+  word. Deleting needs `confirm=true` (MCP) or `--yes` (CLI).
+- Extra notes. The "Meeting Minutes", "To-do List" and similar notes Plaud 4.0
+  files next to a recording now show up. `get_recording` with
+  `include=["summary"]` and the CLI `summary` and `detail` commands return
+  `extra_notes: [{note_id, name, content}]`. A note that fails to download
+  comes back with `content: null` and an `error`, and the other notes still
+  show. `edit_summary` (MCP) and `correct-summary` / `set-summary --note-id`
+  (CLI) edit a note.
+- Add a note from any Plaud template without touching the summary:
+  `process_recording(action="add_note")`, CLI `add-note`. `note_name`
+  (`--name`) names it. If it takes longer than about 90 s, the MCP returns a
+  job handle with the new `note_id`.
+- Re-run a recording's main summary with a different template, AI model,
+  length or custom instruction: `process_recording(action="resummarize")`,
+  CLI `resummarize`. This replaces the current summary, edits included, and
+  Plaud may retitle the recording, so it needs `confirm=true` (MCP) or `--yes`
+  (CLI).
+- Template search. The new MCP tool `search_templates` and CLI `templates`
+  find templates by name, such as "client needs", and return the id and kind
+  to pass back. The MCP tool also lists the AI models, as CLI `models` does.
+- `process_recording` and `transcribe` take `verbosity` (low, medium, high), a
+  custom `instruction` of up to 300 characters, and `template_kind`. Plaud
+  refuses an instruction combined with a template, so plaud-tools rejects that
+  pair before sending it.
+- Trim a recording into a new copy (#258).
+  `mutate_recording(action="trim", keep=["0:00-1:00", "5:00-6:30"])`, or
+  `plaud-tools trim <id> 0:00-1:00 5:00-6:30`, keeps only those ranges as a new
+  "<name> copy" recording with the matching transcript. The original stays. A
+  slow trim returns a `still_processing` result with the copy's id instead of
+  an error, so nothing gets trimmed twice. Run `process_recording` on the copy
+  for a summary.
+- Attach documents to a recording (#259). `upload_recording(attach_to=<id>)`,
+  or `plaud-tools upload <file> --attach-to <id>`, files a PDF, Word, Excel,
+  PowerPoint, text, CSV or image next to the recording, where the Plaud web app
+  shows it. `get_recording(include=["attachments"])` and `show` list them. A
+  recording whose file sits straight in a folder, with no container folder of
+  its own, cannot take attachments, and plaud-tools says so.
+- Nested folders. `mutate_folder` takes `parent_id` to create a folder inside
+  another, and its new `move` action puts a folder and its contents under
+  another folder (`"root"` for the top level). The CLI has
+  `folder create --parent-id` and `folder move <folder-id> <parent-id>`.
+- `folder nest-colon-names` turns colon-named folders such as
+  `Client Meetings:Prospects` into real subfolders. It prints the plan and
+  changes nothing until you re-run it with `--yes`.
+- `trash --list` takes the same filters as `list`: `--since`, `--until`,
+  `--query`, `--limit` and `--all`.
+- Progress while waiting (#221). When the MCP client asks for it, the server
+  sends progress notifications during uploads, merges, trims, transcription,
+  summaries and note generation, so a long call no longer looks frozen.
+  Nothing changes for clients that don't ask.
+
+### Fixed
+
+- Deleting a folder right after deleting a folder inside it failed with "node
+  version conflict". Plaud's folder listing shows the outer folder's new
+  version about a second late, so the client now uses the version from
+  Plaud's reply to the earlier delete.
+- The folder delete warning said recordings inside "become unfiled". They move
+  up one level, as they have since 0.13.1, and the warning now says so.
+- Running the test suite no longer sends sign-in toasts to a running tray app
+  (#228).
+
 ## [0.13.1] - 2026-11-03
 
 ### Fixed
@@ -1898,7 +2009,11 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/massive-value/plaud-tools/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/massive-value/plaud-tools/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/massive-value/plaud-tools/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/massive-value/plaud-tools/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/massive-value/plaud-tools/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/massive-value/plaud-tools/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/massive-value/plaud-tools/compare/v0.10.0...v0.10.1

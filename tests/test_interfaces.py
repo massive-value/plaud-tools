@@ -9,18 +9,27 @@ import pytest
 
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
-from plaud_tools.core.models import AudioLink, ContentMatch, Folder, Recording, RecordingDetail
+from plaud_tools.core.errors import PlaudWaitTimeoutError
+from plaud_tools.core.models import (
+    Attachment,
+    AudioLink,
+    ContentMatch,
+    Folder,
+    NoteJob,
+    Recording,
+    RecordingDetail,
+    RecordingNote,
+    ShareLink,
+    SummaryModel,
+    SummaryTemplate,
+    VocabularyWord,
+)
 from plaud_tools.core.session import PlaudSession, SessionStore
 from plaud_tools.mcp_pt.mcp import build_handlers
 
 
 class StubClient:
-    # Full fixture set — returned for both the unfiltered path (no query) and
-    # the incremental filtered path (query with limit=BROWSE_PAGE_SIZE).  The
-    # old assertion `query.limit == 2` is removed: the direct unfiltered path
-    # passes `limit=args.limit`, while the incremental path passes
-    # `limit=BROWSE_PAGE_SIZE`.  Client-side filtering via collect_filtered_paged
-    # is responsible for narrowing results.
+    # The whole library: query_recordings fetches it once and filters it.
     _ALL_RECORDINGS = [
         Recording(
             id="r1",
@@ -38,20 +47,6 @@ class StubClient:
     ]
 
     def list_recordings(self, query=None):
-        if query is not None and query.limit is not None and query.limit <= 5:
-            # Direct unfiltered path (no filter flags): passes the exact CLI limit.
-            # Return only the first record to satisfy the shape test.
-            return [
-                Recording(
-                    id="r1",
-                    filename="meeting",
-                    start_time=1_746_000_000_000,
-                    duration=600_000,
-                    folder_id="tag1",
-                )
-            ]
-        # Incremental filtered path (limit=BROWSE_PAGE_SIZE) or no-query path:
-        # return all records so client-side filtering can narrow them.
         return list(self._ALL_RECORDINGS)
 
     def merge_recordings(self, ids: list[str], filename: str, **kwargs):
@@ -88,6 +83,7 @@ class StubClient:
         include_transcript=False,
         include_summary=False,
         transcript_block="transaction",
+        include_attachments=False,
     ):
         return RecordingDetail(
             id=recording_id,
@@ -102,6 +98,9 @@ class StubClient:
             transcript_blocks_available=["transaction"] if include_transcript else [],
             ai_content="# Summary",
             language="en",
+            attachments=[Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")]
+            if include_attachments
+            else [],
         )
 
     def rename_recording(self, recording_id, filename):
@@ -113,6 +112,9 @@ class StubClient:
 
     def list_folders(self):
         return [Folder(id="tag1", name="Work", color="folder-color-green", icon="e627", parent_id="root")]
+
+    def subfolders(self, folder_id):
+        return []
 
     def set_recording_folder(self, recording_ids, folder_id):
         self.move_call = (recording_ids, folder_id)
@@ -154,9 +156,17 @@ class StubClient:
         return {"file_id": recording_id, "file_name": "meeting", "content_list": [], "extra_data": {}}
 
     def transcribe_and_summarize(
-        self, recording_id, template_type=None, language=None, diarization=None, llm=None
+        self,
+        recording_id,
+        template_id=None,
+        template_kind=None,
+        language=None,
+        diarization=None,
+        llm=None,
+        verbosity=None,
+        instruction=None,
     ):
-        self.transcribe_call = (recording_id, template_type, language, diarization, llm)
+        self.transcribe_call = (recording_id, template_id, language, diarization, llm)
         return True
 
     def get_task_status(self, recording_id=None):
@@ -182,12 +192,12 @@ def test_cli_list_shapes_output():
     from datetime import datetime
 
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
-    output = run_cli(["list", "--limit", "2"], StubClient())
+    output = run_cli(["list", "--limit", "1"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
             "id": "r1",
-            "title": "meeting",
+            "title": "Q4 Review",
             "date": expected_date,
             "duration_minutes": 10,
             "folder_id": "tag1",
@@ -256,6 +266,7 @@ def test_cli_show_returns_metadata_and_speakers():
     assert payload["id"] == "rec1"
     assert payload["title"] == "meeting"
     assert payload["speakers"] == ["Speaker 1", "Alex"]
+    assert payload["attachments"] == [{"id": "f_doc", "name": "statement.pdf", "type": "PDF"}]
     assert "transcript" not in payload
 
 
@@ -500,7 +511,7 @@ def test_cli_segments_and_fingerprint_match_mcp_pages():
 
 
 class LibraryStub(StubClient):
-    """A library of ``size`` recordings served in upstream pages; every third is in tag1."""
+    """A library of ``size`` recordings; every third is in tag1."""
 
     def __init__(self, size: int):
         self.library = [
@@ -512,21 +523,19 @@ class LibraryStub(StubClient):
             )
             for i in range(size)
         ]
-        self.requests: list[tuple[int, int]] = []
+        self.requests = 0
 
     def list_recordings(self, query=None):
-        skip = query.skip or 0
-        self.requests.append((skip, query.limit))
-        return self.library[skip : skip + query.limit]
+        self.requests += 1
+        return list(self.library)
 
 
-def test_cli_list_all_pages_a_filtered_library_to_exhaustion():
+def test_cli_list_all_returns_a_whole_filtered_library_in_one_request():
     stub = LibraryStub(650)
     payload = json.loads(run_cli(["list", "--all", "--folder-id", "tag1"], stub))
     assert len(payload) == 217  # ceil(650 / 3): far more than the 20 default
     assert {item["folder_id"] for item in payload} == {"tag1"}
-    # Bounded requests, stopping at the first short page.
-    assert stub.requests == [(0, 200), (200, 200), (400, 200), (600, 200)]
+    assert stub.requests == 1
 
 
 def test_cli_list_all_without_filters_returns_everything():
@@ -750,7 +759,7 @@ def test_cli_transcribe_shapes_accept_response():
     assert payload == {
         "accepted": True,
         "recording_id": "rec1",
-        "template_type": "MEETING-CONSULT",
+        "template_id": "MEETING-CONSULT",
     }
 
 
@@ -769,6 +778,30 @@ def test_cli_transcribe_passes_language_diarization_llm():
         client,
     )
     assert client.transcribe_call == ("rec1", None, "en-US", True, "gpt-4")
+
+
+def test_cli_add_note_waits_for_the_note_unless_detached():
+    client = NoteStub()
+    output = run_cli(
+        ["add-note", "rec1", "--template", "CUSTOMER-CONSULTATION", "--name", "Client Needs"], client
+    )
+    assert json.loads(output)["done"] is True
+    assert client.note_call[1]["note_name"] == "Client Needs"
+    assert client.task_waits == [("t_n", "note")]
+
+    client = NoteStub()
+    payload = json.loads(run_cli(["resummarize", "rec1", "--verbosity", "high", "--detach", "--yes"], client))
+    assert (payload["task_id"], client.resummarize_call[1]["verbosity"]) == ("t_s", "high")
+    assert client.task_waits == []
+
+
+def test_cli_resummarize_requires_yes_flag():
+    import pytest
+
+    client = NoteStub()
+    with pytest.raises(ValueError, match="--yes"):
+        run_cli(["resummarize", "rec1"], client)
+    assert client.resummarize_call is None
 
 
 def test_cli_transcribe_no_diarization_flag():
@@ -1273,14 +1306,14 @@ def test_cli_main_oserror_exits_cleanly_with_message(capsys, monkeypatch):
 
 def test_mcp_browse_recordings_returns_curated_list():
     handlers = build_handlers(lambda: StubClient())
-    result = handlers["browse_recordings"](limit=2)
+    result = handlers["browse_recordings"](limit=1)
     payload = json.loads(result["content"][0]["text"])
     assert "items" in payload
-    assert "next_after" in payload
+    assert payload["next_after"] == 1
     assert len(payload["items"]) == 1
     item = payload["items"][0]
     assert item["id"] == "r1"
-    assert item["title"] == "meeting"
+    assert item["title"] == "Q4 Review"
     assert item["duration_minutes"] == 10
     assert item["folder_id"] == "tag1"
     # date is local time — just check shape, not exact value
@@ -1425,6 +1458,57 @@ def test_mcp_get_recording_include_summary():
     payload = json.loads(result["content"][0]["text"])
     assert payload["summary"] == "# Summary"
     assert "transcript" not in payload
+
+
+class NotesStub(StubClient):
+    """A recording whose summary and one note carry Plaud citation and card markup."""
+
+    def get_recording(self, recording_id, **kwargs):
+        detail = super().get_recording(recording_id, **kwargs)
+        detail.ai_content = (
+            "Agreed [](plaud://source?type=summary&start_time=125370)\n[](plaud://image?id=1)\n- [ ] Send"
+        )
+        detail.notes = [
+            RecordingNote(note_id="of_n1", name="Minutes", content="Hi [](plaud://source?start_time=5000)")
+        ]
+        return detail
+
+
+def test_mcp_get_recording_renders_citations_and_lists_notes():
+    handlers = build_handlers(lambda: NotesStub())
+    payload = json.loads(handlers["get_recording"]("rec1", include=["summary"])["content"][0]["text"])
+    assert payload["summary"] == "Agreed [2:05]\n- [ ] Send"
+    assert payload["extra_notes"] == [{"note_id": "of_n1", "name": "Minutes", "content": "Hi [0:05]"}]
+
+
+def test_mcp_get_recording_raw_markdown_keeps_plaud_links():
+    handlers = build_handlers(lambda: NotesStub())
+    payload = json.loads(
+        handlers["get_recording"]("rec1", include=["summary"], raw_markdown=True)["content"][0]["text"]
+    )
+    assert "plaud://source" in payload["summary"] and "plaud://image" in payload["summary"]
+    assert payload["extra_notes"][0]["content"] == "Hi [](plaud://source?start_time=5000)"
+
+
+def test_mcp_edit_summary_passes_note_id():
+    client = SummaryStub()
+    handlers = build_handlers(lambda: client)
+    handlers["edit_summary"](recording_id="rec1", action="correct", find="a", replace="b", note_id="of_n1")
+    assert client.correct_call == ("rec1", "a", "b", "of_n1")
+
+
+def test_cli_summary_prints_rendered_text_and_notes_and_raw_on_request():
+    rendered = json.loads(run_cli(["summary", "rec1"], NotesStub()))
+    assert rendered["summary"] == "Agreed [2:05]\n- [ ] Send"
+    assert rendered["extra_notes"][0]["content"] == "Hi [0:05]"
+    raw = json.loads(run_cli(["summary", "rec1", "--raw"], NotesStub()))
+    assert "plaud://source" in raw["summary"]
+
+
+def test_cli_correct_summary_passes_note_id():
+    client = SummaryStub()
+    run_cli(["correct-summary", "rec1", "a", "b", "--note-id", "of_n1"], client)
+    assert client.correct_call == ("rec1", "a", "b", "of_n1")
 
 
 def test_mcp_list_folders_returns_tags():
@@ -1834,12 +1918,108 @@ def test_mcp_process_recording_already_processed_reports_real_state(is_trans, is
         id=recording_id, filename="m", is_trans=is_trans, is_summary=is_summary
     )
     handlers = build_handlers(lambda: client)
-    result = handlers["process_recording"]("rec1", template_type="MEETING", wait="summary")
+    result = handlers["process_recording"]("rec1", template_id="MEETING", wait="summary")
     payload = json.loads(result["content"][0]["text"])
     assert payload["already_processed"] is True
     assert (payload["is_trans"], payload["is_summary"]) == (is_trans, is_summary)
     assert expected in payload["message"]
     assert client.wait_call is None
+
+
+class NoteStub(MutateStub):
+    """Records add_note / resummarize calls; ``wait_error`` makes the job wait raise."""
+
+    def __init__(self, wait_error=None):
+        super().__init__()
+        self.note_call = None
+        self.resummarize_call = None
+        self.task_waits = []
+        self.wait_error = wait_error
+
+    def generate_note(self, recording_id, **kwargs):
+        self.note_call = (recording_id, kwargs)
+        return NoteJob(
+            task_id="t_n", note_id="f_note", name=kwargs.get("note_name") or "Intelligent Generation"
+        )
+
+    def resummarize(self, recording_id, **kwargs):
+        self.resummarize_call = (recording_id, kwargs)
+        return "t_s"
+
+    def wait_for_task(self, task_id, **kwargs):
+        self.task_waits.append((task_id, kwargs["what"]))
+        if self.wait_error:
+            raise self.wait_error
+
+
+def test_mcp_process_recording_add_note_waits_for_the_note():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"](
+        "rec1", action="add_note", template_id="CUSTOMER-CONSULTATION", note_name="Client Needs"
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload == {"ok": True, "recording_id": "rec1", "note_id": "f_note", "name": "Client Needs"}
+    assert client.note_call[1]["template_id"] == "CUSTOMER-CONSULTATION"
+    assert client.task_waits == [("t_n", "note")]
+    assert client.transcribe_call is None
+
+
+def test_mcp_process_recording_resummarize_timeout_returns_a_job_handle():
+    client = NoteStub(wait_error=PlaudWaitTimeoutError("summary timed out after 90s", task_id="t_s"))
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"](
+        "rec1", action="resummarize", verbosity="low", llm="auto", confirm=True
+    )
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "still_processing"
+    assert payload["job"] == {"kind": "summary", "id": "rec1", "poll_with": "get_recording"}
+    assert payload["retryable"] is False
+    assert client.resummarize_call == (
+        "rec1",
+        {"verbosity": "low", "template_id": None, "template_kind": None, "llm": "auto", "instruction": None},
+    )
+
+
+def test_mcp_process_recording_refuses_options_of_another_action():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    for kwargs in (
+        {"action": "resummarize", "note_name": "X", "confirm": True},
+        {"action": "add_note", "language": "en"},
+        {"action": "add_note", "confirm": True},
+    ):
+        result = handlers["process_recording"]("rec1", **kwargs)
+        assert json.loads(result["content"][0]["text"])["error_code"] == "validation"
+    assert client.note_call is None and client.resummarize_call is None
+
+
+def test_mcp_process_recording_resummarize_requires_confirm():
+    client = NoteStub()
+    handlers = build_handlers(lambda: client)
+    result = handlers["process_recording"]("rec1", action="resummarize")
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["error_code"] == "validation"
+    assert "replaces the recording's current summary" in payload["error"]
+    assert "confirm=true" in payload["error"]
+    assert client.resummarize_call is None
+
+
+def test_mcp_search_templates_returns_templates_and_models():
+    client = StubClient()
+    client.search_templates = lambda query: [SummaryTemplate(id="MEETING", kind="official", name="Meeting")]
+    client.list_summary_models = lambda: [SummaryModel(model="auto", name="Auto")]
+    payload = json.loads(
+        build_handlers(lambda: client)["search_templates"](query="meeting")["content"][0]["text"]
+    )
+    assert payload["templates"][0] == {
+        "template_id": "MEETING",
+        "template_kind": "official",
+        "name": "Meeting",
+        "description": "",
+        "category": "",
+    }
+    assert payload["models"] == [{"llm": "auto", "name": "Auto", "description": ""}]
 
 
 def test_mcp_merge_recordings_returns_slim_summary():
@@ -1977,12 +2157,12 @@ class SummaryStub(StubClient):
         self.correct_call = None
         self.set_call = None
 
-    def correct_summary(self, recording_id, find, replace):
-        self.correct_call = (recording_id, find, replace)
+    def correct_summary(self, recording_id, find, replace, note_id=None):
+        self.correct_call = (recording_id, find, replace, note_id)
         return {"replacements": 3}
 
-    def set_summary(self, recording_id, content):
-        self.set_call = (recording_id, content)
+    def set_summary(self, recording_id, content, note_id=None):
+        self.set_call = (recording_id, content, note_id)
 
 
 def test_mcp_edit_summary_correct_calls_correct_summary():
@@ -1992,7 +2172,7 @@ def test_mcp_edit_summary_correct_calls_correct_summary():
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
     assert payload["replacements"] == 3
-    assert client.correct_call == ("rec1", "Suzan", "Susan")
+    assert client.correct_call == ("rec1", "Suzan", "Susan", None)
 
 
 def test_mcp_edit_summary_correct_requires_find_and_replace():
@@ -2009,7 +2189,7 @@ def test_mcp_edit_summary_replace_calls_set_summary():
     result = handlers["edit_summary"](recording_id="rec1", action="replace", content="# New")
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
-    assert client.set_call == ("rec1", "# New")
+    assert client.set_call == ("rec1", "# New", None)
 
 
 def test_mcp_edit_summary_replace_requires_content():
@@ -2031,7 +2211,7 @@ def test_cli_correct_summary_calls_client():
     output = run_cli(["correct-summary", "rec1", "Suzan", "Susan"], client)
     payload = json.loads(output)
     assert payload["replacements"] == 3
-    assert client.correct_call == ("rec1", "Suzan", "Susan")
+    assert client.correct_call == ("rec1", "Suzan", "Susan", None)
 
 
 def test_cli_set_summary_from_content_flag():
@@ -2039,7 +2219,7 @@ def test_cli_set_summary_from_content_flag():
     output = run_cli(["set-summary", "rec1", "--content", "# Fresh summary"], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.set_call == ("rec1", "# Fresh summary")
+    assert client.set_call == ("rec1", "# Fresh summary", None)
 
 
 def test_cli_set_summary_from_content_file(tmp_path):
@@ -2049,7 +2229,7 @@ def test_cli_set_summary_from_content_file(tmp_path):
     output = run_cli(["set-summary", "rec1", "--content-file", str(md)], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.set_call == ("rec1", "# From file\n\nbody")
+    assert client.set_call == ("rec1", "# From file\n\nbody", None)
 
 
 # ---------------------------------------------------------------------------
@@ -2062,10 +2242,22 @@ class FolderStub(StubClient):
         self.create_call = None
         self.update_call = None
         self.delete_call = None
+        self.move_call = None
+        self.nest_plan = None
 
-    def create_folder(self, name, *, color=None, icon=None):
-        self.create_call = (name, color, icon)
-        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id="root")
+    def create_folder(self, name, *, color=None, icon=None, parent_id=None):
+        self.create_call = (name, color, icon, parent_id)
+        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id=parent_id or "root")
+
+    def move_folder(self, folder_id, parent_id):
+        self.move_call = (folder_id, parent_id)
+        return Folder(id=folder_id, name="Moved", parent_id=parent_id)
+
+    def list_folders(self):
+        return [Folder(id="f1", name="Clients:Prospects", parent_id="root")]
+
+    def nest_colon_folders(self, plan):
+        self.nest_plan = plan
 
     def update_folder(self, folder_id, *, name=None, color=None, icon=None):
         self.update_call = (folder_id, name, color, icon)
@@ -2078,11 +2270,13 @@ class FolderStub(StubClient):
 def test_mcp_mutate_folder_create():
     client = FolderStub()
     handlers = build_handlers(lambda: client)
-    result = handlers["mutate_folder"](action="create", name="Clients", color="#111", icon="e627")
+    result = handlers["mutate_folder"](
+        action="create", name="Clients", color="#111", icon="e627", parent_id="on_fd_1"
+    )
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
-    assert payload["folder"]["id"] == "new1"
-    assert client.create_call == ("Clients", "#111", "e627")
+    assert payload["folder"]["parent_id"] == "on_fd_1"
+    assert client.create_call == ("Clients", "#111", "e627", "on_fd_1")
 
 
 def test_mcp_mutate_folder_create_requires_name():
@@ -2126,6 +2320,21 @@ def test_mcp_mutate_folder_delete_with_confirm():
     assert client.delete_call == "f1"
 
 
+def test_mcp_mutate_folder_move():
+    client = FolderStub()
+    result = build_handlers(lambda: client)["mutate_folder"](action="move", folder_id="f1", parent_id="f2")
+    assert json.loads(result["content"][0]["text"])["folder"]["parent_id"] == "f2"
+    assert client.move_call == ("f1", "f2")
+
+
+def test_mcp_mutate_folder_move_requires_parent_id():
+    client = FolderStub()
+    result = build_handlers(lambda: client)["mutate_folder"](action="move", folder_id="f1")
+    assert result["isError"] is True
+    assert "parent_id" in json.loads(result["content"][0]["text"])["error"]
+    assert client.move_call is None
+
+
 def test_mcp_mutate_folder_rejects_unknown_action():
     handlers = build_handlers(lambda: FolderStub())
     result = handlers["mutate_folder"](action="obliterate")
@@ -2138,7 +2347,31 @@ def test_cli_folder_create():
     output = run_cli(["folder", "create", "Clients", "--color", "#111", "--icon", "e627"], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.create_call == ("Clients", "#111", "e627")
+    assert client.create_call == ("Clients", "#111", "e627", None)
+
+
+def test_cli_folder_move():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "move", "f1", "root"], client))
+    assert payload["action"] == "move"
+    assert client.move_call == ("f1", "root")
+
+
+def test_cli_nest_colon_names_dry_run_changes_nothing():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "nest-colon-names"], client))
+    assert payload["dry_run"] is True
+    assert payload["convert"] == [
+        {"folder_id": "f1", "from": "Clients:Prospects", "to": "Clients > Prospects"}
+    ]
+    assert client.nest_plan is None
+
+
+def test_cli_nest_colon_names_with_yes_runs_the_plan():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "nest-colon-names", "--yes"], client))
+    assert payload["ok"] is True
+    assert [move.folder.id for move in client.nest_plan.moves] == ["f1"]
 
 
 def test_cli_folder_edit():
@@ -2172,6 +2405,172 @@ def test_cli_folder_delete_with_yes():
     payload = json.loads(output)
     assert payload["ok"] is True
     assert client.delete_call == "f1"
+
+
+# ---------------------------------------------------------------------------
+# mutate_vocabulary and the share_* actions of mutate_recording (MCP + CLI)
+# ---------------------------------------------------------------------------
+
+
+class VocabShareStub(StubClient):
+    def __init__(self):
+        self.calls = []
+        self.link = ShareLink(url="https://share.example/s/abc", key="abc", expires_at="2026-12-01T00:00:00Z")
+
+    def list_vocabulary(self):
+        return [VocabularyWord(id="hw_1", word="Quorvale", heard_as="Core veil", language="en")]
+
+    def add_vocabulary(self, word, *, heard_as=None, language="en"):
+        self.calls.append(("add", word, heard_as, language))
+        return VocabularyWord(id="hw_2", word=word, heard_as=heard_as or "", language=language)
+
+    def update_vocabulary(self, word_id, *, word=None, heard_as=None, language=None):
+        self.calls.append(("edit", word_id, word, heard_as, language))
+        return VocabularyWord(id=word_id, word=word or "Quorvale", heard_as=heard_as or "")
+
+    def delete_vocabulary(self, word_ids):
+        self.calls.append(("delete", word_ids))
+        return len(word_ids)
+
+    def get_share_link(self, recording_id):
+        return self.link
+
+    def create_share_link(self, recording_id, *, expire_days, audio, transcript, summary):
+        self.calls.append(("share_create", recording_id, expire_days, audio, transcript, summary))
+        return self.link
+
+    def update_share_link(self, recording_id, **changes):
+        self.calls.append(("share_update", recording_id, changes))
+        return self.link
+
+    def revoke_share_link(self, recording_id):
+        self.calls.append(("share_revoke", recording_id))
+
+
+def _mcp(client, tool, **args):
+    result = build_handlers(lambda: client)[tool](**args)
+    return result, json.loads(result["content"][0]["text"])
+
+
+def test_mcp_vocabulary_list_add_and_edit():
+    client = VocabShareStub()
+    _, listed = _mcp(client, "mutate_vocabulary", action="list")
+    assert listed["words"] == [
+        {"id": "hw_1", "word": "Quorvale", "heard_as": "Core veil", "language": "en", "correction_count": 0}
+    ]
+    _mcp(client, "mutate_vocabulary", action="add", word="Zentrix", heard_as="Zen tricks")
+    _mcp(client, "mutate_vocabulary", action="edit", word_id="hw_1", heard_as="")
+    assert client.calls == [("add", "Zentrix", "Zen tricks", "en"), ("edit", "hw_1", None, "", None)]
+
+
+def test_mcp_vocabulary_delete_requires_confirm():
+    client = VocabShareStub()
+    result, payload = _mcp(client, "mutate_vocabulary", action="delete", word_ids=["hw_1"])
+    assert result["isError"] is True
+    assert "confirm=true" in payload["error"]
+    assert client.calls == []
+    _, payload = _mcp(client, "mutate_vocabulary", action="delete", word_ids=["hw_1"], confirm=True)
+    assert payload["deleted"] == 1
+
+
+def test_mcp_share_create_requires_confirm_then_defaults_to_seven_day_transcript_only():
+    client = VocabShareStub()
+    result, _ = _mcp(client, "mutate_recording", recording_id="rec1", action="share_create")
+    assert result["isError"] is True and client.calls == []
+    _, payload = _mcp(client, "mutate_recording", recording_id="rec1", action="share_create", confirm=True)
+    assert client.calls == [("share_create", "rec1", 7, False, True, False)]
+    assert payload["share"]["url"] == "https://share.example/s/abc"
+    assert payload["share"]["includes"] == {"audio": False, "transcript": False, "summary": False}
+
+
+def test_mcp_share_get_update_and_revoke():
+    client = VocabShareStub()
+    _, got = _mcp(client, "mutate_recording", recording_id="rec1", action="share_get")
+    assert got["shared"] is True
+    _mcp(
+        client,
+        "mutate_recording",
+        recording_id="rec1",
+        action="share_update",
+        share_days=30,
+        share_audio=True,
+    )
+    assert client.calls == []  # refused without confirm
+    _mcp(
+        client,
+        "mutate_recording",
+        recording_id="rec1",
+        action="share_update",
+        share_days=30,
+        share_audio=True,
+        confirm=True,
+    )
+    assert client.calls[-1] == (
+        "share_update",
+        "rec1",
+        {"expire_days": 30, "never_expires": False, "audio": True, "transcript": None, "summary": None},
+    )
+    result, _ = _mcp(client, "mutate_recording", recording_id="rec1", action="share_revoke")
+    assert result["isError"] is True
+    _, revoked = _mcp(client, "mutate_recording", recording_id="rec1", action="share_revoke", confirm=True)
+    assert "same URL" in revoked["note"]
+    assert client.calls[-1] == ("share_revoke", "rec1")
+
+
+def test_mcp_mutate_recording_refuses_options_of_another_action():
+    client = VocabShareStub()
+    for kwargs in (
+        {"action": "trash", "confirm": True},
+        {"action": "share_get", "share_days": 3},
+        {"action": "share_create", "share_never_expires": True, "confirm": True},
+        {"action": "rename", "new_name": "X", "keep": ["0:00-1:00"]},
+    ):
+        result, payload = _mcp(client, "mutate_recording", recording_id="rec1", **kwargs)
+        assert result["isError"] is True and "applies only to action" in payload["error"]
+    assert client.calls == []
+
+
+def test_mcp_share_rejects_batch():
+    result, _ = _mcp(VocabShareStub(), "mutate_recording", recording_ids=["a", "b"], action="share_get")
+    assert result["isError"] is True
+
+
+def test_cli_vocab_add_and_delete_gate():
+    client = VocabShareStub()
+    payload = json.loads(run_cli(["vocab", "add", "Quorvale", "--heard-as", "Core veil"], client))
+    assert payload["word"]["heard_as"] == "Core veil"
+    with pytest.raises(ValueError, match="cannot be undone"):
+        run_cli(["vocab", "delete", "hw_1"], client)
+    assert json.loads(run_cli(["vocab", "delete", "hw_1", "--yes"], client))["deleted"] == 1
+
+
+def test_cli_share_create_update_and_revoke_gate():
+    client = VocabShareStub()
+    for command in (["share", "create", "rec1", "--summary"], ["share", "update", "rec1", "--days", "3"]):
+        with pytest.raises(ValueError, match="Re-run with --yes"):
+            run_cli(command, client)
+    assert client.calls == []
+    run_cli(["share", "create", "rec1", "--summary", "--yes"], client)
+    assert client.calls[-1] == ("share_create", "rec1", 7, False, True, True)
+    run_cli(["share", "update", "rec1", "--never-expires", "--no-audio", "--yes"], client)
+    assert client.calls[-1][2] == {
+        "expire_days": None,
+        "never_expires": True,
+        "audio": False,
+        "transcript": None,
+        "summary": None,
+    }
+    with pytest.raises(ValueError, match="Re-run with --yes"):
+        run_cli(["share", "revoke", "rec1"], client)
+    run_cli(["share", "revoke", "rec1", "--yes"], client)
+    assert client.calls[-1] == ("share_revoke", "rec1")
+
+
+def test_cli_upload_attach_to_refuses_audio_only_flags(tmp_path):
+    doc = tmp_path / "statement.pdf"
+    doc.write_bytes(b"%PDF")
+    with pytest.raises(ValueError, match="--folder-id cannot be used with --attach-to"):
+        run_cli(["upload", str(doc), "--attach-to", "rec1", "--folder-id", "fd1"], VocabShareStub())
 
 
 # ---------------------------------------------------------------------------

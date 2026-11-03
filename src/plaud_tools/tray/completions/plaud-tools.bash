@@ -12,7 +12,7 @@ _plaud_tools_complete() {
         cword=$COMP_CWORD
     }
 
-    local subcommands="list search detail show transcript summary audio export rename folders folder move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe status trash restore delete trash-move trash-restore upload merge dump login refresh session update doctor ping"
+    local subcommands="list search detail show transcript summary audio export rename folders folder vocab share move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe resummarize add-note templates models status trash restore delete trash-move trash-restore upload merge trim dump login refresh session update doctor ping"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands --version --help" -- "$cur"))
@@ -28,7 +28,7 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "--content --limit --all --since --until --folder-id --unfiled --help" -- "$cur"))
             ;;
         detail)
-            COMPREPLY=($(compgen -W "--include-transcript --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--include-transcript --raw --help" -- "$cur"))
             ;;
         transcript)
             COMPREPLY=($(compgen -W "--polish --segments --help" -- "$cur"))
@@ -40,19 +40,31 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "-f --format -o --output --overwrite --polish --no-speakers --no-timestamps --expect-fingerprint --help" -- "$cur"))
             ;;
         transcribe)
-            COMPREPLY=($(compgen -W "--template --language --diarization --no-diarization --llm --wait --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --language --diarization --no-diarization --wait --help" -- "$cur"))
+            ;;
+        resummarize)
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --verbosity --detach --yes --help" -- "$cur"))
+            ;;
+        add-note)
+            COMPREPLY=($(compgen -W "--template --template-kind --llm --instruction --name --detach --help" -- "$cur"))
             ;;
         trash)
-            COMPREPLY=($(compgen -W "--list --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--list --limit --all --since --until --query --help" -- "$cur"))
             ;;
         delete)
             COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             ;;
+        summary)
+            COMPREPLY=($(compgen -W "--raw --help" -- "$cur"))
+            ;;
+        correct-summary)
+            COMPREPLY=($(compgen -W "--note-id --help" -- "$cur"))
+            ;;
         set-summary)
-            COMPREPLY=($(compgen -W "--content --content-file --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--content --content-file --note-id --help" -- "$cur"))
             ;;
         upload)
-            COMPREPLY=($(compgen -W "--title --folder-id --detach --skip-summary --start-time --timezone-offset --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title --folder-id --attach-to --detach --skip-summary --start-time --timezone-offset --help" -- "$cur"))
             ;;
         merge)
             COMPREPLY=($(compgen -W "--title --help" -- "$cur"))
@@ -65,12 +77,36 @@ _plaud_tools_complete() {
             ;;
         folder)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "create edit delete --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "create edit move nest-colon-names delete --help" -- "$cur"))
             elif [[ "${words[2]}" == "create" ]]; then
-                COMPREPLY=($(compgen -W "--color --icon --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "--color --icon --parent-id --help" -- "$cur"))
+            elif [[ "${words[2]}" == "move" ]]; then
+                COMPREPLY=($(compgen -W "--help" -- "$cur"))
+            elif [[ "${words[2]}" == "nest-colon-names" ]]; then
+                COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             elif [[ "${words[2]}" == "edit" ]]; then
                 COMPREPLY=($(compgen -W "--name --color --icon --help" -- "$cur"))
             elif [[ "${words[2]}" == "delete" ]]; then
+                COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
+            fi
+            ;;
+        vocab)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "list add edit delete --help" -- "$cur"))
+            elif [[ "${words[2]}" == "add" ]]; then
+                COMPREPLY=($(compgen -W "--heard-as --language --help" -- "$cur"))
+            elif [[ "${words[2]}" == "edit" ]]; then
+                COMPREPLY=($(compgen -W "--word --heard-as --language --help" -- "$cur"))
+            elif [[ "${words[2]}" == "delete" ]]; then
+                COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
+            fi
+            ;;
+        share)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "create get update revoke --help" -- "$cur"))
+            elif [[ "${words[2]}" == "create" || "${words[2]}" == "update" ]]; then
+                COMPREPLY=($(compgen -W "--days --never-expires --audio --no-audio --transcript --no-transcript --summary --no-summary --yes --help" -- "$cur"))
+            elif [[ "${words[2]}" == "revoke" ]]; then
                 COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             fi
             ;;

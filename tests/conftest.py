@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -19,6 +20,14 @@ for _name in (
     "PIL.ImageDraw",
 ):
     sys.modules.setdefault(_name, MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def _forget_node_versions():
+    """Clear the client's process-wide version memory so tests never see each other's versions."""
+    from plaud_tools.core.client import _VERSIONS
+
+    _VERSIONS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -223,4 +232,54 @@ def _block_real_ps_profiles(monkeypatch):
         raise AssertionError(
             f"A test modified the real PowerShell profile(s) {changed}. "
             "Pin Path.home() under tmp_path (or patch _known_documents_dir)."
+        )
+
+
+# Capture the real cross-process events file once at import time, before the
+# redirect fixture below masks ``appdata.events_path``.
+try:
+    from plaud_tools.core.appdata import events_path as _resolve_events_path
+
+    _REAL_EVENTS_PATH = _resolve_events_path()
+except Exception:
+    _REAL_EVENTS_PATH = None
+
+
+@pytest.fixture(autouse=True)
+def _block_real_events_file(monkeypatch, tmp_path):
+    """Keep tests from writing to the running tray's real events.jsonl.
+
+    The MCP handlers append ``session_expired`` events to
+    ``appdata.events_path()``; the real PlaudTools tray polls that file and
+    pops a sign-in toast for each line (issue #228: 393 spurious toasts in one
+    afternoon of agent test runs).  ``mcp``, ``tray.background`` and
+    ``tray.setup`` bind the function by name at import, so each binding is
+    redirected as well as ``appdata`` itself.  The trip-wire afterwards fails
+    the test if any event written by this process still reached the real file.
+    """
+    redirected = tmp_path / "events.jsonl"
+    monkeypatch.setattr("plaud_tools.core.appdata.events_path", lambda: redirected)
+    for module_name in ("plaud_tools.mcp_pt.mcp", "plaud_tools.tray.background", "plaud_tools.tray.setup"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            try:
+                module = importlib.import_module(module_name)
+            except Exception:
+                continue
+        monkeypatch.setattr(module, "_events_path", lambda: redirected, raising=False)
+
+    yield
+
+    real = _REAL_EVENTS_PATH
+    if real is None or not real.exists():
+        return
+    try:
+        lines = real.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return  # the tray may have just claimed the file
+    mine = f'"mcp_pid": {os.getpid()},'
+    if any(mine in line for line in lines):
+        raise AssertionError(
+            f"A test wrote an event to the real tray events file {real}. "
+            "Route events through appdata.events_path() (redirected by _block_real_events_file)."
         )

@@ -4,6 +4,8 @@
 
 Both surfaces share one implementation, `src/plaud_tools/core/export.py`.
 
+Exports carry the transcript only. A recording's extra notes (other summaries) are not part of the SWIRL v1 contract and are read with `get_recording(include=["summary"])` instead.
+
 ## Formats
 
 | `format` | Built by | Speaker labels | Timestamps |

@@ -62,7 +62,7 @@ In Claude, paste:
 List the MCP tools you have available for Plaud.
 ```
 
-You should see thirteen tools: `browse_recordings`, `search_recordings`, `get_recording`, `export_transcript`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `merge_recordings`, `edit_summary`, and `mutate_folder`.
+You should see fifteen tools: `browse_recordings`, `search_recordings`, `get_recording`, `export_transcript`, `mutate_recording`, `delete_recording`, `edit_transcript`, `upload_recording`, `process_recording`, `list_folders`, `search_templates`, `merge_recordings`, `edit_summary`, `mutate_folder`, and `mutate_vocabulary`.
 
 ---
 
@@ -160,17 +160,19 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 |---|---|
 | `browse_recordings` | List and filter recordings by date, title, folder, or trash status |
 | `search_recordings` | Find recordings whose transcript or summary mentions a phrase, with a snippet per hit. Plaud returns at most 20 matches per search |
-| `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary / audio download URL |
+| `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary (with the recording's extra notes; citations read as `[2:05]`, `raw_markdown=true` keeps Plaud's links) / audio download URL / attached documents |
 | `export_transcript` | Save a whole transcript to a file (JSON for archiving, or Plaud's TXT/SRT/Word/PDF) and return its path, size and SHA-256 instead of the text |
-| `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`) |
+| `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`); `trim` cuts one recording down to the ranges you keep, as a new copy; also manage one recording's public share link (`share_create`, `share_get`, `share_update`, `share_revoke`; all but get need `confirm=true`) |
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
 | `edit_transcript` | Rename a speaker label (`action="rename_speaker"`, matches the displayed name or the original `Speaker N`) or literal find-and-replace on transcript text (`action="correct"`, supports `dry_run`) |
-| `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
-| `process_recording` | Trigger transcription + summarization; `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
-| `list_folders` | List Plaud folders (id, name, color, icon) |
+| `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed), or attach a document to a recording with `attach_to` |
+| `process_recording` | Transcribe and summarize (`action="process"`), replace the summary with a new one (`action="resummarize"`, requires explicit confirmation), or add an extra note from a template (`action="add_note"`); `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
+| `list_folders` | List Plaud folders (id, name, color, icon, parent_id) |
+| `search_templates` | Find summary templates by name (id, kind and name to pass to `process_recording`) and list the AI models |
 | `merge_recordings` | Merge two or more recordings into a single new recording |
-| `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary |
-| `mutate_folder` | Create, edit, or delete a folder |
+| `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary, or of one of its extra notes (`note_id`) |
+| `mutate_folder` | Create (optionally inside another folder), edit, move, or delete a folder |
+| `mutate_vocabulary` | List, add, edit, or delete words in Plaud's account-wide custom vocabulary (delete needs `confirm=true`) |
 
 ## Optional: install the agent skill
 

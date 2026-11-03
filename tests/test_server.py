@@ -24,9 +24,11 @@ _EXPECTED_TOOL_NAMES = {
     "upload_recording",
     "process_recording",
     "list_folders",
+    "search_templates",
     "merge_recordings",
     "edit_summary",
     "mutate_folder",
+    "mutate_vocabulary",
 }
 
 
@@ -60,7 +62,7 @@ def test_server_edit_summary_requires_recording_id_and_action():
 def test_server_mutate_folder_requires_only_action():
     tool = next(t for t in _TOOLS if t.name == "mutate_folder")
     assert tool.input_schema["required"] == ["action"]
-    assert set(tool.input_schema["properties"]["action"]["enum"]) == {"create", "edit", "delete"}
+    assert set(tool.input_schema["properties"]["action"]["enum"]) == {"create", "edit", "move", "delete"}
 
 
 def test_server_mutate_folder_is_flagged_destructive():
@@ -99,7 +101,17 @@ def test_server_mutate_recording_enum_excludes_delete_and_rename_speaker():
     enum_values = tool.input_schema["properties"]["action"]["enum"]
     assert "delete" not in enum_values
     assert "rename_speaker" not in enum_values
-    assert set(enum_values) == {"rename", "trash", "restore", "move"}
+    assert set(enum_values) == {
+        "rename",
+        "trash",
+        "restore",
+        "move",
+        "trim",
+        "share_create",
+        "share_get",
+        "share_update",
+        "share_revoke",
+    }
 
 
 def test_server_mutate_recording_has_clear_folder_param():

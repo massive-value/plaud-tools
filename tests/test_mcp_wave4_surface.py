@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from plaud_tools.core.errors import PlaudApiError, PlaudWaitTimeoutError
-from plaud_tools.core.models import AudioLink, RecordingDetail
+from plaud_tools.core.models import Attachment, AudioLink, RecordingDetail
 from plaud_tools.mcp_pt.mcp import _WAIT_TIMEOUT_S, build_handlers
 
 # ---------------------------------------------------------------------------
@@ -115,9 +115,7 @@ class TestEditTranscript:
 class TestEditSummaryDryRun:
     def test_correct_dry_run_returns_match_count_without_mutating(self):
         mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(
-            id="r1", filename="Meeting", ai_content="Suzan said hi. Suzan left."
-        )
+        mock_client.count_summary_matches.return_value = 2
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["edit_summary"](
@@ -133,11 +131,11 @@ class TestEditSummaryDryRun:
             "matches": 2,
         }
         mock_client.correct_summary.assert_not_called()
-        mock_client.get_recording.assert_called_once_with("r1", include_summary=True)
+        mock_client.count_summary_matches.assert_called_once_with("r1", "Suzan", None)
 
     def test_correct_dry_run_no_summary_returns_validation(self):
         mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting", ai_content=None)
+        mock_client.count_summary_matches.side_effect = ValueError("recording r1 has no summary text to edit")
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["edit_summary"](
@@ -185,8 +183,12 @@ class TestProcessRecordingBoundedWait:
 
         result = handlers["process_recording"]("r1", wait="summary")
 
-        mock_client.wait_for_transcription.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S)
-        mock_client.wait_for_summary.assert_called_once_with("r1", timeout_s=_WAIT_TIMEOUT_S - 60)
+        mock_client.wait_for_transcription.assert_called_once_with(
+            "r1", timeout_s=_WAIT_TIMEOUT_S, on_progress=None
+        )
+        mock_client.wait_for_summary.assert_called_once_with(
+            "r1", timeout_s=_WAIT_TIMEOUT_S - 60, on_progress=None
+        )
         payload = json.loads(result["content"][0]["text"])
         assert payload["job"]["kind"] == "summary"
         assert payload["is_trans"] is True
@@ -549,25 +551,25 @@ class TestGetRecordingTranscriptBlock:
 
 
 class TestBrowseRecordingsTrash:
-    def test_trash_true_queries_with_is_trash_one(self):
+    def test_trash_true_lists_the_trash(self):
         mock_client = MagicMock()
-        mock_client.list_recordings.return_value = []
+        mock_client.list_trash.return_value = []
         handlers = build_handlers(lambda: mock_client)
 
         handlers["browse_recordings"](limit=5, trash=True)
 
-        call_query = mock_client.list_recordings.call_args[0][0]
-        assert call_query.is_trash == 1
+        mock_client.list_trash.assert_called_once_with()
+        mock_client.list_recordings.assert_not_called()
 
-    def test_trash_false_default_queries_with_is_trash_zero(self):
+    def test_trash_false_default_lists_active_recordings(self):
         mock_client = MagicMock()
         mock_client.list_recordings.return_value = []
         handlers = build_handlers(lambda: mock_client)
 
         handlers["browse_recordings"](limit=5)
 
-        call_query = mock_client.list_recordings.call_args[0][0]
-        assert call_query.is_trash == 0
+        mock_client.list_recordings.assert_called_once_with()
+        mock_client.list_trash.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -605,8 +607,93 @@ class TestMergeRecordingsSlimResponse:
         assert payload["recording_ids"] == ["r1", "r2"]
         assert "isError" not in result
         mock_client.merge_recordings.assert_called_once_with(
-            ["r1", "r2"], "Combined", timeout_s=_WAIT_TIMEOUT_S
+            ["r1", "r2"], "Combined", timeout_s=_WAIT_TIMEOUT_S, on_progress=None
         )
+
+
+# ---------------------------------------------------------------------------
+# mutate_recording(action="trim") and upload_recording(attach_to=...)
+# ---------------------------------------------------------------------------
+
+
+class TestTrimAndAttach:
+    def test_trim_parses_keep_ranges_and_returns_the_new_recording(self):
+        mock_client = MagicMock()
+        mock_client.trim_recording.return_value = RecordingDetail(
+            id="f_copy", filename="Call copy", duration=60_000
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["mutate_recording"](
+            recording_id="r1", action="trim", keep=["0:00-0:30", "1:00-1:30"]
+        )
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["new_recording_id"] == "f_copy"
+        mock_client.trim_recording.assert_called_once_with(
+            "r1", [(0, 30_000), (60_000, 90_000)], timeout_s=_WAIT_TIMEOUT_S, on_progress=None
+        )
+
+    def test_trim_wait_timeout_hands_back_the_copy_and_says_not_to_retry(self):
+        mock_client = MagicMock()
+        mock_client.trim_recording.side_effect = PlaudWaitTimeoutError(
+            "trim timed out after 90s", task_id="f_copy"
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["mutate_recording"](recording_id="r1", action="trim", keep=["0:00-0:30"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["status"] == "still_processing"
+        assert payload["job"] == {"kind": "trim", "id": "f_copy", "poll_with": "get_recording"}
+        assert payload["retryable"] is False
+        assert "isError" not in result
+
+    def test_trim_requires_keep_and_a_single_recording(self):
+        handlers = build_handlers(lambda: MagicMock())
+        assert handlers["mutate_recording"](recording_id="r1", action="trim")["isError"]
+        batch = handlers["mutate_recording"](recording_ids=["r1", "r2"], action="trim", keep=["0:00-1:00"])
+        assert batch["isError"]
+
+    def test_upload_with_attach_to_attaches_a_document_instead_of_uploading_audio(self, tmp_path):
+        doc = tmp_path / "statement.pdf"
+        doc.write_bytes(b"%PDF")
+        mock_client = MagicMock()
+        mock_client.attach_document.return_value = Attachment(id="f_doc", filename="statement.pdf")
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["upload_recording"](file_path=str(doc), attach_to="r1")
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["attachment"] == {"id": "f_doc", "name": "statement.pdf"}
+        mock_client.attach_document.assert_called_once_with("r1", doc, None, on_progress=None)
+        mock_client.upload_recording.assert_not_called()
+
+    def test_upload_with_attach_to_refuses_audio_only_options(self, tmp_path):
+        doc = tmp_path / "statement.pdf"
+        doc.write_bytes(b"%PDF")
+        mock_client = MagicMock()
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["upload_recording"](file_path=str(doc), attach_to="r1", folder_id="fd1")
+
+        assert result["isError"]
+        assert "folder_id cannot be used with attach_to" in json.loads(result["content"][0]["text"])["error"]
+        mock_client.attach_document.assert_not_called()
+
+    def test_get_recording_lists_attachments_when_asked(self):
+        mock_client = MagicMock()
+        mock_client.get_recording.return_value = RecordingDetail(
+            id="r1",
+            filename="Call",
+            attachments=[Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")],
+        )
+        handlers = build_handlers(lambda: mock_client)
+
+        result = handlers["get_recording"](recording_id="r1", include=["attachments"])
+
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["attachments"] == [{"id": "f_doc", "name": "statement.pdf", "type": "PDF"}]
 
 
 # ---------------------------------------------------------------------------

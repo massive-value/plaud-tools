@@ -14,25 +14,44 @@ from ..core.auth import PlaudAuth
 from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
+    MAX_INSTRUCTION_CHARS,
     SEARCH_RESULT_CAP,
+    SHARE_DEFAULT_DAYS,
+    SUMMARY_VERBOSITY,
+    TEMPLATE_KINDS,
+    VOCAB_LANGUAGE,
     PlaudClient,
-    PlaudRecordingQuery,
     describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.export import EXPORT_FORMATS, TranscriptExportError, export_transcript
+from ..core.folders import plan_colon_nesting
+from ..core.models import RecordingDetail
 from ..core.query import (
-    BROWSE_PAGE_SIZE,
-    collect_filtered_paged,
+    SHARE_REVOKE_NOTE,
+    attachment_dict,
     detail_summary_dict,
     folder_dict,
+    model_dict,
     parse_isoish,
+    parse_keep_ranges,
+    query_recordings,
+    share_dict,
     structured_segments,
     summarize_match,
     summarize_recording,
+    template_dict,
     transcript_fingerprint,
+    vocabulary_dict,
 )
 from ..core.session import PlaudSession, SessionManager, SessionStore
+from ..core.summary import notes_payload, render_summary
+
+_RAW_HELP = (
+    "Print Plaud's raw markdown, plaud:// links included, instead of [2:05] citations "
+    "with the image and highlight card markup removed."
+)
+_NOTE_ID_HELP = "Edit this note (a note_id from 'summary' or 'detail') instead of the main summary."
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     detail_cmd = sub.add_parser("detail")
     detail_cmd.add_argument("recording_id")
     detail_cmd.add_argument("--include-transcript", action="store_true")
+    detail_cmd.add_argument("--raw", action="store_true", help=_RAW_HELP)
 
     show_cmd = sub.add_parser("show")
     show_cmd.add_argument("recording_id")
@@ -95,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary_cmd = sub.add_parser("summary")
     summary_cmd.add_argument("recording_id")
+    summary_cmd.add_argument("--raw", action="store_true", help=_RAW_HELP)
 
     audio_cmd = sub.add_parser(
         "audio", help="Get a temporary download URL for a recording's audio, or save the file."
@@ -145,13 +166,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     folders_cmd = sub.add_parser("folders")  # noqa: F841  # side-effect: registers subparser
 
-    folder_cmd = sub.add_parser("folder", help="Create, edit, or delete folders.")
+    folder_cmd = sub.add_parser("folder", help="Create, edit, move, or delete folders.")
     folder_sub = folder_cmd.add_subparsers(dest="folder_command", required=True)
 
     folder_create = folder_sub.add_parser("create")
     folder_create.add_argument("name")
     folder_create.add_argument("--color", help="Plaud color name, e.g. 'folder-color-green'")
     folder_create.add_argument("--icon", help="Icon glyph codepoint, e.g. 'e627'")
+    folder_create.add_argument("--parent-id", help="Create it inside this folder (default: top level)")
+
+    folder_move = folder_sub.add_parser("move", help="Move a folder, with its contents, into another folder.")
+    folder_move.add_argument("folder_id")
+    folder_move.add_argument("parent_id", help='Folder to move it into; "root" for the top level')
+
+    folder_nest = folder_sub.add_parser(
+        "nest-colon-names",
+        help='Turn colon-named folders ("A:B") into real subfolders. Shows the plan unless --yes.',
+    )
+    folder_nest.add_argument("--yes", action="store_true", help="Carry the plan out")
 
     folder_edit = folder_sub.add_parser("edit")
     folder_edit.add_argument("folder_id")
@@ -162,6 +194,56 @@ def build_parser() -> argparse.ArgumentParser:
     folder_delete = folder_sub.add_parser("delete")
     folder_delete.add_argument("folder_id")
     folder_delete.add_argument("--yes", action="store_true")
+
+    vocab_cmd = sub.add_parser("vocab", help="List, add, edit, or delete custom-vocabulary words.")
+    vocab_sub = vocab_cmd.add_subparsers(dest="vocab_command", required=True)
+
+    vocab_sub.add_parser("list")
+
+    vocab_add = vocab_sub.add_parser("add")
+    vocab_add.add_argument("word")
+    vocab_add.add_argument("--heard-as", help="A misheard form Plaud should correct to WORD")
+    vocab_add.add_argument("--language", default=VOCAB_LANGUAGE)
+
+    vocab_edit = vocab_sub.add_parser("edit")
+    vocab_edit.add_argument("word_id")
+    vocab_edit.add_argument("--word")
+    vocab_edit.add_argument("--heard-as", help="Pass an empty string to clear it")
+    vocab_edit.add_argument("--language")
+
+    vocab_delete = vocab_sub.add_parser("delete")
+    vocab_delete.add_argument("word_ids", nargs="+")
+    vocab_delete.add_argument("--yes", action="store_true")
+
+    share_cmd = sub.add_parser(
+        "share", help="Create, read, update, or revoke a recording's public share link."
+    )
+    share_sub = share_cmd.add_subparsers(dest="share_command", required=True)
+
+    share_create = share_sub.add_parser("create")
+    share_create.add_argument("recording_id")
+    create_expiry = share_create.add_mutually_exclusive_group()
+    create_expiry.add_argument(
+        "--days", type=_positive_int, help=f"Link lifetime in days (default {SHARE_DEFAULT_DAYS})"
+    )
+    create_expiry.add_argument("--never-expires", action="store_true", help="Create a link with no expiry")
+    _add_share_content_flags(share_create)
+    share_create.add_argument("--yes", action="store_true", help="Confirm making the public link")
+
+    share_get = share_sub.add_parser("get")
+    share_get.add_argument("recording_id")
+
+    share_update = share_sub.add_parser("update")
+    share_update.add_argument("recording_id")
+    expiry = share_update.add_mutually_exclusive_group()
+    expiry.add_argument("--days", type=_positive_int, help="New lifetime in days from now")
+    expiry.add_argument("--never-expires", action="store_true", help="Remove the expiry")
+    _add_share_content_flags(share_update)
+    share_update.add_argument("--yes", action="store_true", help="Confirm changing what the link shows")
+
+    share_revoke = share_sub.add_parser("revoke")
+    share_revoke.add_argument("recording_id")
+    share_revoke.add_argument("--yes", action="store_true")
 
     move_cmd = sub.add_parser("move", aliases=["move-to-folder"])
     move_cmd.add_argument("recording_id")
@@ -181,9 +263,11 @@ def build_parser() -> argparse.ArgumentParser:
     correct_summary_cmd.add_argument("recording_id")
     correct_summary_cmd.add_argument("find")
     correct_summary_cmd.add_argument("replace")
+    correct_summary_cmd.add_argument("--note-id", help=_NOTE_ID_HELP)
 
     set_summary_cmd = sub.add_parser("set-summary")
     set_summary_cmd.add_argument("recording_id")
+    set_summary_cmd.add_argument("--note-id", help=_NOTE_ID_HELP)
     set_summary_group = set_summary_cmd.add_mutually_exclusive_group(required=True)
     set_summary_group.add_argument("--content", help="New summary markdown")
     set_summary_group.add_argument(
@@ -192,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     transcribe_cmd = sub.add_parser("transcribe")
     transcribe_cmd.add_argument("recording_id")
-    transcribe_cmd.add_argument("--template")
+    _add_summary_options(transcribe_cmd, verbosity=True)
     transcribe_cmd.add_argument("--language", help="Language code, e.g. 'en' (default: auto-detect).")
     transcribe_cmd.add_argument(
         "--diarization",
@@ -200,7 +284,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Enable/disable speaker diarization (default: Plaud's default).",
     )
-    transcribe_cmd.add_argument("--llm", help="LLM to use for summarization (default: auto).")
     transcribe_cmd.add_argument(
         "--wait",
         choices=["none", "transcript", "summary"],
@@ -210,6 +293,35 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: none — accept and return immediately)."
         ),
     )
+
+    resummarize_cmd = sub.add_parser(
+        "resummarize", help="Replace a recording's summary (edits included) with a newly generated one."
+    )
+    resummarize_cmd.add_argument("recording_id")
+    _add_summary_options(resummarize_cmd, verbosity=True)
+    resummarize_cmd.add_argument(
+        "--detach", action="store_true", help="Return without waiting for the summary."
+    )
+    resummarize_cmd.add_argument(
+        "--yes", action="store_true", help="Confirm the current summary may be replaced."
+    )
+
+    add_note_cmd = sub.add_parser(
+        "add-note", help="Add an extra note to a recording from a template; the summary is kept."
+    )
+    add_note_cmd.add_argument("recording_id")
+    _add_summary_options(add_note_cmd, verbosity=False)
+    add_note_cmd.add_argument(
+        "--name", help="The note's title; required with --template (use the template's name)."
+    )
+    add_note_cmd.add_argument("--detach", action="store_true", help="Return without waiting for the note.")
+
+    templates_cmd = sub.add_parser(
+        "templates", help="Search Plaud's summary templates for ids to pass to --template."
+    )
+    templates_cmd.add_argument("query")
+
+    sub.add_parser("models", help="List the AI models --llm accepts.")
 
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("recording_id", nargs="?")
@@ -222,8 +334,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--list",
         dest="list_trash",
         action="store_true",
-        help="List recordings currently in trash (required instead of a bare 'trash' with no ID).",
+        help=(
+            "List recordings currently in trash (required instead of a bare 'trash' with no ID). "
+            "Takes the same --limit/--all/--since/--until/--query filters as 'list'."
+        ),
     )
+    _add_limit_or_all(trash_cmd)
+    trash_cmd.add_argument("--since")
+    trash_cmd.add_argument("--until")
+    trash_cmd.add_argument("--query")
 
     restore_cmd = sub.add_parser("restore")
     restore_cmd.add_argument("recording_id")
@@ -242,6 +361,14 @@ def build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("file")
     upload_cmd.add_argument("--title")
     upload_cmd.add_argument("--folder-id")
+    upload_cmd.add_argument(
+        "--attach-to",
+        metavar="RECORDING_ID",
+        help=(
+            "Attach FILE to this existing recording as a document (PDF, Word, Excel, PowerPoint, "
+            "TXT/MD/CSV, PNG/JPG) instead of uploading new audio; --title names the attachment."
+        ),
+    )
     upload_cmd.add_argument(
         "--detach", action="store_true", help="Return immediately without waiting for transcription"
     )
@@ -266,6 +393,17 @@ def build_parser() -> argparse.ArgumentParser:
     merge_cmd = sub.add_parser("merge")
     merge_cmd.add_argument("recording_ids", nargs="+")
     merge_cmd.add_argument("--title", required=True)
+
+    trim_cmd = sub.add_parser(
+        "trim", help="Cut a recording down to the ranges you keep, as a new copy (the original stays)."
+    )
+    trim_cmd.add_argument("recording_id")
+    trim_cmd.add_argument(
+        "ranges",
+        nargs="+",
+        metavar="START-END",
+        help="Ranges to keep as mm:ss-mm:ss, e.g. 0:00-1:00 5:00-6:30",
+    )
 
     dump_cmd = sub.add_parser("dump", help="Dump raw /file/detail API response for debugging")
     dump_cmd.add_argument("recording_id")
@@ -344,6 +482,43 @@ def _add_limit_or_all(cmd: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Page through the whole library (honoring filters) until it is exhausted.",
     )
+
+
+def _add_share_content_flags(cmd: argparse.ArgumentParser) -> None:
+    """Add --audio/--transcript/--summary (and --no-* forms) for what a share link exposes.
+
+    Left unset they mean "the default" on create (transcript only) and
+    "keep the current setting" on update.
+    """
+    for name in ("audio", "transcript", "summary"):
+        cmd.add_argument(f"--{name}", action=argparse.BooleanOptionalAction, default=None)
+
+
+def _add_summary_options(cmd: argparse.ArgumentParser, *, verbosity: bool) -> None:
+    """Add the template/model/instruction flags shared by transcribe, resummarize and add-note."""
+    cmd.add_argument("--template", help="Template id from 'templates' (default: Plaud chooses).")
+    cmd.add_argument(
+        "--template-kind",
+        choices=TEMPLATE_KINDS,
+        help="The template's kind from 'templates'; needed for custom and team templates.",
+    )
+    cmd.add_argument("--llm", help="AI model from 'models' (default: auto).")
+    cmd.add_argument(
+        "--instruction",
+        help=f"Custom instruction for the AI ({MAX_INSTRUCTION_CHARS} characters max; not with --template).",
+    )
+    if verbosity:
+        cmd.add_argument("--verbosity", choices=SUMMARY_VERBOSITY, help="Summary length (default: medium).")
+
+
+def _summary_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """The core client's summary options from the flags _add_summary_options added."""
+    return {
+        "template_id": args.template,
+        "template_kind": args.template_kind,
+        "llm": args.llm,
+        "instruction": args.instruction,
+    }
 
 
 def _mask_token(token: str) -> str:
@@ -497,65 +672,36 @@ def _handle_doctor(args: argparse.Namespace, store: SessionStore) -> str:  # noq
 # Handlers that DO need a PlaudClient (post-client dispatch).
 
 
-def _list_recordings_filtered(
-    client: PlaudClient,
-    *,
-    limit: int | None,
-    since: str | None,
-    until: str | None,
-    query: str | None,
-    folder_id: str | None,
-    unfiled: bool,
-) -> list[Any]:
-    """Shared filtering/paging logic behind both ``list`` and ``search``.
+def _list_recordings(args: argparse.Namespace, client: PlaudClient, *, trash: bool = False) -> str:
+    """Filtered listing behind `list`, `search` and `trash --list`.
 
-    ``search`` is a positional-argument shorthand for ``list --query`` — it
-    has no ranking of its own, so it delegates here instead of re-implementing
-    the same paged-filter call (previously duplicated verbatim).
-
-    ``limit=None`` (``--all``) pages upstream until it runs dry, filtered or
-    not, so the result is the complete matching set rather than one page.
+    All three call the same ``query_recordings`` as MCP ``browse_recordings``.
+    `trash --list` has no folder flags (trashed recordings carry no folder),
+    hence the ``getattr`` defaults.  ``--all`` returns every match.
     """
-    has_filters = bool(since or until or query or folder_id or unfiled) or limit is None
-    since_ms = parse_isoish(since, "--since") if since else None
-    until_ms = parse_isoish(until, "--until", end_of_day=True) if until else None
-    if has_filters:
-        recordings, _ = collect_filtered_paged(
-            lambda skip, page_size: client.list_recordings(PlaudRecordingQuery(skip=skip, limit=page_size)),
-            BROWSE_PAGE_SIZE,
-            since_ms=since_ms,
-            until_ms=until_ms,
-            query=query,
-            folder_id=folder_id,
-            unfiled=unfiled,
-            after=0,
-            limit=limit,
-        )
-        return recordings
-    return client.list_recordings(PlaudRecordingQuery(limit=limit))
+    recordings, _ = query_recordings(
+        client,
+        trash=trash,
+        since_ms=parse_isoish(args.since, "--since") if args.since else None,
+        until_ms=parse_isoish(args.until, "--until", end_of_day=True) if args.until else None,
+        query=args.query,
+        folder_id=getattr(args, "folder_id", None),
+        unfiled=getattr(args, "unfiled", False),
+        limit=None if args.all else args.limit,
+    )
+    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
 
 
 def _handle_list_or_search(args: argparse.Namespace, client: PlaudClient) -> str:
     """Shared handler for `list` and `search`.
 
-    `search` is defined as `list --query QUERY` with the query as a
-    positional argument instead of a flag (see `_list_recordings_filtered`'s
-    docstring) — both subparsers land the query in ``args.query``, so
-    dispatch never needs to know which subcommand it was called for.
-    `search --content` goes to Plaud's full-text search instead.
+    `search` is `list --query QUERY` with the query as a positional argument;
+    both subparsers land it in ``args.query``.  `search --content` goes to
+    Plaud's full-text search instead.
     """
     if getattr(args, "content", False):
         return _content_search(args, client)
-    recordings = _list_recordings_filtered(
-        client,
-        limit=None if args.all else args.limit,
-        since=args.since,
-        until=args.until,
-        query=args.query,
-        folder_id=args.folder_id,
-        unfiled=args.unfiled,
-    )
-    return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+    return _list_recordings(args, client)
 
 
 def _content_search(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -577,6 +723,14 @@ def _content_search(args: argparse.Namespace, client: PlaudClient) -> str:
     return json.dumps([summarize_match(match) for match in matches], indent=2, ensure_ascii=False)
 
 
+def _summary_fields(detail: RecordingDetail, raw: bool) -> dict[str, Any]:
+    """``summary`` and ``extra_notes`` for output: readable by default, Plaud's raw markdown with --raw."""
+    return {
+        "summary": detail.ai_content if raw else render_summary(detail.ai_content),
+        "extra_notes": notes_payload(detail.notes, raw=raw),
+    }
+
+
 def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
     # Always fetch the summary (like `summary <id>` does) so "summary" reflects
     # whether Plaud actually has one, instead of the null it would get here
@@ -593,7 +747,7 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
         "filename": detail.filename,
         "is_trans": detail.is_trans,
         "is_summary": detail.is_summary,
-        "summary": detail.ai_content,
+        **_summary_fields(detail, args.raw),
     }
     if args.include_transcript:
         # null, not "", when there is no transcript to return — an empty
@@ -604,20 +758,19 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
 
 
 def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
-    detail = client.get_recording(args.recording_id, include_transcript=True)
+    detail = client.get_recording(args.recording_id, include_transcript=True, include_attachments=True)
     output = detail_summary_dict(detail)
     output["speakers"] = detail.speakers
+    output["attachments"] = [attachment_dict(a) for a in detail.attachments]
     return json.dumps(output, indent=2)
 
 
 def _handle_summary(args: argparse.Namespace, client: PlaudClient) -> str:
     detail = client.get_recording(args.recording_id, include_summary=True)
+    payload: dict[str, Any] = {"recording_id": args.recording_id, **_summary_fields(detail, args.raw)}
     if not detail.ai_content:
-        return json.dumps(
-            {"recording_id": args.recording_id, "summary": None, "note": "No summary available."},
-            indent=2,
-        )
-    return json.dumps({"recording_id": args.recording_id, "summary": detail.ai_content}, indent=2)
+        payload["note"] = "No summary available."
+    return json.dumps(payload, indent=2)
 
 
 def _handle_rename(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -634,8 +787,13 @@ def _handle_folders(args: argparse.Namespace, client: PlaudClient) -> str:  # no
 
 def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.folder_command == "create":
-        folder = client.create_folder(args.name, color=args.color, icon=args.icon)
+        folder = client.create_folder(args.name, color=args.color, icon=args.icon, parent_id=args.parent_id)
         return json.dumps({"ok": True, "action": "create", "folder": folder_dict(folder)}, indent=2)
+    if args.folder_command == "move":
+        folder = client.move_folder(args.folder_id, args.parent_id)
+        return json.dumps({"ok": True, "action": "move", "folder": folder_dict(folder)}, indent=2)
+    if args.folder_command == "nest-colon-names":
+        return _nest_colon_names(args, client)
     if args.folder_command == "edit":
         if args.name is None and args.color is None and args.icon is None:
             raise ValueError("folder edit requires at least one of --name, --color, --icon")
@@ -644,12 +802,110 @@ def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.folder_command == "delete":
         if not args.yes:
             raise ValueError(
-                f"Deleting folder {args.folder_id!r} cannot be undone (recordings inside are kept "
-                f"but become unfiled). Re-run with --yes to confirm."
+                f"Deleting folder {args.folder_id!r} cannot be undone (what is inside is kept "
+                f"and moves up one level). Re-run with --yes to confirm."
             )
         client.delete_folder(args.folder_id)
         return json.dumps({"ok": True, "action": "delete", "folder_id": args.folder_id}, indent=2)
     raise AssertionError(f"unhandled folder command: {args.folder_command}")
+
+
+def _handle_vocab(args: argparse.Namespace, client: PlaudClient) -> str:
+    command = args.vocab_command
+    if command == "list":
+        entries = client.list_vocabulary()
+        return json.dumps([vocabulary_dict(entry) for entry in entries], indent=2)
+    if command == "add":
+        entry = client.add_vocabulary(args.word, heard_as=args.heard_as, language=args.language)
+        return json.dumps({"ok": True, "action": "add", "word": vocabulary_dict(entry)}, indent=2)
+    if command == "edit":
+        if args.word is None and args.heard_as is None and args.language is None:
+            raise ValueError("vocab edit requires at least one of --word, --heard-as, --language")
+        entry = client.update_vocabulary(
+            args.word_id, word=args.word, heard_as=args.heard_as, language=args.language
+        )
+        return json.dumps({"ok": True, "action": "edit", "word": vocabulary_dict(entry)}, indent=2)
+    if command == "delete":
+        if not args.yes:
+            raise ValueError("Deleting vocabulary words cannot be undone. Re-run with --yes to confirm.")
+        deleted = client.delete_vocabulary(args.word_ids)
+        return json.dumps({"ok": True, "action": "delete", "deleted": deleted}, indent=2)
+    raise AssertionError(f"unhandled vocab command: {command}")
+
+
+def _handle_share(args: argparse.Namespace, client: PlaudClient) -> str:
+    command = args.share_command
+    if command == "get":
+        link = client.get_share_link(args.recording_id)
+        payload: dict[str, Any] = {"ok": True, "shared": link is not None}
+        if link is not None:
+            payload["share"] = share_dict(link)
+        return json.dumps(payload, indent=2)
+    if command == "create":
+        if not args.yes:
+            raise ValueError(
+                f"Sharing {args.recording_id!r} makes a public link that anyone holding the URL can "
+                "open. Re-run with --yes to confirm."
+            )
+        link = client.create_share_link(
+            args.recording_id,
+            expire_days=None if args.never_expires else (args.days or SHARE_DEFAULT_DAYS),
+            audio=bool(args.audio),
+            transcript=True if args.transcript is None else args.transcript,
+            summary=bool(args.summary),
+        )
+        return json.dumps({"ok": True, "action": "create", "share": share_dict(link)}, indent=2)
+    if command == "update":
+        if not args.yes:
+            raise ValueError(
+                f"Updating the share link for {args.recording_id!r} can widen who sees what "
+                "(audio, no expiry). Re-run with --yes to confirm."
+            )
+        link = client.update_share_link(
+            args.recording_id,
+            expire_days=args.days,
+            never_expires=args.never_expires,
+            audio=args.audio,
+            transcript=args.transcript,
+            summary=args.summary,
+        )
+        return json.dumps({"ok": True, "action": "update", "share": share_dict(link)}, indent=2)
+    if command == "revoke":
+        if not args.yes:
+            raise ValueError(
+                f"Revoking the share link for {args.recording_id!r} cuts off anyone using it. "
+                "Re-run with --yes to confirm."
+            )
+        client.revoke_share_link(args.recording_id)
+        return json.dumps(
+            {
+                "ok": True,
+                "action": "revoke",
+                "note": SHARE_REVOKE_NOTE,
+            },
+            indent=2,
+        )
+    raise AssertionError(f"unhandled share command: {command}")
+
+
+def _nest_colon_names(args: argparse.Namespace, client: PlaudClient) -> str:
+    """`folder nest-colon-names`: show the plan, and carry it out only with --yes.
+
+    The plan is always worked out from a fresh folder listing, so a --yes run
+    does exactly what a dry run printed a moment before.
+    """
+    plan = plan_colon_nesting(client.list_folders())
+    if not args.yes:
+        return json.dumps(
+            {
+                "dry_run": True,
+                **plan.as_dict(),
+                "next_step": "Nothing changed. Re-run with --yes to make these changes.",
+            },
+            indent=2,
+        )
+    client.nest_colon_folders(plan)
+    return json.dumps({"ok": True, "action": "nest-colon-names", **plan.as_dict()}, indent=2)
 
 
 def _handle_move(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -669,8 +925,7 @@ def _handle_trash(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.list_trash:
         if args.recording_id is not None:
             raise ValueError("trash: --list cannot be combined with a recording ID")
-        recordings = client.list_trash()
-        return json.dumps([summarize_recording(r) for r in recordings], indent=2)
+        return _list_recordings(args, client, trash=True)
     if args.recording_id is None:
         raise ValueError("trash requires a recording ID, or use 'trash --list' to list trashed recordings")
     client.move_to_trash([args.recording_id])
@@ -737,7 +992,7 @@ def _handle_correct_transcript(args: argparse.Namespace, client: PlaudClient) ->
 
 
 def _handle_correct_summary(args: argparse.Namespace, client: PlaudClient) -> str:
-    result = client.correct_summary(args.recording_id, args.find, args.replace)
+    result = client.correct_summary(args.recording_id, args.find, args.replace, args.note_id)
     return json.dumps(
         {
             "ok": True,
@@ -758,7 +1013,7 @@ def _handle_set_summary(args: argparse.Namespace, client: PlaudClient) -> str:
         content = path.read_text(encoding="utf-8")
     else:
         content = args.content
-    client.set_summary(args.recording_id, content)
+    client.set_summary(args.recording_id, content, args.note_id)
     return json.dumps(
         {"ok": True, "recording_id": args.recording_id, "mutation": "set-summary"},
         indent=2,
@@ -793,6 +1048,28 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
     from ..core.transcode import upload_with_transcode
 
     path = Path(args.file)
+    if args.attach_to:
+        audio_only = {
+            "--folder-id": args.folder_id,
+            "--start-time": args.start_time,
+            "--timezone-offset": args.timezone_offset,
+            "--detach": args.detach or None,
+            "--skip-summary": args.skip_summary or None,
+        }
+        given = [flag for flag, value in audio_only.items() if value is not None]
+        if given:
+            raise ValueError(f"{', '.join(given)} cannot be used with --attach-to")
+        if not path.is_file():
+            raise ValueError(f"file not found: {path}")
+        attachment = client.attach_document(args.attach_to, path, args.title)
+        return json.dumps(
+            {
+                "ok": True,
+                "recording_id": args.attach_to,
+                "attachment": {"id": attachment.id, "name": attachment.filename},
+            },
+            indent=2,
+        )
     title = args.title or path.stem
     start_ms: int | None = None
     if args.start_time is not None:
@@ -861,13 +1138,34 @@ def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
     )
 
 
+def _handle_trim(args: argparse.Namespace, client: PlaudClient) -> str:
+    ranges = parse_keep_ranges(args.ranges)
+    # Same hazard as merge: the copy's id is only known once Plaud accepts the
+    # job, so say what was submitted before the wait.
+    print(
+        f"trimming {args.recording_id!r} to {args.ranges!r} (re-running on failure may make a second copy)",
+        file=sys.stderr,
+    )
+    detail = client.trim_recording(args.recording_id, ranges)
+    return json.dumps(
+        {
+            "ok": True,
+            "recording_id": args.recording_id,
+            "new_recording_id": detail.id,
+            "filename": detail.filename,
+            "duration_seconds": round(detail.duration / 1000),
+        },
+        indent=2,
+    )
+
+
 def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
     started = client.transcribe_and_summarize(
         args.recording_id,
-        template_type=args.template,
         language=args.language,
         diarization=args.diarization,
-        llm=args.llm,
+        verbosity=args.verbosity,
+        **_summary_kwargs(args),
     )
     if not started:
         # Plaud started no new job; report what the recording actually has.
@@ -880,14 +1178,15 @@ def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
                 "is_trans": detail.is_trans,
                 "is_summary": detail.is_summary,
                 "message": describe_unstarted_process(detail)
-                + " Use 'set-summary' or 'correct-summary' to change the summary text.",
+                + " Use 'set-summary' or 'correct-summary' to change the summary text, "
+                "'resummarize' to regenerate it, or 'add-note' for an extra note.",
             },
             indent=2,
         )
     result: dict[str, Any] = {
         "accepted": True,
         "recording_id": args.recording_id,
-        "template_type": args.template or "AUTO-SELECT",
+        "template_id": args.template or "AUTO-SELECT",
     }
     if args.wait == "none":
         return json.dumps(result, indent=2)
@@ -898,6 +1197,48 @@ def _handle_transcribe(args: argparse.Namespace, client: PlaudClient) -> str:
     result["is_trans"] = detail.is_trans
     result["is_summary"] = detail.is_summary
     return json.dumps(result, indent=2)
+
+
+def _handle_resummarize(args: argparse.Namespace, client: PlaudClient) -> str:
+    if not args.yes:
+        raise ValueError(
+            f"Resummarizing {args.recording_id!r} replaces its current summary, hand edits included, "
+            "and Plaud may change its title. This cannot be undone. Re-run with --yes to confirm."
+        )
+    task_id = client.resummarize(args.recording_id, verbosity=args.verbosity, **_summary_kwargs(args))
+    result: dict[str, Any] = {"accepted": True, "recording_id": args.recording_id, "task_id": task_id}
+    if not args.detach:
+        client.wait_for_task(task_id, what="summary")
+        result["is_summary"] = True
+    return json.dumps(result, indent=2)
+
+
+def _handle_add_note(args: argparse.Namespace, client: PlaudClient) -> str:
+    job = client.generate_note(args.recording_id, note_name=args.name, **_summary_kwargs(args))
+    result: dict[str, Any] = {
+        "accepted": True,
+        "recording_id": args.recording_id,
+        "note_id": job.note_id,
+        "name": job.name,
+        "task_id": job.task_id,
+    }
+    if not args.detach:
+        # Print the note id first: a timeout or Ctrl+C during the wait must
+        # not tempt a re-run, which would add a second note.
+        print(f"note_id={job.note_id!r} - waiting for Plaud to write it", file=sys.stderr)
+        client.wait_for_task(job.task_id, what="note")
+        result["done"] = True
+    return json.dumps(result, indent=2)
+
+
+def _handle_templates(args: argparse.Namespace, client: PlaudClient) -> str:
+    return json.dumps(
+        [template_dict(t) for t in client.search_templates(args.query)], indent=2, ensure_ascii=False
+    )
+
+
+def _handle_models(args: argparse.Namespace, client: PlaudClient) -> str:  # noqa: ARG001
+    return json.dumps([model_dict(m) for m in client.list_summary_models()], indent=2)
 
 
 def _handle_status(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -1030,6 +1371,8 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "rename": _handle_rename,
     "folders": _handle_folders,
     "folder": _handle_folder,
+    "vocab": _handle_vocab,
+    "share": _handle_share,
     "move-to-folder": _handle_move,
     "move": _handle_move,
     "trash": _handle_trash,
@@ -1043,7 +1386,12 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "set-summary": _handle_set_summary,
     "upload": _handle_upload,
     "merge": _handle_merge,
+    "trim": _handle_trim,
     "transcribe": _handle_transcribe,
+    "resummarize": _handle_resummarize,
+    "add-note": _handle_add_note,
+    "templates": _handle_templates,
+    "models": _handle_models,
     "status": _handle_status,
     "dump": _handle_dump,
     "transcript": _handle_transcript,
@@ -1205,8 +1553,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # merge_recordings() only learns the new recording's id on
                 # success, so it isn't available here — but the combine
                 # task_id is, and it's enough to check on the job instead of
-                # re-running merge (which would duplicate it).
-                print(f"merge task_id={exc.task_id!r} is still running on Plaud", file=sys.stderr)
+                # re-running merge (which would duplicate it).  For trim the
+                # id is the new copy's recording id: `show` it instead of
+                # trimming again.
+                print(f"task_id={exc.task_id!r} is still running on Plaud", file=sys.stderr)
             return EXIT_TIMEOUT
         return _EXIT_CODE_BY_ERROR_CODE.get(error_code, EXIT_ERROR)
     except (ValueError, RuntimeError) as exc:

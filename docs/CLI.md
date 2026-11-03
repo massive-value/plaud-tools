@@ -24,7 +24,7 @@ script *why* it failed without having to match on the message:
 | `4` | Timed out waiting on a job that is **still running** on Plaud's side | Poll with `status <id>` rather than re-running the command |
 
 Code `4` matters for the long-running commands (`transcribe --wait`, `merge`,
-`upload`): the work has not failed, it just outlived the client-side wait.
+`trim`, `upload`, `resummarize`, `add-note`): the work has not failed, it just outlived the client-side wait.
 Re-running the command would start a *second* job.
 
 One wrinkle: a malformed command line exits `2` as well, because that is
@@ -139,9 +139,9 @@ plaud-tools list --folder-id <folder-id>
 plaud-tools list --unfiled
 ```
 
-Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles.
+Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles. `--folder-id` includes recordings in that folder's subfolders; each result's `folder_id` shows the exact folder it is in.
 
-`--all` returns every matching recording instead of one page. It reads Plaud's list to the end, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
+`--all` returns every matching recording instead of one page. `--all` and `--limit` can't be combined. `search` and `trash --list` take `--all` too. Every listing reads your whole library from Plaud in one request and filters it locally, so a filter never misses an older recording.
 
 ```
 plaud-tools list --all --folder-id <folder-id> > recordings.json
@@ -258,7 +258,7 @@ plaud-tools list --all --folder-id <folder-id> | jq -r '.[].id' |
 plaud-tools summary <recording-id>
 ```
 
-Prints the AI-generated summary if one exists. Returns `null` for recordings that haven't been processed yet.
+Prints the AI-generated summary if one exists (`null` for recordings that haven't been processed yet) and `extra_notes`, the recording's other summaries as `{note_id, name, content}`. Plaud's citation links read as `[2:05]` timestamps and the image and highlight card markup is dropped; `--raw` prints Plaud's markdown unchanged. `detail` takes the same `--raw` flag.
 
 ### `audio`
 
@@ -315,19 +315,57 @@ rendered by Plaud.
 plaud-tools folders
 ```
 
-Lists all folders with `id`, `name`, `color`, `icon`.
+Lists all folders with `id`, `name`, `color`, `icon` and `parent_id`. Folders can sit inside other folders. `parent_id` is `root` for a top-level folder, otherwise the id of the folder it is in.
 
-### `folder create` / `folder edit` / `folder delete`
+### `folder create` / `folder edit` / `folder move` / `folder delete`
 
 ```
-plaud-tools folder create "Client Calls"
+plaud-tools folder create "Client Meetings"
+plaud-tools folder create "Prospects" --parent-id <client-meetings-id>
 plaud-tools folder create "Client Calls" --color folder-color-green --icon e627
 plaud-tools folder edit <folder-id> --name "Renamed folder"
 plaud-tools folder edit <folder-id> --color folder-color-blue
+plaud-tools folder move <folder-id> <parent-id>
+plaud-tools folder move <folder-id> root
 plaud-tools folder delete <folder-id> --yes
 ```
 
-`create` requires a name; `--color` (a Plaud color name, e.g. `folder-color-green`) and `--icon` (glyph codepoint, e.g. `e627`) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `delete` is irreversible for the folder itself — recordings inside are kept and move to Plaud's main Recordings list — and requires `--yes`.
+`create` requires a name. `--color` (a Plaud color name, e.g. `folder-color-green`), `--icon` (glyph codepoint, e.g. `e627`) and `--parent-id` (create it inside that folder) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `move` puts a folder, with everything in it, inside another folder; `root` moves it to the top level. Plaud refuses a move into the folder itself or one of its subfolders, and a move next to a folder with the same name. `delete` can't be undone and requires `--yes`. What was inside moves up one level: a top-level folder's recordings go to Plaud's main Recordings list and its subfolders go to the top level.
+
+### `folder nest-colon-names`
+
+```
+plaud-tools folder nest-colon-names
+plaud-tools folder nest-colon-names --yes
+```
+
+Before Plaud had subfolders, a folder name like `Client Meetings:Prospects` stood in for one. This command turns each of those into a real subfolder: `Prospects` inside `Client Meetings`. The folder keeps its id, color, icon and recordings. A missing parent folder is created, and an existing one with that name is reused.
+
+Without `--yes` it changes nothing and prints the plan: `folders_to_convert`, the parent folders it would `create`, each `convert` from the old name to the new place, and any folders `skipped` with the reason. A folder is skipped when another folder already has its new place. Run it again with `--yes` to make the changes. It is safe to run again if it stops partway.
+
+### `vocab list` / `vocab add` / `vocab edit` / `vocab delete`
+
+```
+plaud-tools vocab list
+plaud-tools vocab add "Zentrix" --heard-as "Zen tricks"
+plaud-tools vocab edit <word-id> --heard-as ""
+plaud-tools vocab delete <word-id> [<word-id> ...] --yes
+```
+
+Manages Plaud's account-wide custom vocabulary, which steers transcription of future recordings. `--heard-as` is a misheard form Plaud corrects to the word. `--language` defaults to `en`. `edit` takes `--word`, `--heard-as` (empty string clears it) and `--language`. `delete` is irreversible and requires `--yes`. Plaud allows 2000 words.
+
+### `share create` / `share get` / `share update` / `share revoke`
+
+```
+plaud-tools share create <recording-id> --yes
+plaud-tools share create <recording-id> --days 30 --audio --summary --yes
+plaud-tools share get <recording-id>
+plaud-tools share update <recording-id> --days 14 --yes
+plaud-tools share update <recording-id> --never-expires --no-audio --yes
+plaud-tools share revoke <recording-id> --yes
+```
+
+Makes, reads, changes and ends a recording's public link. `create` defaults to a 7-day link with the transcript only; `--audio`, `--summary` and `--no-transcript` change what it includes (`--never-expires` skips the expiry; it and `--days` cannot be combined). `update` changes the expiry (`--days` counts from now, or `--never-expires`) and/or the included content, keeping anything you leave out. `create`, `update` and `revoke` require `--yes`, because each changes who can see the recording. `get` prints `"shared": false` when there is no link. Plaud does not rotate the URL: sharing the same recording again after a revoke brings back the same URL.
 
 ### `move`
 
@@ -378,7 +416,7 @@ text.
 plaud-tools correct-summary <recording-id> "<find>" "<replace>"
 ```
 
-Literal (case-sensitive) find-and-replace on a recording's AI summary text. Requires a summary to already exist. Pass an empty `<replace>` to delete the matched text.
+Literal (case-sensitive) find-and-replace on a recording's AI summary text. Requires a summary to already exist. Pass an empty `<replace>` to delete the matched text. It works on Plaud's raw markdown, so citation links survive, and `[2:05]` as printed by `summary` is not searchable text. Add `--note-id <id>` to edit an extra note.
 
 ### `set-summary`
 
@@ -387,18 +425,19 @@ plaud-tools set-summary <recording-id> --content "New summary markdown"
 plaud-tools set-summary <recording-id> --content-file summary.md
 ```
 
-Overwrites a recording's AI summary entirely with new markdown. `--content` and `--content-file` are mutually exclusive; exactly one is required.
+Overwrites a recording's AI summary entirely with new markdown. `--content` and `--content-file` are mutually exclusive; exactly one is required. Add `--note-id <id>` (from `summary`) to overwrite an extra note instead. Include any `plaud://` links you want to keep; the new text replaces everything.
 
 ### `trash` / `restore` / `delete`
 
 ```
 plaud-tools trash <recording-id>
 plaud-tools trash --list
+plaud-tools trash --list --since 2026-09-01 --limit 5
 plaud-tools restore <recording-id>
 plaud-tools delete <recording-id> --yes
 ```
 
-`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash; a bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
+`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash, 20 at a time like `list`; it takes `--limit`/`--all`, `--since`/`--until` and `--query` too. Trashed recordings have no folder, so there is no folder filter. A bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
 
 ### `trash-move` / `trash-restore`
 
@@ -422,6 +461,7 @@ plaud-tools upload file.mp3 --folder-id <folder-id>
 plaud-tools upload file.wav --detach
 plaud-tools upload file.wav --skip-summary
 plaud-tools upload file.wav --start-time 2025-03-15T14:30 --timezone-offset -7
+plaud-tools upload statement.pdf --attach-to <recording-id>
 ```
 
 Uploads a local audio file. Native formats: `.mp3`, `.opus`, `.ogg`, `.oga`. Other formats (`.m4a`, `.mp4`, `.wav`, `.aac`, `.flac`, `.wma`, `.amr`) are transcoded to MP3 via ffmpeg.
@@ -430,19 +470,62 @@ Uploads a local audio file. Native formats: `.mp3`, `.opus`, `.ogg`, `.oga`. Oth
 
 By default the command waits for transcription and summary to finish. `--detach` returns immediately. `--skip-summary` waits for transcript only.
 
+With `--attach-to <recording-id>` the file is attached to that existing recording as a document instead of uploaded as audio. It sits next to the recording in Plaud and shows in the web app and in `show`. Accepted: PDF, Word, Excel, PowerPoint (15 MB), TXT/MD/CSV (2 MB), PNG/JPG (20 MB). `--title` names the attachment; the audio-only options (`--folder-id`, `--start-time`, `--timezone-offset`, `--detach`, `--skip-summary`) are refused. A recording with no container folder of its own (its file sits straight in a folder) cannot take attachments.
+
 ### `transcribe`
 
 ```
 plaud-tools transcribe <recording-id>
-plaud-tools transcribe <recording-id> --template <template-type>
+plaud-tools transcribe <recording-id> --template <template-id>
 plaud-tools transcribe <recording-id> --language en --diarization --llm <llm-id>
+plaud-tools transcribe <recording-id> --verbosity low --instruction "List action items first"
 plaud-tools transcribe <recording-id> --wait transcript
 plaud-tools transcribe <recording-id> --wait summary
 ```
 
-Triggers transcription + summarization on an existing recording. `--language` is a language code (default: auto-detect); `--diarization`/`--no-diarization` enables/disables speaker diarization (default: Plaud's default); `--llm` selects the summarization model (default: auto). `--wait` controls how long to block before returning: `none` (default — accept and return immediately), `transcript`, or `summary`.
+Triggers transcription + summarization on an existing recording. `--language` is a language code (default: auto-detect); `--diarization`/`--no-diarization` enables/disables speaker diarization (default: Plaud's default); `--llm` selects the summarization model (default: auto, see `models`). `--wait` controls how long to block before returning: `none` (default — accept and return immediately), `transcript`, or `summary`.
 
-If the recording already has a transcript, Plaud keeps the existing transcript and summary and ignores `--template`/`--language`. The command then exits `0` with `"accepted": false, "already_processed": true`. To change the summary text, use `set-summary` or `correct-summary`.
+The summary options are shared with `resummarize` and `add-note`:
+
+- `--template` takes a template id from `templates`. `--template-kind` is that template's kind (`official`, `community`, `custom`, `team_community`). Official codes and 32-character community ids are recognized on their own, so the kind is only needed for custom and team templates.
+- `--instruction` is a custom instruction for the AI, 300 characters at most. Plaud applies it only to its default template, so it can't be combined with `--template`.
+- `--verbosity` is `low`, `medium` (default) or `high`.
+
+If the recording already has a transcript, Plaud keeps the existing transcript and summary and ignores these options. The command then exits `0` with `"accepted": false, "already_processed": true`. Use `resummarize` for a new summary, `add-note` for an extra note, or `set-summary`/`correct-summary` to edit the text.
+
+### `resummarize`
+
+```
+plaud-tools resummarize <recording-id> --template <template-id> --verbosity high --yes
+plaud-tools resummarize <recording-id> --instruction "Focus on decisions" --detach --yes
+```
+
+Replaces the recording's summary, hand edits included, with a newly generated one. Plaud drops the old summary as soon as the job starts and may also retitle the recording. Neither can be undone, so the command refuses to run without `--yes`. It waits up to 10 minutes for the new summary unless you pass `--detach`. Exit code `4` means the job is still running.
+
+### `add-note`
+
+```
+plaud-tools add-note <recording-id> --template <template-id> --name "Client Needs"
+plaud-tools add-note <recording-id> --instruction "List open questions"
+```
+
+Adds an extra note to the recording and keeps the summary. `--name` is the note's title and is required with `--template` (use the template's name from `templates`). Without a template the note uses Plaud's default template and is called "Intelligent Generation". The command prints the new `note_id` to stderr, then waits up to 10 minutes for the note. `--detach` returns without waiting.
+
+### `templates`
+
+```
+plaud-tools templates "client needs"
+```
+
+Searches Plaud's official, community and custom summary templates by name and prints each one's `template_id`, `template_kind` and `name`. Plaud returns at most 20 matches.
+
+### `models`
+
+```
+plaud-tools models
+```
+
+Lists the AI models `--llm` accepts.
 
 ### `status`
 
@@ -465,6 +548,15 @@ plaud-tools merge <id1> <id2> <id3> <id4> --title "Day-long session"
 ```
 
 Merges two or more recordings into a single new recording. The source recordings are not modified.
+
+### `trim`
+
+```
+plaud-tools trim <recording-id> 0:00-1:00
+plaud-tools trim <recording-id> 0:00-1:00 5:00-6:30 1:05:00-1:10:00
+```
+
+Cuts a recording down to the ranges you keep (`mm:ss-mm:ss` or `h:mm:ss`, up to 100) and saves the result as a new "<name> copy" recording. The original is not modified. The copy carries over the transcript for the kept ranges but has no summary yet; run `transcribe` on it for one. The command waits for the copy and prints its `new_recording_id`. If it times out (exit `4`), the id printed on stderr is the copy: check it with `show` instead of trimming again.
 
 ---
 

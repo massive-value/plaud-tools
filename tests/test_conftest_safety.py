@@ -56,6 +56,7 @@ def test_path_redirect_fixtures_are_registered_autouse():
         "_block_real_dpapi_shadow",
         "_block_real_session_path",
         "_fail_if_real_shadow_written",
+        "_block_real_events_file",
     ):
         def_marker = f"def {fixture_name}("
         assert def_marker in conftest_src, f"conftest.py no longer defines {fixture_name}"
@@ -68,3 +69,12 @@ def test_path_redirect_fixtures_are_registered_autouse():
             f"autouse, any test that forgets to request it explicitly is unprotected "
             f"against writing to the user's real session/DPAPI-shadow files."
         )
+
+
+def test_session_expired_events_never_reach_the_real_tray(tmp_path):
+    """_block_real_events_file must be active: an MCP session_expired event lands
+    in tmp_path, not in the events.jsonl the running tray polls (#228)."""
+    from plaud_tools.mcp_pt import mcp
+
+    mcp._write_event("session_expired", reason="token_expired")
+    assert (tmp_path / "events.jsonl").exists()

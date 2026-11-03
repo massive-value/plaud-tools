@@ -13,7 +13,8 @@ import pytest
 import plaud_tools.core.client as client_mod
 from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery, to_file_id
 from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
-from plaud_tools.core.models import AudioLink, region_for_api_domain
+from plaud_tools.core.folders import plan_colon_nesting
+from plaud_tools.core.models import AudioLink, Folder, region_for_api_domain
 from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
 from plaud_tools.core.transport import HttpResponse
 
@@ -296,6 +297,7 @@ def test_get_recording_reads_gzip_transcript_and_summary_from_content_urls(tmp_p
         {"speaker": "", "original_speaker": "Speaker 2", "content": "Hello"},
     ]
     routes = transcript_routes(segments, summary="# Summary")
+    routes[f"GET {V4}/folders/children"] = children({"on_w_1": []})
     routes["GET https://s3.fake/t.json"] = HttpResponse(
         200, gzip.compress(json.dumps(segments).encode()), {"content-encoding": "gzip"}
     )
@@ -312,6 +314,95 @@ def test_get_recording_reads_gzip_transcript_and_summary_from_content_urls(tmp_p
         "on_w_1",
         100,
     )
+
+
+NOTE_LINK = "[](plaud://source?type=summary&fileId=f_1&start_time=125370&end_time=131290)"
+
+
+def note_routes(summary="# Summary"):
+    """of_1 with one MD note and one HIGHLIGHTS note next to it in container on_w_1."""
+    routes = transcript_routes(SEGMENTS, summary=summary)
+    routes[f"GET {V4}/folders/children"] = children(
+        {
+            "on_w_1": [
+                {"file_id": "of_1", "file_type": "REC"},
+                {"file_id": "of_n1", "file_type": "MD", "name": "Meeting - Minutes"},
+                {"file_id": "of_n2", "file_type": "MD", "name": "Meeting - Highlights"},
+            ]
+        }
+    )
+    routes[f"GET {V4}/files/detail/of_n1"] = detail_payload(
+        obj("MD", "https://s3.fake/n1.md", object_id="on1", content_id="cn1", version_ms=700)
+    )
+    routes[f"GET {V4}/files/detail/of_n2"] = detail_payload(obj("HIGHLIGHTS", "https://s3.fake/n2.md"))
+    routes["GET https://s3.fake/n1.md"] = HttpResponse(200, f"Budget agreed {NOTE_LINK}".encode(), {})
+    routes["GET https://s3.fake/n2.md"] = HttpResponse(200, b"# Highlights", {})
+    routes[f"PATCH {V4}/files/update/content/of_n1"] = ok()
+    return routes
+
+
+def test_get_recording_with_summary_returns_the_containers_notes(tmp_path):
+    client, _ = routed(tmp_path, note_routes())
+    detail = client.get_recording("of_1", include_summary=True)
+    assert [(n.note_id, n.name, n.content) for n in detail.notes] == [
+        ("of_n1", "Meeting - Minutes", f"Budget agreed {NOTE_LINK}"),
+        ("of_n2", "Meeting - Highlights", "# Highlights"),
+    ]
+
+
+def test_a_recording_straight_in_a_folder_has_no_notes_or_attachments(tmp_path):
+    doc = tmp_path / "statement.pdf"
+    doc.write_bytes(b"abc")
+    routes = note_routes()
+    # No container of its own: the file sits right in the folder it is shown in,
+    # beside other recordings' files.
+    routes[f"GET {V4}/files/detail/of_1"] = ok(
+        {
+            "node": {
+                "node_id": "on_f_1",
+                "folder": {"folder_id": "on_fd_1"},
+                "display_folder": {"folder_id": "on_fd_1"},
+            },
+            "meta": {"file_id": "of_1"},
+            "objects": [],
+            "task": {"in_progress_tasks": []},
+        }
+    )
+    client, transport = routed(tmp_path, routes)
+    detail = client.get_recording("of_1", include_summary=True, include_attachments=True)
+    assert (detail.notes, detail.attachments) == ([], [])
+    with pytest.raises(ValueError, match="has no container folder"):
+        client.attach_document("of_1", doc)
+    assert not transport.hit(f"GET {V4}/folders/children")
+    assert not transport.hit(f"POST {V4}/upload/create")
+
+
+def test_a_note_that_fails_to_download_does_not_hide_the_others(tmp_path):
+    routes = note_routes()
+    routes["GET https://s3.fake/n2.md"] = HttpResponse(500, b"", {})
+    client, _ = routed(tmp_path, routes)
+    minutes, highlights = client.get_recording("of_1", include_summary=True).notes
+    assert minutes.content == f"Budget agreed {NOTE_LINK}" and minutes.error is None
+    assert highlights.content is None and "500" in (highlights.error or "")
+
+
+def test_correct_summary_on_a_note_edits_the_raw_note_and_keeps_its_links(tmp_path):
+    client, transport = routed(tmp_path, note_routes())
+    assert client.correct_summary("of_1", "Budget", "Plan", note_id="of_n1") == {"replacements": 1}
+    (body,) = transport.sent(f"PATCH {V4}/files/update/content/of_n1")
+    assert body == {
+        "object_id": "on1",
+        "content_id": "cn1",
+        "content": f"Plan agreed {NOTE_LINK}",
+        "origin_version": 700,
+    }
+
+
+def test_editing_a_note_of_another_recording_is_refused(tmp_path):
+    client, transport = routed(tmp_path, note_routes())
+    with pytest.raises(ValueError, match="is not a note of recording of_1"):
+        client.set_summary("of_1", "# x", note_id="of_other")
+    assert not transport.hit(f"PATCH {V4}/files/update/content/of_other")
 
 
 def test_get_recording_sends_a_bare_hex_id_as_a_4_0_file_id(tmp_path):
@@ -762,6 +853,70 @@ def test_update_folder_unknown_id_raises(tmp_path):
         client.update_folder("on_fd_x", name="X")
 
 
+def test_move_folder_sends_its_version_and_returns_the_new_one(tmp_path):
+    client, transport = routed(
+        tmp_path,
+        {
+            f"GET {V4}/folders/children": children(
+                {"root": [folder_node("on_fd_1", "Prospects", version_ms=100)]}
+            ),
+            # The move reply carries only the id and new version.
+            f"POST {V4}/nodes/move": ok({"items": [{"node_id": "on_fd_1", "version_ms": 120}]}),
+        },
+    )
+    moved = client.move_folder("on_fd_1", "on_fd_2")
+    assert (moved.name, moved.parent_id, moved.version_ms) == ("Prospects", "on_fd_2", 120)
+    assert transport.sent(f"POST {V4}/nodes/move") == [
+        {"target_node_id": "on_fd_2", "items": [{"node_id": "on_fd_1", "origin_version": 100}]}
+    ]
+    with pytest.raises(ValueError, match='pass "root"'):
+        client.move_folder("on_fd_1", "")
+
+
+def test_nest_colon_folders_creates_the_parent_then_moves_and_renames(tmp_path):
+    folders = [
+        Folder(
+            id="on_fd_1",
+            name="Clients:Prospects",
+            color="#111111",
+            icon="e627",
+            parent_id="root",
+            version_ms=100,
+        ),
+        Folder(
+            id="on_fd_2",
+            name="Clients:Active",
+            color="#222222",
+            icon="e627",
+            parent_id="root",
+            version_ms=200,
+        ),
+    ]
+    client, transport = routed(
+        tmp_path,
+        {
+            f"POST {V4}/nodes/folder": ok({"items": [folder_node("on_fd_9", "Clients")]}),
+            f"POST {V4}/nodes/move": [
+                ok({"items": [{"node_id": "on_fd_1", "version_ms": 300}]}),
+                ok({"items": [{"node_id": "on_fd_2", "version_ms": 400}]}),
+            ],
+            f"PATCH {V4}/nodes/rename/on_fd_1": ok({"items": [folder_node("on_fd_1", "Prospects")]}),
+            f"PATCH {V4}/nodes/rename/on_fd_2": ok({"items": [folder_node("on_fd_2", "Active")]}),
+        },
+    )
+    client.nest_colon_folders(plan_colon_nesting(folders))
+    assert [b["name"] for b in transport.sent(f"POST {V4}/nodes/folder")] == ["Clients"]
+    assert transport.sent(f"POST {V4}/nodes/move") == [
+        {"target_node_id": "on_fd_9", "items": [{"node_id": "on_fd_1", "origin_version": 100}]},
+        {"target_node_id": "on_fd_9", "items": [{"node_id": "on_fd_2", "origin_version": 200}]},
+    ]
+    # Renamed after the move, with the version the move returned; color and icon kept.
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_fd_1") == [
+        {"name": "Prospects", "color": "#111111", "icon": "e627", "origin_version": 300}
+    ]
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_fd_2")[0]["name"] == "Active"
+
+
 def test_delete_folder_moves_children_to_recordings_then_trashes_and_deletes(tmp_path):
     routes = {
         f"GET {V4}/folders/children": children(
@@ -776,9 +931,11 @@ def test_delete_folder_moves_children_to_recordings_then_trashes_and_deletes(tmp
                 ],
             }
         ),
-        # The move bumps the folder's own version, which a fresh listing may not show yet.
+        # The move bumps the folder's own version to the move's timestamp, which a
+        # fresh listing may not show yet.  Live replies also name the folder under
+        # parent_items; the moved items alone must be enough.
         f"POST {V4}/nodes/move": ok(
-            {"items": [{"node_id": "on_w_a", "version_ms": 900}, {"node_id": "on_fd_1", "version_ms": 950}]}
+            {"items": [{"node_id": "on_w_a", "version_ms": 950}, {"node_id": "on_w_b", "version_ms": 950}]}
         ),
         f"DELETE {V4}/nodes/trash": ok({"items": [{"node_id": "on_fd_1", "version_ms": 1000}]}),
         f"DELETE {V4}/nodes/delete": ok({"items": []}),
@@ -834,6 +991,34 @@ def test_delete_folder_moves_subfolders_up_not_into_recordings(tmp_path):
     assert [m["target_node_id"] for m in transport.sent(f"POST {V4}/nodes/move")] == ["on_fd_1"]
 
 
+def test_delete_parent_right_after_its_child_sends_the_version_the_child_delete_reported(tmp_path):
+    # Live: trashing a child bumps its parent's version (reply parent_items),
+    # but the root listing still shows the old one for about a second.
+    parent_bump = {"node_id": "on_fd_p", "version_ms": 200}
+    routes = {
+        f"GET {V4}/folders/children": children(
+            {
+                "root": [folder_node("on_fd_p", "Parent", version_ms=100)],
+                "on_fd_p": [folder_node("on_fd_c", "Child", version_ms=110, parent_id="on_fd_p")],
+            }
+        ),
+        f"POST {V4}/nodes/move": ok({"items": []}),
+        f"DELETE {V4}/nodes/trash": [
+            ok({"items": [{"node_id": "on_fd_c", "version_ms": 200}], "parent_items": [parent_bump]}),
+            ok({"items": [{"node_id": "on_fd_p", "version_ms": 300}]}),
+        ],
+        f"DELETE {V4}/nodes/delete": ok({"items": []}),
+    }
+    client, _ = routed(tmp_path, routes)
+    client.delete_folder("on_fd_c")
+    # A new client, as each MCP call gets, over the same stale listing.
+    client, transport = routed(tmp_path, routes)
+    client.delete_folder("on_fd_p")
+    assert transport.sent(f"DELETE {V4}/nodes/trash") == [
+        {"items": [{"node_id": "on_fd_p", "origin_version": 200}]}
+    ]
+
+
 def test_delete_empty_folder_skips_the_move(tmp_path):
     routes = {
         f"GET {V4}/folders/children": children({"root": [folder_node("on_fd_1", "Empty", version_ms=100)]}),
@@ -870,12 +1055,135 @@ def test_transcribe_and_summarize_starts_whatever_is_missing(tmp_path):
         f"POST {V4}/tasks/summary": ok(),
     }
     client, transport = routed(tmp_path, routes)
-    assert client.transcribe_and_summarize("of_1", template_type="MEETING") is True
-    assert client.transcribe_and_summarize("of_1", template_type="790a48f29350244d1baae3837c4035de") is True
-    # Plaud rejects a template id sent without its kind (-400).
-    official, community = transport.sent(f"POST {V4}/tasks/summary")
+    assert client.transcribe_and_summarize("of_1", template_id="MEETING", verbosity="high") is True
+    assert client.transcribe_and_summarize("of_1", template_id="790a48f29350244d1baae3837c4035de") is True
+    assert client.transcribe_and_summarize("of_1", template_id="tpl_9", template_kind="custom") is True
+    # Plaud rejects a template id sent without its kind (-400): it is
+    # inferred for official codes and community hex ids, or given.
+    official, community, custom = transport.sent(f"POST {V4}/tasks/summary")
     assert (official["template_id"], official["template_type"]) == ("MEETING", "official")
+    assert official["summary_verbosity"] == "high"
     assert community["template_type"] == "community"
+    assert (custom["template_id"], custom["template_type"]) == ("tpl_9", "custom")
+
+
+def test_summary_options_refuse_what_plaud_would_reject(tmp_path):
+    client, transport = routed(tmp_path, {})
+    with pytest.raises(ValueError, match="only to its default template"):
+        client.generate_note("of_1", template_id="MEETING", note_name="Minutes", instruction="Be brief")
+    with pytest.raises(ValueError, match="300"):
+        client.resummarize("of_1", instruction="x" * 301)
+    with pytest.raises(ValueError, match="template_kind must be one of"):
+        client.transcribe_and_summarize("of_1", template_id="MEETING", template_kind="shared")
+    with pytest.raises(ValueError, match="verbosity"):
+        client.resummarize("of_1", verbosity="huge")
+    assert transport.calls == []  # refused before any request
+
+
+def test_resummarize_replaces_an_existing_summary_with_the_new_options(tmp_path):
+    summarized = detail_payload(
+        obj("TRANSCRIPT", "https://s3.fake/t.json"),
+        obj("POLISHED_TRANSCRIPT", "https://s3.fake/p.json", task_status=1),
+        obj("SUMMARY", "https://s3.fake/s.md"),
+    )
+    routes = {
+        f"GET {V4}/files/detail/of_1": summarized,
+        f"POST {V4}/tasks/summary-change-retry": ok({"task_id": "t_9"}),
+    }
+    client, transport = routed(tmp_path, routes)
+    assert (
+        client.resummarize("of_1", llm="claude-opus-5", verbosity="low", instruction="Flag risks.") == "t_9"
+    )
+    (body,) = transport.sent(f"POST {V4}/tasks/summary-change-retry")
+    assert (body["summary_ai_model"], body["summary_verbosity"], body["custom_instruction"]) == (
+        "claude-opus-5",
+        "low",
+        "Flag risks.",
+    )
+    assert body["use_polished_transcript"] is True
+    assert "template_id" not in body
+
+
+def test_resummarize_needs_a_transcript(tmp_path):
+    client, transport = routed(tmp_path, {f"GET {V4}/files/detail/of_1": detail_payload()})
+    with pytest.raises(ValueError, match="no transcript yet"):
+        client.resummarize("of_1")
+    assert len(transport.calls) == 1
+
+
+def test_generate_note_names_the_note_and_returns_its_job(tmp_path):
+    routes = {
+        f"GET {V4}/files/detail/of_1": detail_payload(obj("TRANSCRIPT", "https://s3.fake/t.json")),
+        f"POST {V4}/tasks/template-note": ok({"task_id": "t_n", "note_file_id": "f_note"}),
+    }
+    client, transport = routed(tmp_path, routes)
+    job = client.generate_note("of_1", template_id="CUSTOMER-CONSULTATION", note_name="Client Needs")
+    assert (job.task_id, job.note_id, job.name) == ("t_n", "f_note", "Client Needs")
+    # The default template is sent by name only.
+    assert client.generate_note("of_1", instruction="List action items.").name == "Intelligent Generation"
+    with_template, default = transport.sent(f"POST {V4}/tasks/template-note")
+    assert (with_template["template_name"], with_template["template_type"]) == ("Client Needs", "official")
+    assert "template_id" not in default and default["custom_instruction"] == "List action items."
+    with pytest.raises(ValueError, match="note_name is required"):
+        client.generate_note("of_1", template_id="CUSTOMER-CONSULTATION")
+
+
+def test_wait_for_task_returns_when_done_and_raises_when_failed(tmp_path):
+    status = f"GET {V4}/task-status/t_1"
+    client, _ = routed(tmp_path, {status: [ok({"task_status": 0}), ok({"task_status": 1})]})
+    client.wait_for_task("t_1", what="note", timeout_s=60)
+
+    client, _ = routed(tmp_path, {status: ok({"task_status": -1800002})})
+    with pytest.raises(PlaudApiError, match="note job failed") as info:
+        client.wait_for_task("t_1", what="note", timeout_s=60)
+    assert not info.value.is_soft_deadline_timeout()
+
+    client, _ = routed(tmp_path, {status: ok({"task_status": 0})})
+    with pytest.raises(PlaudWaitTimeoutError) as timeout:
+        client.wait_for_task("t_1", what="note", timeout_s=0)
+    assert timeout.value.task_id == "t_1"
+
+
+def test_search_templates_reads_each_kind_the_way_the_web_app_does(tmp_path):
+    hits = [
+        {
+            "type": "official",
+            "template": {
+                "type": "CUSTOMER-CONSULTATION",
+                "template_id": "00000035c5824c8f87c2e87133fcd989",
+                "name": "Client Needs",
+                "description_short": "From needs to actions.",
+                "category": "CONSULTING",
+            },
+        },
+        {
+            "type": "community",
+            "template": {
+                "id": "9276c8f76532d5ed065c248666a836b4",
+                "latest_published_version": {
+                    "template_id": "9276c8f76532d5ed065c248666a836b4",
+                    "title": "Discovery Notes",
+                    "category": "Financial",
+                },
+            },
+        },
+        {"type": "custom", "template": {"id": "tpl_9", "name": "My Template"}},
+        {"type": "something-new", "template": {}},
+    ]
+    routes = {
+        "POST /summary/community/search": ok(hits),
+        "GET /summary/v4/models/config": ok([{"model_name": "auto", "name": "Auto", "des": "Picks one"}]),
+    }
+    client, transport = routed(tmp_path, routes)
+    found = [(t.id, t.kind, t.name) for t in client.search_templates("client needs")]
+    # Official templates go by their code, not their hex template_id.
+    assert found == [
+        ("CUSTOMER-CONSULTATION", "official", "Client Needs"),
+        ("9276c8f76532d5ed065c248666a836b4", "community", "Discovery Notes"),
+        ("tpl_9", "custom", "My Template"),
+    ]
+    assert transport.sent("POST /summary/community/search")[0]["query"] == "client needs"
+    assert [(m.model, m.name) for m in client.list_summary_models()] == [("auto", "Auto")]
 
 
 def test_transcribe_and_summarize_starts_nothing_when_done_or_running(tmp_path):
@@ -987,6 +1295,114 @@ def test_merge_recordings_rejects_bad_input(tmp_path):
         client.merge_recordings(["of_1"], "Merged")
     with pytest.raises(ValueError, match="filename cannot be empty"):
         client.merge_recordings(["of_1", "of_2"], " ")
+
+
+def trim_routes(copy_detail):
+    return {
+        f"GET {V4}/files/detail/of_1": detail_payload(duration=60_000),
+        f"POST {V4}/audio/trim": ok({"task_id": "t1", "target_file_id": "f_copy"}),
+        f"GET {V4}/files/detail/f_copy": copy_detail,
+    }
+
+
+def test_trim_recording_posts_keep_ranges_and_waits_for_the_copy(tmp_path):
+    client, transport = routed(tmp_path, trim_routes(detail_payload(file_id="f_copy", duration=25_000)))
+    copy = client.trim_recording("of_1", [(0, 10_000), (30_000, 45_000)], poll_interval_s=0)
+    assert (copy.id, copy.duration) == ("f_copy", 25_000)
+    (body,) = transport.sent(f"POST {V4}/audio/trim")
+    assert body["file_id"] == "of_1"
+    assert body["segments"] == [{"start_ms": 0, "end_ms": 10_000}, {"start_ms": 30_000, "end_ms": 45_000}]
+
+
+def test_trim_recording_timeout_carries_the_copys_id(tmp_path):
+    not_found = {"status": -1800311, "msg": "file not found"}  # the copy does not exist yet
+    client, _ = routed(tmp_path, trim_routes(not_found))
+    with pytest.raises(PlaudWaitTimeoutError, match="trim timed out") as info:
+        client.trim_recording("of_1", [(0, 1000)], timeout_s=0)
+    assert info.value.task_id == "f_copy"
+
+
+def test_trim_recording_rejects_bad_ranges(tmp_path):
+    client, transport = routed(tmp_path, trim_routes(detail_payload()))
+    for keep in ([], [(5000, 5000)], [(-1, 1000)], [(0, 61_000)]):
+        with pytest.raises(ValueError, match="trim"):
+            client.trim_recording("of_1", keep)
+    assert not transport.hit(f"POST {V4}/audio/trim")
+
+
+def attach_routes(**overrides):
+    return (
+        upload_routes(
+            **{
+                f"GET {V4}/files/detail/of_1": detail_payload(),
+                f"POST {V4}/upload/confirm-file-web": ok({"file_id": "f_doc", "node_id": "n_doc"}),
+            }
+        )
+        | overrides
+    )
+
+
+def test_attach_document_uploads_then_confirms_into_the_recordings_container(tmp_path):
+    doc = tmp_path / "statement.pdf"
+    doc.write_bytes(b"abcdefghij")
+    client, transport = routed(tmp_path, attach_routes())
+    attachment = client.attach_document("of_1", doc)
+    assert (attachment.id, attachment.filename, attachment.file_type) == ("f_doc", "statement.pdf", "PDF")
+    assert transport.sent(f"POST {V4}/upload/create")[0]["file_type"] == "application/pdf"
+    confirm = transport.sent(f"POST {V4}/upload/confirm-file-web")[0]
+    assert (confirm["file_name"], confirm["target_node_id"], confirm["upload_id"]) == (
+        "statement.pdf",
+        "on_w_1",
+        "u1",
+    )
+    assert not transport.hit(f"POST {V4}/upload/confirm-audio-web")
+
+
+def test_attach_document_rejects_unsupported_and_oversized_files_before_uploading(tmp_path):
+    client, transport = routed(tmp_path, attach_routes())
+    exe = tmp_path / "setup.exe"
+    exe.write_bytes(b"x")
+    with pytest.raises(ValueError, match="cannot attach a .exe"):
+        client.attach_document("of_1", exe)
+    big_text = tmp_path / "big.txt"
+    big_text.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+    with pytest.raises(ValueError, match="text attachments are limited to 2 MB"):
+        client.attach_document("of_1", big_text)
+    assert not transport.hit(f"POST {V4}/upload/create")
+
+
+# An attachment can sort ahead of the recording in its container.
+CONTAINER_FILES = [
+    {"file_id": "f_doc", "name": "statement.pdf", "file_type": "PDF"},
+    {"file_id": "f_note", "name": "Notes", "file_type": "MD"},
+    {"file_id": "of_1", "name": "Meeting", "file_type": "REC"},
+]
+
+
+def test_get_recording_reads_notes_and_attachments_from_one_container_listing(tmp_path):
+    routes = {
+        f"GET {V4}/files/detail/of_1": detail_payload(),
+        f"GET {V4}/files/detail/f_note": detail_payload(obj("MD", "https://s3.fake/note.md")),
+        "GET https://s3.fake/note.md": HttpResponse(200, b"# Notes", {}),
+        f"GET {V4}/folders/children": children({"on_w_1": CONTAINER_FILES}),
+    }
+    client, transport = routed(tmp_path, routes)
+    detail = client.get_recording("of_1", include_summary=True, include_attachments=True)
+    assert [(a.id, a.filename, a.file_type) for a in detail.attachments] == [
+        ("f_doc", "statement.pdf", "PDF")
+    ]
+    assert [n.content for n in detail.notes] == ["# Notes"]
+    assert len([c for c in transport.calls if "/folders/children" in c["url"]]) == 1
+
+
+def test_attachments_do_not_hide_the_recording_from_trash_listing(tmp_path):
+    container = {"node_id": "n_c", "type": 1, "name": "Meeting"}
+    routes = {
+        f"GET {V4}/folders/content": ok({"items": [container]}),
+        f"GET {V4}/folders/children": children({"n_c": CONTAINER_FILES}),
+    }
+    client, _ = routed(tmp_path, routes)
+    assert [rec.id for rec in client.list_trash()] == ["of_1"]
 
 
 def test_wait_for_transcription_returns_once_done_and_times_out_when_not(tmp_path):
@@ -1406,3 +1822,93 @@ def test_session_cache_expired_session_invalidates_cache(tmp_path):
 
     # Cache must be None — a subsequent require() after re-auth would reload.
     assert manager._cache is None
+
+
+# ---------------------------------------------------------------------------
+# Custom vocabulary and public share links
+# ---------------------------------------------------------------------------
+
+
+def hotword(word_id="hw_1", word="Zentrix", heard_as="", language="en"):
+    return {
+        "id": word_id,
+        "word": word,
+        "replaced_word": heard_as,
+        "language": language,
+        "correction_count": 2,
+    }
+
+
+def test_vocabulary_add_sends_language_and_heard_as(tmp_path):
+    reply = ok({"items": [{"item": hotword(heard_as="Zen tricks"), "duplicated": False}]})
+    client, transport = routed(tmp_path, {f"POST {V4}/hotwords/add": reply})
+    entry = client.add_vocabulary("Zentrix", heard_as="Zen tricks")
+    assert (entry.id, entry.word, entry.heard_as) == ("hw_1", "Zentrix", "Zen tricks")
+    assert transport.sent(f"POST {V4}/hotwords/add") == [
+        {"items": [{"word": "Zentrix", "language": "en", "replaced_word": "Zen tricks"}]}
+    ]
+
+
+def test_vocabulary_update_sends_the_whole_entry_and_can_clear_heard_as(tmp_path):
+    routes = {
+        f"GET {V4}/hotwords/list": ok({"items": [hotword(heard_as="Zen tricks")]}),
+        f"PATCH {V4}/hotwords/update/hw_1": ok({"item": hotword()}),
+    }
+    client, transport = routed(tmp_path, routes)
+    entry = client.update_vocabulary("hw_1", heard_as="")
+    assert entry.heard_as == ""
+    assert transport.sent(f"PATCH {V4}/hotwords/update/hw_1") == [
+        {"word": "Zentrix", "language": "en", "replaced_word": ""}
+    ]
+    with pytest.raises(ValueError, match="no vocabulary entry"):
+        client.update_vocabulary("hw_missing", word="X")
+
+
+def test_vocabulary_delete_returns_the_deleted_count(tmp_path):
+    client, transport = routed(tmp_path, {f"POST {V4}/hotwords/delete": ok({"deleted": 2})})
+    assert client.delete_vocabulary(["hw_1", "hw_2"]) == 2
+    assert transport.sent(f"POST {V4}/hotwords/delete") == [{"ids": ["hw_1", "hw_2"]}]
+
+
+SHARE_DATA = {
+    "share_url": "https://share.example/s/abc",
+    "share_key": "abc",
+    "expire_at": "2026-12-01T00:00:00Z",
+    "content_config": {"transcript": True, "version": "4"},
+}
+
+
+def test_create_share_link_sends_expiry_and_content_config(tmp_path):
+    client, transport = routed(tmp_path, {"POST /share/public/create": ok(SHARE_DATA)})
+    link = client.create_share_link("ab" * 16, expire_days=7)
+    body = transport.sent("POST /share/public/create")[0]
+    assert body["object_id"] == "of_" + "ab" * 16 and body["object_type"] == "file"
+    assert body["content_config"] == {"audio": False, "transcript": True, "summary": False, "version": "4"}
+    assert body["expire_at"].endswith("Z")
+    assert (link.url, link.transcript, link.audio) == ("https://share.example/s/abc", True, False)
+    client.create_share_link("ab" * 16, expire_days=None)
+    assert "expire_at" not in transport.sent("POST /share/public/create")[1]
+
+
+def test_get_share_link_is_none_when_plaud_has_no_link(tmp_path):
+    client, _ = routed(
+        tmp_path, {"POST /share/public/get": {"status": 40400, "msg": "Public share not found"}}
+    )
+    assert client.get_share_link("f_1") is None
+
+
+def test_update_share_link_merges_content_flags_and_clears_expiry_with_empty_string(tmp_path):
+    routes = {"POST /share/public/get": ok(SHARE_DATA), "POST /share/public/update": ok(SHARE_DATA)}
+    client, transport = routed(tmp_path, routes)
+    client.update_share_link("f_1", never_expires=True, audio=True)
+    body = transport.sent("POST /share/public/update")[0]
+    assert body["expire_at"] == ""
+    assert body["content_config"] == {"audio": True, "transcript": True, "summary": False, "version": "4"}
+    with pytest.raises(ValueError, match="at least one of audio, transcript, summary"):
+        client.update_share_link("f_1", transcript=False)
+
+
+def test_revoke_share_link_posts_the_object_ref(tmp_path):
+    client, transport = routed(tmp_path, {"POST /share/public/delete": ok({"object_id": "f_1"})})
+    client.revoke_share_link("f_1")
+    assert transport.sent("POST /share/public/delete") == [{"object_id": "f_1", "object_type": "file"}]

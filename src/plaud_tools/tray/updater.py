@@ -298,6 +298,36 @@ def verify_zip_checksum(zip_path: Path, sums_url: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Update sentinels (written by update.ps1 / the dialog, read by the next tray)
+# ---------------------------------------------------------------------------
+
+
+def read_update_failure(path: Path) -> tuple[str, str]:
+    """Consume the failure sentinel; return ``(reason, log_path)``.
+
+    Read as ``utf-8-sig`` because update.ps1 writes it through Windows
+    PowerShell 5.1, which prepends a BOM that ``json.loads`` rejects (v0.4.1).
+    The file is deleted once parsed.  Raises on unparseable content.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    path.unlink(missing_ok=True)
+    return payload.get("reason", "Update failed for an unknown reason."), payload.get("log", "")
+
+
+def read_update_success(path: Path, running_version: str) -> tuple[str, bool]:
+    """Consume the success sentinel; return ``(updated_to, version_matches)``.
+
+    ``version_matches`` is False when the running version is not the one the
+    updater claims to have installed, so a half-applied update never announces
+    success (v0.3.4).  Read as ``utf-8-sig`` because ``str.strip()`` leaves the
+    BOM PowerShell 5.1 prepends, which would make every comparison fail (v0.4.1).
+    """
+    updated_to = path.read_text(encoding="utf-8-sig").strip()
+    path.unlink(missing_ok=True)
+    return updated_to, updated_to == running_version
+
+
+# ---------------------------------------------------------------------------
 # Update dialog
 # ---------------------------------------------------------------------------
 

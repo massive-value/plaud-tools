@@ -2,7 +2,7 @@
 
 Coverage:
 - parse_isoish: bare date, full datetime, Z-suffix, end_of_day flag, invalid input
-- filter_recordings: date range, query/text match, folder_id, unfiled=True,
+- filter_recordings: date range, query/text match, folder_ids, unfiled=True,
   combined filters, sort order, empty list
 - summarize_recording: shape and field values for a representative Recording
 - content_snippet: window placement, word-boundary cuts, ellipsis markers
@@ -15,7 +15,13 @@ from datetime import UTC, datetime
 import pytest
 
 from plaud_tools.core.models import Recording
-from plaud_tools.core.query import content_snippet, filter_recordings, parse_isoish, summarize_recording
+from plaud_tools.core.query import (
+    content_snippet,
+    filter_recordings,
+    parse_isoish,
+    parse_keep_ranges,
+    summarize_recording,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -117,20 +123,20 @@ class TestFilterRecordings:
 
     def test_no_filters_returns_all_sorted_descending(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None)
         ids = [item.id for item in result]
         # Descending by start_time: d(4000), b(3000), c(2000), a(1000)
         assert ids == ["d", "b", "c", "a"]
 
     def test_empty_input_returns_empty(self):
-        result = filter_recordings([], since_ms=None, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings([], since_ms=None, until_ms=None, query=None)
         assert result == []
 
     # --- date range ---
 
     def test_since_ms_excludes_earlier_items(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=2_000, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=2_000, until_ms=None, query=None)
         ids = {item.id for item in result}
         assert "a" not in ids  # start_time=1000 < 2000
         assert "b" in ids
@@ -139,7 +145,7 @@ class TestFilterRecordings:
 
     def test_until_ms_excludes_later_items(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=2_000, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=2_000, query=None)
         ids = {item.id for item in result}
         assert "a" in ids
         assert "c" in ids
@@ -148,19 +154,19 @@ class TestFilterRecordings:
 
     def test_since_ms_is_inclusive(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=1_000, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=1_000, until_ms=None, query=None)
         ids = {item.id for item in result}
         assert "a" in ids  # start_time == since_ms (boundary inclusive)
 
     def test_until_ms_is_inclusive(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=4_000, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=4_000, query=None)
         ids = {item.id for item in result}
         assert "d" in ids  # start_time == until_ms (boundary inclusive)
 
     def test_since_and_until_together(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=2_000, until_ms=3_000, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=2_000, until_ms=3_000, query=None)
         ids = {item.id for item in result}
         assert ids == {"b", "c"}
 
@@ -168,42 +174,42 @@ class TestFilterRecordings:
 
     def test_query_matches_filename_case_insensitively(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query="MEETING", folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query="MEETING")
         ids = {item.id for item in result}
         assert ids == {"a", "d"}
 
     def test_query_no_match_returns_empty(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query="zzznomatch", folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query="zzznomatch")
         assert result == []
 
     def test_query_none_passes_all(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None)
         assert len(result) == len(items)
 
     def test_query_empty_string_passes_all(self):
         # Empty string is falsy — behaves as no filter.
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query="", folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query="")
         assert len(result) == len(items)
 
-    # --- folder_id filter ---
+    # --- folder_ids filter ---
 
     def test_folder_id_filters_to_matching_folder(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id="folder1")
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_ids={"folder1"})
         assert [item.id for item in result] == ["a"]
 
     def test_folder_id_none_does_not_filter_by_folder(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None)
         assert len(result) == len(items)
 
     def test_folder_id_nonexistent_returns_empty(self):
         items = self._make_items()
         result = filter_recordings(
-            items, since_ms=None, until_ms=None, query=None, folder_id="does-not-exist"
+            items, since_ms=None, until_ms=None, query=None, folder_ids={"does-not-exist"}
         )
         assert result == []
 
@@ -211,31 +217,20 @@ class TestFilterRecordings:
 
     def test_unfiled_true_returns_items_without_any_folder(self):
         items = self._make_items()
-        result = filter_recordings(
-            items, since_ms=None, until_ms=None, query=None, folder_id=None, unfiled=True
-        )
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, unfiled=True)
         ids = {item.id for item in result}
         assert ids == {"b", "d"}  # a=folder1, c=folder2; b and d have []
 
-    def test_bare_folder_id_empty_string_no_longer_special_cased(self):
-        """folder_id="" without unfiled=True is just a (non-matching) folder id.
-
-        Before Wave 5's §7.8 consolidation, filter_recordings treated
-        folder_id="" as an alternate "unfiled" sentinel — a second convention
-        alongside unfiled=True. mcp.py was the only caller that ever passed
-        folder_id="" and now translates it to unfiled=True itself before
-        calling here (see mcp.py's browse_recordings), so filter_recordings
-        only needs the one convention.
-        """
+    def test_folder_ids_keeps_every_listed_folder(self):
         items = self._make_items()
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id="")
-        assert result == []
+        result = filter_recordings(items, folder_ids={"folder1", "folder2"})
+        assert [item.id for item in result] == ["c", "a"]
 
     def test_unfiled_true_takes_priority_over_nonblank_folder_id(self):
         # When unfiled=True, folder_id (non-empty) should be ignored — unfiled wins.
         items = self._make_items()
         result = filter_recordings(
-            items, since_ms=None, until_ms=None, query=None, folder_id="folder1", unfiled=True
+            items, since_ms=None, until_ms=None, query=None, folder_ids={"folder1"}, unfiled=True
         )
         # unfiled=True keeps only recordings outside any user folder.
         ids = {item.id for item in result}
@@ -244,9 +239,7 @@ class TestFilterRecordings:
 
     def test_unfiled_recording_with_no_folder_included(self):
         rec = make_recording("x", "Bare")
-        result = filter_recordings(
-            [rec], since_ms=None, until_ms=None, query=None, folder_id=None, unfiled=True
-        )
+        result = filter_recordings([rec], since_ms=None, until_ms=None, query=None, unfiled=True)
         assert [item.id for item in result] == ["x"]
 
     # --- sort order ---
@@ -257,7 +250,7 @@ class TestFilterRecordings:
             make_recording("third", start_time=300),
             make_recording("second", start_time=200),
         ]
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None)
         assert [item.id for item in result] == ["third", "second", "first"]
 
     def test_sort_is_stable_for_equal_start_times(self):
@@ -265,7 +258,7 @@ class TestFilterRecordings:
             make_recording("x", start_time=500),
             make_recording("y", start_time=500),
         ]
-        result = filter_recordings(items, since_ms=None, until_ms=None, query=None, folder_id=None)
+        result = filter_recordings(items, since_ms=None, until_ms=None, query=None)
         assert len(result) == 2
         assert {item.id for item in result} == {"x", "y"}
 
@@ -275,7 +268,7 @@ class TestFilterRecordings:
         items = self._make_items()
         # Only "Alpha Meeting" (start=1000) and "Delta Meeting" (start=4000) match "meeting".
         # Restrict to start_time in [1000, 2000] — only Alpha survives.
-        result = filter_recordings(items, since_ms=1_000, until_ms=2_000, query="meeting", folder_id=None)
+        result = filter_recordings(items, since_ms=1_000, until_ms=2_000, query="meeting")
         assert [item.id for item in result] == ["a"]
 
     def test_folder_id_and_query_combined(self):
@@ -284,7 +277,7 @@ class TestFilterRecordings:
             make_recording("m2", "Project Beta", start_time=20, folder_id="proj"),
             make_recording("m3", "Random", start_time=30, folder_id="proj"),
         ]
-        result = filter_recordings(items, since_ms=None, until_ms=None, query="Project", folder_id="proj")
+        result = filter_recordings(items, since_ms=None, until_ms=None, query="Project", folder_ids={"proj"})
         ids = {item.id for item in result}
         assert ids == {"m1", "m2"}
         assert "m3" not in ids
@@ -384,3 +377,18 @@ class TestContentSnippet:
 
     def test_no_hit_starts_at_the_top_and_collapses_whitespace(self):
         assert content_snippet("line one\n\nline   two", "absent", []) == "line one line two"
+
+
+class TestParseKeepRanges:
+    def test_reads_seconds_minutes_and_hours(self):
+        assert parse_keep_ranges(["0:00-1:00", " 5:00 - 6:30.5", "1:05:30-1:10:00", "90-120"]) == [
+            (0, 60_000),
+            (300_000, 390_500),
+            (3_930_000, 4_200_000),
+            (90_000, 120_000),
+        ]
+
+    @pytest.mark.parametrize("spec", ["1:00", "a:00-1:00", "0:00-", "1:2:3:4-5", "-1:00-2:00"])
+    def test_rejects_malformed_ranges_naming_the_range(self, spec):
+        with pytest.raises(ValueError, match="range|start-end"):
+            parse_keep_ranges([spec])

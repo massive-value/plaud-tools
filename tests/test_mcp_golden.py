@@ -63,7 +63,24 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-_TOKEN_BUDGET_WORDS = 730
+#
+# v0.14.0: 730 -> 1045.  Five feature sets share this bump:
+#   - mutate_vocabulary (new tool) and the share_* actions of mutate_recording
+#     (vocabulary management and public share links)
+#   - mutate_recording(action="trim") with its `keep` ranges,
+#     upload_recording(attach_to=...) and get_recording's `attachments` include
+#   - #253/#256: get_recording's extra_notes and raw_markdown, and
+#     edit_summary's note_id plus a warning that edits act on raw markdown;
+#     without it an agent searches rendered [2:05] text
+#   - #260: mutate_folder's move action and parent_id, and list_folders saying
+#     what parent_id holds, so an agent can build and read nested folders
+#   - #254: the search_templates tool and process_recording's
+#     resummarize/add_note actions.  The template options must say where
+#     their values come from (search_templates) and which action each belongs
+#     to, or an agent guesses template ids and model names
+# Each is a new capability kept to one short line per parameter.  Merged total
+# 1027 words; budget set just above it.
+_TOKEN_BUDGET_WORDS = 1045
 
 
 def _serialize_tools() -> str:
