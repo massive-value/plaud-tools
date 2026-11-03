@@ -63,7 +63,9 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-_TOKEN_BUDGET_WORDS = 730
+# v0.14.0: +~90 words for the mutate_vocabulary tool and the share_* actions
+# of mutate_recording (vocabulary management and public share links).
+_TOKEN_BUDGET_WORDS = 830
 
 
 def _serialize_tools() -> str:

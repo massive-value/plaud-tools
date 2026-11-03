@@ -15,6 +15,8 @@ from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
     SEARCH_RESULT_CAP,
+    SHARE_DEFAULT_DAYS,
+    VOCAB_LANGUAGE,
     PlaudClient,
     PlaudRecordingQuery,
     describe_unstarted_process,
@@ -23,14 +25,17 @@ from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTime
 from ..core.export import EXPORT_FORMATS, TranscriptExportError, export_transcript
 from ..core.query import (
     BROWSE_PAGE_SIZE,
+    SHARE_REVOKE_NOTE,
     collect_filtered_paged,
     detail_summary_dict,
     folder_dict,
     parse_isoish,
+    share_dict,
     structured_segments,
     summarize_match,
     summarize_recording,
     transcript_fingerprint,
+    vocabulary_dict,
 )
 from ..core.session import PlaudSession, SessionManager, SessionStore
 
@@ -162,6 +167,53 @@ def build_parser() -> argparse.ArgumentParser:
     folder_delete = folder_sub.add_parser("delete")
     folder_delete.add_argument("folder_id")
     folder_delete.add_argument("--yes", action="store_true")
+
+    vocab_cmd = sub.add_parser("vocab", help="List, add, edit, or delete custom-vocabulary words.")
+    vocab_sub = vocab_cmd.add_subparsers(dest="vocab_command", required=True)
+
+    vocab_sub.add_parser("list")
+
+    vocab_add = vocab_sub.add_parser("add")
+    vocab_add.add_argument("word")
+    vocab_add.add_argument("--heard-as", help="A misheard form Plaud should correct to WORD")
+    vocab_add.add_argument("--language", default=VOCAB_LANGUAGE)
+
+    vocab_edit = vocab_sub.add_parser("edit")
+    vocab_edit.add_argument("word_id")
+    vocab_edit.add_argument("--word")
+    vocab_edit.add_argument("--heard-as", help="Pass an empty string to clear it")
+    vocab_edit.add_argument("--language")
+
+    vocab_delete = vocab_sub.add_parser("delete")
+    vocab_delete.add_argument("word_ids", nargs="+")
+    vocab_delete.add_argument("--yes", action="store_true")
+
+    share_cmd = sub.add_parser(
+        "share", help="Create, read, update, or revoke a recording's public share link."
+    )
+    share_sub = share_cmd.add_subparsers(dest="share_command", required=True)
+
+    share_create = share_sub.add_parser("create")
+    share_create.add_argument("recording_id")
+    share_create.add_argument(
+        "--days", type=_positive_int, default=SHARE_DEFAULT_DAYS, help="Link lifetime in days (default 7)"
+    )
+    share_create.add_argument("--never-expires", action="store_true", help="Create a link with no expiry")
+    _add_share_content_flags(share_create)
+
+    share_get = share_sub.add_parser("get")
+    share_get.add_argument("recording_id")
+
+    share_update = share_sub.add_parser("update")
+    share_update.add_argument("recording_id")
+    expiry = share_update.add_mutually_exclusive_group()
+    expiry.add_argument("--days", type=_positive_int, help="New lifetime in days from now")
+    expiry.add_argument("--never-expires", action="store_true", help="Remove the expiry")
+    _add_share_content_flags(share_update)
+
+    share_revoke = share_sub.add_parser("revoke")
+    share_revoke.add_argument("recording_id")
+    share_revoke.add_argument("--yes", action="store_true")
 
     move_cmd = sub.add_parser("move", aliases=["move-to-folder"])
     move_cmd.add_argument("recording_id")
@@ -344,6 +396,16 @@ def _add_limit_or_all(cmd: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Page through the whole library (honoring filters) until it is exhausted.",
     )
+
+
+def _add_share_content_flags(cmd: argparse.ArgumentParser) -> None:
+    """Add --audio/--transcript/--summary (and --no-* forms) for what a share link exposes.
+
+    Left unset they mean "the default" on create (transcript only) and
+    "keep the current setting" on update.
+    """
+    for name in ("audio", "transcript", "summary"):
+        cmd.add_argument(f"--{name}", action=argparse.BooleanOptionalAction, default=None)
 
 
 def _mask_token(token: str) -> str:
@@ -650,6 +712,74 @@ def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
         client.delete_folder(args.folder_id)
         return json.dumps({"ok": True, "action": "delete", "folder_id": args.folder_id}, indent=2)
     raise AssertionError(f"unhandled folder command: {args.folder_command}")
+
+
+def _handle_vocab(args: argparse.Namespace, client: PlaudClient) -> str:
+    command = args.vocab_command
+    if command == "list":
+        entries = client.list_vocabulary()
+        return json.dumps([vocabulary_dict(entry) for entry in entries], indent=2)
+    if command == "add":
+        entry = client.add_vocabulary(args.word, heard_as=args.heard_as, language=args.language)
+        return json.dumps({"ok": True, "action": "add", "word": vocabulary_dict(entry)}, indent=2)
+    if command == "edit":
+        if args.word is None and args.heard_as is None and args.language is None:
+            raise ValueError("vocab edit requires at least one of --word, --heard-as, --language")
+        entry = client.update_vocabulary(
+            args.word_id, word=args.word, heard_as=args.heard_as, language=args.language
+        )
+        return json.dumps({"ok": True, "action": "edit", "word": vocabulary_dict(entry)}, indent=2)
+    if command == "delete":
+        if not args.yes:
+            raise ValueError("Deleting vocabulary words cannot be undone. Re-run with --yes to confirm.")
+        deleted = client.delete_vocabulary(args.word_ids)
+        return json.dumps({"ok": True, "action": "delete", "deleted": deleted}, indent=2)
+    raise AssertionError(f"unhandled vocab command: {command}")
+
+
+def _handle_share(args: argparse.Namespace, client: PlaudClient) -> str:
+    command = args.share_command
+    if command == "get":
+        link = client.get_share_link(args.recording_id)
+        payload: dict[str, Any] = {"ok": True, "shared": link is not None}
+        if link is not None:
+            payload["share"] = share_dict(link)
+        return json.dumps(payload, indent=2)
+    if command == "create":
+        link = client.create_share_link(
+            args.recording_id,
+            expire_days=None if args.never_expires else args.days,
+            audio=bool(args.audio),
+            transcript=True if args.transcript is None else args.transcript,
+            summary=bool(args.summary),
+        )
+        return json.dumps({"ok": True, "action": "create", "share": share_dict(link)}, indent=2)
+    if command == "update":
+        link = client.update_share_link(
+            args.recording_id,
+            expire_days=args.days,
+            never_expires=args.never_expires,
+            audio=args.audio,
+            transcript=args.transcript,
+            summary=args.summary,
+        )
+        return json.dumps({"ok": True, "action": "update", "share": share_dict(link)}, indent=2)
+    if command == "revoke":
+        if not args.yes:
+            raise ValueError(
+                f"Revoking the share link for {args.recording_id!r} cuts off anyone using it. "
+                "Re-run with --yes to confirm."
+            )
+        client.revoke_share_link(args.recording_id)
+        return json.dumps(
+            {
+                "ok": True,
+                "action": "revoke",
+                "note": SHARE_REVOKE_NOTE,
+            },
+            indent=2,
+        )
+    raise AssertionError(f"unhandled share command: {command}")
 
 
 def _handle_move(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -1030,6 +1160,8 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "rename": _handle_rename,
     "folders": _handle_folders,
     "folder": _handle_folder,
+    "vocab": _handle_vocab,
+    "share": _handle_share,
     "move-to-folder": _handle_move,
     "move": _handle_move,
     "trash": _handle_trash,

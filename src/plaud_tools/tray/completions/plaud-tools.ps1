@@ -5,7 +5,7 @@
 
 $_plaud_tools_subcommands = @(
     'list', 'search', 'detail', 'show', 'transcript', 'summary', 'audio', 'export',
-    'rename', 'folders', 'folder', 'move', 'move-to-folder', 'rename-speaker',
+    'rename', 'folders', 'folder', 'vocab', 'share', 'move', 'move-to-folder', 'rename-speaker',
     'correct-transcript', 'correct-summary', 'set-summary', 'transcribe',
     'status', 'trash', 'restore', 'delete', 'trash-move', 'trash-restore',
     'upload', 'merge', 'dump', 'login', 'refresh', 'session', 'update',
@@ -24,6 +24,8 @@ $_plaud_tools_flags = @{
     'rename'              = @('--help')
     'folders'             = @('--help')
     'folder'              = @('create', 'edit', 'delete', '--help')
+    'vocab'               = @('list', 'add', 'edit', 'delete', '--help')
+    'share'               = @('create', 'get', 'update', 'revoke', '--help')
     'move'                = @('--help')
     'move-to-folder'      = @('--help')
     'rename-speaker'      = @('--help')
@@ -48,12 +50,25 @@ $_plaud_tools_flags = @{
     'ping'                = @('--help')
 }
 
-$_plaud_tools_folder_subcommands = @('create', 'edit', 'delete')
-
-$_plaud_tools_folder_flags = @{
-    'create' = @('--color', '--icon', '--help')
-    'edit'   = @('--name', '--color', '--icon', '--help')
-    'delete' = @('--yes', '--help')
+# Commands with their own subcommands (other than session): subcommand -> flags.
+$_plaud_tools_nested = @{
+    'folder' = @{
+        'create' = @('--color', '--icon', '--help')
+        'edit'   = @('--name', '--color', '--icon', '--help')
+        'delete' = @('--yes', '--help')
+    }
+    'vocab'  = @{
+        'list'   = @('--help')
+        'add'    = @('--heard-as', '--language', '--help')
+        'edit'   = @('--word', '--heard-as', '--language', '--help')
+        'delete' = @('--yes', '--help')
+    }
+    'share'  = @{
+        'create' = @('--days', '--never-expires', '--audio', '--no-audio', '--transcript', '--no-transcript', '--summary', '--no-summary', '--help')
+        'get'    = @('--help')
+        'update' = @('--days', '--never-expires', '--audio', '--no-audio', '--transcript', '--no-transcript', '--summary', '--no-summary', '--help')
+        'revoke' = @('--yes', '--help')
+    }
 }
 
 $_plaud_tools_session_subcommands = @('show', 'set', 'clear')
@@ -77,7 +92,7 @@ $_plaud_tools_completer = {
             $subcommand = $val
         } elseif ($subcommand -eq 'session' -and $null -eq $nestedSubcommand -and $_plaud_tools_session_subcommands -contains $val) {
             $nestedSubcommand = $val
-        } elseif ($subcommand -eq 'folder' -and $null -eq $nestedSubcommand -and $_plaud_tools_folder_subcommands -contains $val) {
+        } elseif ($_plaud_tools_nested.ContainsKey($subcommand) -and $null -eq $nestedSubcommand -and $_plaud_tools_nested[$subcommand].ContainsKey($val)) {
             $nestedSubcommand = $val
         }
     }
@@ -90,10 +105,10 @@ $_plaud_tools_completer = {
         $candidates = $_plaud_tools_flags['session']
     } elseif ($subcommand -eq 'session' -and $null -ne $nestedSubcommand) {
         $candidates = $_plaud_tools_session_flags[$nestedSubcommand]
-    } elseif ($subcommand -eq 'folder' -and $null -eq $nestedSubcommand) {
-        $candidates = $_plaud_tools_flags['folder']
-    } elseif ($subcommand -eq 'folder' -and $null -ne $nestedSubcommand) {
-        $candidates = $_plaud_tools_folder_flags[$nestedSubcommand]
+    } elseif ($_plaud_tools_nested.ContainsKey($subcommand) -and $null -eq $nestedSubcommand) {
+        $candidates = $_plaud_tools_flags[$subcommand]
+    } elseif ($_plaud_tools_nested.ContainsKey($subcommand)) {
+        $candidates = $_plaud_tools_nested[$subcommand][$nestedSubcommand]
     } else {
         $candidates = $_plaud_tools_flags[$subcommand]
     }

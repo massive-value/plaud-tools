@@ -244,6 +244,32 @@ def folder_dict(folder: Any) -> dict[str, Any]:
     }
 
 
+# Said whenever a share link is revoked: Plaud keeps the URL, so a later share revives it.
+SHARE_REVOKE_NOTE = (
+    "Revoked. Plaud does not rotate the URL: sharing this recording again brings back the same URL."
+)
+
+
+def vocabulary_dict(entry: Any) -> dict[str, Any]:
+    """The standard vocabulary-entry dict (CLI and MCP vocabulary listings and edits)."""
+    return {
+        "id": entry.id,
+        "word": entry.word,
+        "heard_as": entry.heard_as,
+        "language": entry.language,
+        "correction_count": entry.correction_count,
+    }
+
+
+def share_dict(link: Any) -> dict[str, Any]:
+    """The standard share-link dict (CLI and MCP).  ``expires_at`` is null for a link that never expires."""
+    return {
+        "url": link.url,
+        "expires_at": link.expires_at,
+        "includes": {"audio": link.audio, "transcript": link.transcript, "summary": link.summary},
+    }
+
+
 def detail_summary_dict(detail: Any) -> dict[str, Any]:
     """Produce the base summary dict for a RecordingDetail (a "show" view).
 

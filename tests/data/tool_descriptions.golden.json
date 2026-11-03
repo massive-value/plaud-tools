@@ -193,7 +193,7 @@
     "name": "export_transcript"
   },
   {
-    "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",
+    "description": "Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update (confirm=true), share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -202,12 +202,20 @@
             "rename",
             "trash",
             "restore",
-            "move"
+            "move",
+            "share_create",
+            "share_get",
+            "share_update",
+            "share_revoke"
           ],
           "type": "string"
         },
         "clear_folder": {
           "description": "When true, moves the recording out of its folder into Plaud's main Recordings list (use instead of a magic folder_id value)",
+          "type": "boolean"
+        },
+        "confirm": {
+          "description": "Required for share_create, share_update and share_revoke, after the human agrees",
           "type": "boolean"
         },
         "folder_id": {
@@ -228,6 +236,27 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "share_audio": {
+          "description": "Link includes audio (default false)",
+          "type": "boolean"
+        },
+        "share_days": {
+          "description": "Link lifetime in days from now (default 7)",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "share_never_expires": {
+          "description": "share_update: remove the expiry",
+          "type": "boolean"
+        },
+        "share_summary": {
+          "description": "Link includes summary (default false)",
+          "type": "boolean"
+        },
+        "share_transcript": {
+          "description": "Link includes transcript (default true)",
+          "type": "boolean"
         }
       },
       "required": [
@@ -494,5 +523,54 @@
       "type": "object"
     },
     "name": "mutate_folder"
+  },
+  {
+    "description": "Manage Plaud's account-wide custom vocabulary (names, jargon that steer transcription): list, add, edit, or delete (confirm=true) words.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "add",
+            "edit",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "confirm": {
+          "description": "Required for delete, after the human agrees",
+          "type": "boolean"
+        },
+        "heard_as": {
+          "description": "Misheard form to auto-correct to `word`; empty clears it on edit",
+          "type": "string"
+        },
+        "language": {
+          "description": "Language code (default en)",
+          "type": "string"
+        },
+        "word": {
+          "description": "Correct spelling; required for add",
+          "type": "string"
+        },
+        "word_id": {
+          "description": "Entry ID from list; for edit or single delete",
+          "type": "string"
+        },
+        "word_ids": {
+          "description": "Entry IDs to delete",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "mutate_vocabulary"
   }
 ]

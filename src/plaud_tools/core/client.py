@@ -29,7 +29,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlencode
@@ -42,7 +42,9 @@ from .models import (
     Folder,
     Recording,
     RecordingDetail,
+    ShareLink,
     TaskStatus,
+    VocabularyWord,
     base_url,
     redirect_api_domain,
     region_for_api_domain,
@@ -84,6 +86,14 @@ def _jitter(lo: float, hi: float) -> float:
 # never shorter than a server-sent Retry-After.
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE = 1.0
+
+# Plaud rejects a vocabulary entry without a language.
+VOCAB_LANGUAGE = "en"
+
+# Plaud's "no public share" status on /share/public/get.
+_STATUS_NO_SHARE = 40400
+# Default share-link lifetime; the shortest option the web app offers.
+SHARE_DEFAULT_DAYS = 7
 
 # Folder defaults the 4.0 web app sends when creating a folder.
 _DEFAULT_FOLDER_ICON = "e627"
@@ -214,6 +224,56 @@ def _object_done(obj: dict[str, Any] | None) -> bool:
     Migrated objects report ``task_status`` null once done; generated ones 1.
     """
     return bool(obj and obj.get("content_url") and obj.get("task_status") in (None, 1))
+
+
+def _normalize_vocabulary(item: dict[str, Any]) -> VocabularyWord:
+    """Turn one Plaud ``hotwords`` item into a VocabularyWord."""
+    return VocabularyWord(
+        id=str(item.get("id") or ""),
+        word=str(item.get("word") or ""),
+        heard_as=str(item.get("replaced_word") or ""),
+        language=str(item.get("language") or ""),
+        correction_count=int(item.get("correction_count") or 0),
+        created_at_ms=int(item.get("created_at") or 0),
+    )
+
+
+def _share_ref(recording_id: str) -> dict[str, Any]:
+    """The ``object_id`` / ``object_type`` pair every /share/public call takes."""
+    return {"object_id": to_file_id(recording_id), "object_type": "file"}
+
+
+def _share_expiry(days: int) -> str:
+    """ISO UTC time *days* from now, the format Plaud's ``expire_at`` takes."""
+    if days < 1:
+        raise ValueError("expire_days must be at least 1")
+    return (datetime.now(UTC) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _share_data(payload: dict[str, Any], action: str) -> dict[str, Any]:
+    """The ``data`` of a share reply; a non-zero status raises."""
+    if payload.get("status") != 0 or not isinstance(payload.get("data"), dict):
+        raise PlaudApiError(
+            f"Plaud share {action} failed: {payload.get('msg') or payload.get('status')}",
+            plaud_code=payload.get("status"),
+            plaud_msg=str(payload.get("msg") or ""),
+        )
+    data: dict[str, Any] = payload["data"]
+    return data
+
+
+def _share_link_from(data: dict[str, Any]) -> ShareLink:
+    """Turn a share reply's ``data`` into a ShareLink."""
+    config = data.get("content_config") or {}
+    return ShareLink(
+        url=str(data.get("share_url") or ""),
+        key=str(data.get("share_key") or ""),
+        expires_at=data.get("expire_at") or None,
+        audio=bool(config.get("audio")),
+        transcript=bool(config.get("transcript")),
+        summary=bool(config.get("summary")),
+        created_at=str(data.get("created_at") or ""),
+    )
 
 
 def _is_container(node: dict[str, Any]) -> bool:
@@ -1102,6 +1162,160 @@ class PlaudClient:
             if item.get("system_folder_type") == system_type:
                 return str(item["node_id"])
         raise PlaudApiError(f"Plaud has no system folder of type {system_type}")
+
+    # ------------------------------------------------------------------
+    # Custom vocabulary (account-wide)
+    # ------------------------------------------------------------------
+
+    def list_vocabulary(self) -> list[VocabularyWord]:
+        """Every custom-vocabulary entry on the account (Plaud allows 2000)."""
+        data = self._request_json("GET", f"{_V4}/hotwords/list", strict=True).get("data") or {}
+        return [_normalize_vocabulary(item) for item in data.get("items") or []]
+
+    def add_vocabulary(
+        self, word: str, *, heard_as: str | None = None, language: str = VOCAB_LANGUAGE
+    ) -> VocabularyWord:
+        """Add a word to steer transcription; *heard_as* is a misheard form to auto-correct.
+
+        Plaud rejects an entry with no language, so it defaults to English.
+        Adding a word the account already has returns that entry unchanged.
+        """
+        if not word.strip():
+            raise ValueError("vocabulary word cannot be empty")
+        data = (
+            self._request_json(
+                "POST",
+                f"{_V4}/hotwords/add",
+                strict=True,
+                body={"items": [{"word": word, "language": language, "replaced_word": heard_as or ""}]},
+            ).get("data")
+            or {}
+        )
+        items = data.get("items") or []
+        if not items:
+            raise PlaudApiError("Plaud added no vocabulary entry")
+        return _normalize_vocabulary(items[0].get("item") or {})
+
+    def update_vocabulary(
+        self,
+        word_id: str,
+        *,
+        word: str | None = None,
+        heard_as: str | None = None,
+        language: str | None = None,
+    ) -> VocabularyWord:
+        """Change an entry's word, misheard form (``""`` clears it), and/or language.
+
+        Plaud's update needs the whole entry, so unspecified fields keep
+        their current values.
+        """
+        if word is None and heard_as is None and language is None:
+            raise ValueError("update_vocabulary requires at least one of word, heard_as, language")
+        if word is not None and not word.strip():
+            raise ValueError("vocabulary word cannot be empty")
+        current = next((entry for entry in self.list_vocabulary() if entry.id == word_id), None)
+        if current is None:
+            raise ValueError(f"no vocabulary entry with id {word_id!r}; list the vocabulary for valid ids")
+        data = (
+            self._request_json(
+                "PATCH",
+                f"{_V4}/hotwords/update/{word_id}",
+                strict=True,
+                body={
+                    "word": current.word if word is None else word,
+                    "language": language or current.language or VOCAB_LANGUAGE,
+                    "replaced_word": current.heard_as if heard_as is None else heard_as,
+                },
+            ).get("data")
+            or {}
+        )
+        return _normalize_vocabulary(data.get("item") or {})
+
+    def delete_vocabulary(self, word_ids: list[str]) -> int:
+        """Delete entries by id and return how many Plaud removed.  Cannot be undone."""
+        if not word_ids:
+            raise ValueError("word_ids cannot be empty")
+        reply = self._request_json("POST", f"{_V4}/hotwords/delete", strict=True, body={"ids": word_ids})
+        return int((reply.get("data") or {}).get("deleted") or 0)
+
+    # ------------------------------------------------------------------
+    # Public share links
+    # ------------------------------------------------------------------
+
+    def get_share_link(self, recording_id: str) -> ShareLink | None:
+        """The recording's public share link, or ``None`` when it has none."""
+        payload = self._request_json("POST", "/share/public/get", strict=False, body=_share_ref(recording_id))
+        if payload.get("status") == _STATUS_NO_SHARE:
+            return None
+        return _share_link_from(_share_data(payload, "get"))
+
+    def create_share_link(
+        self,
+        recording_id: str,
+        *,
+        expire_days: int | None = SHARE_DEFAULT_DAYS,
+        audio: bool = False,
+        transcript: bool = True,
+        summary: bool = False,
+    ) -> ShareLink:
+        """Create a public link; anyone holding it can open what it exposes.
+
+        The link expires after *expire_days* (``None`` for never).  Plaud
+        reuses the earlier URL when a recording is shared again after a
+        revoke, so a revoked URL someone kept comes back to life.
+        """
+        if not (audio or transcript or summary):
+            raise ValueError("a share link must include at least one of audio, transcript, summary")
+        body = {
+            **_share_ref(recording_id),
+            "content_config": {"audio": audio, "transcript": transcript, "summary": summary, "version": "4"},
+        }
+        if expire_days is not None:
+            body["expire_at"] = _share_expiry(expire_days)
+        payload = self._request_json("POST", "/share/public/create", strict=True, body=body)
+        return _share_link_from(_share_data(payload, "create"))
+
+    def update_share_link(
+        self,
+        recording_id: str,
+        *,
+        expire_days: int | None = None,
+        never_expires: bool = False,
+        audio: bool | None = None,
+        transcript: bool | None = None,
+        summary: bool | None = None,
+    ) -> ShareLink:
+        """Change an existing link's expiry and/or what it exposes.
+
+        *expire_days* counts from now; *never_expires* removes the expiry.
+        Content flags left as ``None`` keep their current setting.
+        """
+        if expire_days is not None and never_expires:
+            raise ValueError("pass expire_days or never_expires, not both")
+        flags = {"audio": audio, "transcript": transcript, "summary": summary}
+        changes_content = any(flag is not None for flag in flags.values())
+        if expire_days is None and not never_expires and not changes_content:
+            raise ValueError("update_share_link needs a new expiry or content setting")
+        body: dict[str, Any] = _share_ref(recording_id)
+        if never_expires:
+            body["expire_at"] = ""  # empty clears the expiry; leaving it out keeps the old one
+        elif expire_days is not None:
+            body["expire_at"] = _share_expiry(expire_days)
+        if changes_content:
+            current = self.get_share_link(recording_id)
+            if current is None:
+                raise ValueError("this recording has no share link to update")
+            merged = {"audio": current.audio, "transcript": current.transcript, "summary": current.summary}
+            merged.update({name: flag for name, flag in flags.items() if flag is not None})
+            if not any(merged.values()):
+                raise ValueError("a share link must include at least one of audio, transcript, summary")
+            body["content_config"] = {**merged, "version": "4"}
+        payload = self._request_json("POST", "/share/public/update", strict=True, body=body)
+        return _share_link_from(_share_data(payload, "update"))
+
+    def revoke_share_link(self, recording_id: str) -> None:
+        """Stop the recording's public link from working.  The URL itself is not rotated."""
+        self._request_json("POST", "/share/public/delete", strict=True, body=_share_ref(recording_id))
 
     # ------------------------------------------------------------------
     # Node plumbing

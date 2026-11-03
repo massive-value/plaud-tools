@@ -19,10 +19,10 @@ from plaud_tools.cli.cli import build_parser
 
 COMPLETIONS_DIR = Path(__file__).resolve().parents[1] / "src" / "plaud_tools" / "tray" / "completions"
 
-# `folder` and `session` have their own nested subcommands with their own
+# `folder`, `vocab`, `share` and `session` have their own nested subcommands with their own
 # flag sets; each completion file structures that nesting differently, so
 # flag coverage below is only checked for the flat (non-nested) commands.
-_NESTED_COMMANDS = {"folder", "session"}
+_NESTED_COMMANDS = {"folder", "vocab", "share", "session"}
 
 
 def _canonical_subparsers() -> dict[str, argparse.ArgumentParser]:

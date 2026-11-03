@@ -329,6 +329,30 @@ plaud-tools folder delete <folder-id> --yes
 
 `create` requires a name; `--color` (a Plaud color name, e.g. `folder-color-green`) and `--icon` (glyph codepoint, e.g. `e627`) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `delete` is irreversible for the folder itself — recordings inside are kept and move to Plaud's main Recordings list — and requires `--yes`.
 
+### `vocab list` / `vocab add` / `vocab edit` / `vocab delete`
+
+```
+plaud-tools vocab list
+plaud-tools vocab add "Okafor" --heard-as "Oh car for"
+plaud-tools vocab edit <word-id> --heard-as ""
+plaud-tools vocab delete <word-id> [<word-id> ...] --yes
+```
+
+Manages Plaud's account-wide custom vocabulary, which steers transcription of future recordings. `--heard-as` is a misheard form Plaud corrects to the word. `--language` defaults to `en`. `edit` takes `--word`, `--heard-as` (empty string clears it) and `--language`. `delete` is irreversible and requires `--yes`. Plaud allows 2000 words.
+
+### `share create` / `share get` / `share update` / `share revoke`
+
+```
+plaud-tools share create <recording-id>
+plaud-tools share create <recording-id> --days 30 --audio --summary
+plaud-tools share get <recording-id>
+plaud-tools share update <recording-id> --days 14
+plaud-tools share update <recording-id> --never-expires --no-audio
+plaud-tools share revoke <recording-id> --yes
+```
+
+Makes, reads, changes and ends a recording's public link. `create` defaults to a 7-day link with the transcript only; `--audio`, `--summary` and `--no-transcript` change what it includes (`--never-expires` skips the expiry). `update` changes the expiry (`--days` counts from now) and/or the included content, keeping anything you leave out. `get` prints `"shared": false` when there is no link. `revoke` requires `--yes`. Plaud does not rotate the URL: sharing the same recording again after a revoke brings back the same URL.
+
 ### `move`
 
 ```

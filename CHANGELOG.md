@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Manage Plaud's custom vocabulary: the new `mutate_vocabulary` MCP tool and
+  `plaud-tools vocab list|add|edit|delete` list, add, edit and delete the words
+  that steer transcription, with an optional misheard form Plaud corrects to
+  the word. Deleting needs `confirm=true` (MCP) or `--yes` (CLI).
+- Public share links: `mutate_recording` gains `share_create`, `share_get`,
+  `share_update` and `share_revoke`, and the CLI gains
+  `plaud-tools share create|get|update|revoke`. Links default to 7 days and
+  transcript only. Creating, updating or revoking a link needs `confirm=true` (MCP);
+  revoking needs `--yes` (CLI). Plaud keeps the URL after a revoke, so sharing
+  again brings the same URL back, and the revoke reply says so.
+
+### Changed
+
+- The MCP tool count is now 14, and `mutate_recording` is flagged destructive
+  to clients because it can now publish and revoke share links.
+
 ## [0.13.1] - 2026-11-03
 
 ### Fixed

@@ -1406,3 +1406,93 @@ def test_session_cache_expired_session_invalidates_cache(tmp_path):
 
     # Cache must be None — a subsequent require() after re-auth would reload.
     assert manager._cache is None
+
+
+# ---------------------------------------------------------------------------
+# Custom vocabulary and public share links
+# ---------------------------------------------------------------------------
+
+
+def hotword(word_id="hw_1", word="Okafor", heard_as="", language="en"):
+    return {
+        "id": word_id,
+        "word": word,
+        "replaced_word": heard_as,
+        "language": language,
+        "correction_count": 2,
+    }
+
+
+def test_vocabulary_add_sends_language_and_heard_as(tmp_path):
+    reply = ok({"items": [{"item": hotword(heard_as="Oh car for"), "duplicated": False}]})
+    client, transport = routed(tmp_path, {f"POST {V4}/hotwords/add": reply})
+    entry = client.add_vocabulary("Okafor", heard_as="Oh car for")
+    assert (entry.id, entry.word, entry.heard_as) == ("hw_1", "Okafor", "Oh car for")
+    assert transport.sent(f"POST {V4}/hotwords/add") == [
+        {"items": [{"word": "Okafor", "language": "en", "replaced_word": "Oh car for"}]}
+    ]
+
+
+def test_vocabulary_update_sends_the_whole_entry_and_can_clear_heard_as(tmp_path):
+    routes = {
+        f"GET {V4}/hotwords/list": ok({"items": [hotword(heard_as="Oh car for")]}),
+        f"PATCH {V4}/hotwords/update/hw_1": ok({"item": hotword()}),
+    }
+    client, transport = routed(tmp_path, routes)
+    entry = client.update_vocabulary("hw_1", heard_as="")
+    assert entry.heard_as == ""
+    assert transport.sent(f"PATCH {V4}/hotwords/update/hw_1") == [
+        {"word": "Okafor", "language": "en", "replaced_word": ""}
+    ]
+    with pytest.raises(ValueError, match="no vocabulary entry"):
+        client.update_vocabulary("hw_missing", word="X")
+
+
+def test_vocabulary_delete_returns_the_deleted_count(tmp_path):
+    client, transport = routed(tmp_path, {f"POST {V4}/hotwords/delete": ok({"deleted": 2})})
+    assert client.delete_vocabulary(["hw_1", "hw_2"]) == 2
+    assert transport.sent(f"POST {V4}/hotwords/delete") == [{"ids": ["hw_1", "hw_2"]}]
+
+
+SHARE_DATA = {
+    "share_url": "https://share.example/s/abc",
+    "share_key": "abc",
+    "expire_at": "2026-12-01T00:00:00Z",
+    "content_config": {"transcript": True, "version": "4"},
+}
+
+
+def test_create_share_link_sends_expiry_and_content_config(tmp_path):
+    client, transport = routed(tmp_path, {"POST /share/public/create": ok(SHARE_DATA)})
+    link = client.create_share_link("ab" * 16, expire_days=7)
+    body = transport.sent("POST /share/public/create")[0]
+    assert body["object_id"] == "of_" + "ab" * 16 and body["object_type"] == "file"
+    assert body["content_config"] == {"audio": False, "transcript": True, "summary": False, "version": "4"}
+    assert body["expire_at"].endswith("Z")
+    assert (link.url, link.transcript, link.audio) == ("https://share.example/s/abc", True, False)
+    client.create_share_link("ab" * 16, expire_days=None)
+    assert "expire_at" not in transport.sent("POST /share/public/create")[1]
+
+
+def test_get_share_link_is_none_when_plaud_has_no_link(tmp_path):
+    client, _ = routed(
+        tmp_path, {"POST /share/public/get": {"status": 40400, "msg": "Public share not found"}}
+    )
+    assert client.get_share_link("f_1") is None
+
+
+def test_update_share_link_merges_content_flags_and_clears_expiry_with_empty_string(tmp_path):
+    routes = {"POST /share/public/get": ok(SHARE_DATA), "POST /share/public/update": ok(SHARE_DATA)}
+    client, transport = routed(tmp_path, routes)
+    client.update_share_link("f_1", never_expires=True, audio=True)
+    body = transport.sent("POST /share/public/update")[0]
+    assert body["expire_at"] == ""
+    assert body["content_config"] == {"audio": True, "transcript": True, "summary": False, "version": "4"}
+    with pytest.raises(ValueError, match="at least one of audio, transcript, summary"):
+        client.update_share_link("f_1", transcript=False)
+
+
+def test_revoke_share_link_posts_the_object_ref(tmp_path):
+    client, transport = routed(tmp_path, {"POST /share/public/delete": ok({"object_id": "f_1"})})
+    client.revoke_share_link("f_1")
+    assert transport.sent("POST /share/public/delete") == [{"object_id": "f_1", "object_type": "file"}]

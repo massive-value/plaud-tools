@@ -1,6 +1,6 @@
 ---
 name: plaud-tools
-description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
+description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, mutate_vocabulary, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
 ---
 
 # plaud-tools
@@ -59,7 +59,7 @@ narrower `since`/`until` window.
 | `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
 | `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
 | `export_transcript` | Whole transcript to a file. `format=` json / txt / srt / docx / pdf. Returns the path, not the text. |
-| `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
+| `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). Also `share_create` / `share_get` / `share_update` / `share_revoke` for one recording's public link — see below. |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |
 | `edit_summary` | `action=` correct / replace. Recording must already have a summary. |
@@ -68,6 +68,7 @@ narrower `since`/`until` window.
 | `merge_recordings` | Two or more → one new recording. Sources survive. |
 | `list_folders` | Get folder IDs before any folder-scoped call. |
 | `mutate_folder` | `action=` create / edit / delete. Delete requires `confirm=true`. |
+| `mutate_vocabulary` | `action=` list / add / edit / delete. Account-wide custom vocabulary. Delete requires `confirm=true`. |
 
 To move a recording into a folder, use `mutate_recording(action="move")` — not
 `mutate_folder`.
@@ -89,9 +90,26 @@ export tool writes the exact text in code.
   the call fails with `file_exists`, unless `overwrite=true`. Ask before
   overwriting.
 
+## Vocabulary and share links
+
+`mutate_vocabulary` edits the account's custom vocabulary: words that steer
+future transcription, optionally with a misheard form (`heard_as`) Plaud
+corrects to the word. It affects every later transcription, so list first and
+add only words the user asked for.
+
+`mutate_recording(action="share_create")` makes a public link that anyone
+holding the URL can open. It defaults to 7 days and transcript only; turn on
+`share_audio` or `share_summary` only when asked. Client recordings are
+sensitive, so confirm exactly what is being shared. `share_get` reads the
+link back, `share_update` (confirm-gated too) changes expiry (`share_days`, `share_never_expires`)
+or contents, and `share_revoke` ends it. Plaud keeps the URL when a link is
+revoked, so sharing the same recording again brings back the same URL.
+
 ## Confirm gates
 
-`delete_recording` and `mutate_folder(action="delete")` refuse to run without
+`delete_recording`, `mutate_folder(action="delete")`,
+`mutate_vocabulary(action="delete")`, `mutate_recording(action="share_create")`,
+`mutate_recording(action="share_update")` and `mutate_recording(action="share_revoke")` refuse to run without
 `confirm=true`. That flag means *the human has said yes to this specific
 irreversible thing*. Ask, get an answer, then pass it. Never set it
 pre-emptively to save a turn.

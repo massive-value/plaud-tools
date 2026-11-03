@@ -9,7 +9,15 @@ import pytest
 
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
-from plaud_tools.core.models import AudioLink, ContentMatch, Folder, Recording, RecordingDetail
+from plaud_tools.core.models import (
+    AudioLink,
+    ContentMatch,
+    Folder,
+    Recording,
+    RecordingDetail,
+    ShareLink,
+    VocabularyWord,
+)
 from plaud_tools.core.session import PlaudSession, SessionStore
 from plaud_tools.mcp_pt.mcp import build_handlers
 
@@ -2172,6 +2180,148 @@ def test_cli_folder_delete_with_yes():
     payload = json.loads(output)
     assert payload["ok"] is True
     assert client.delete_call == "f1"
+
+
+# ---------------------------------------------------------------------------
+# mutate_vocabulary and the share_* actions of mutate_recording (MCP + CLI)
+# ---------------------------------------------------------------------------
+
+
+class VocabShareStub(StubClient):
+    def __init__(self):
+        self.calls = []
+        self.link = ShareLink(url="https://share.example/s/abc", key="abc", expires_at="2026-12-01T00:00:00Z")
+
+    def list_vocabulary(self):
+        return [VocabularyWord(id="hw_1", word="Nguyen", heard_as="Win", language="en")]
+
+    def add_vocabulary(self, word, *, heard_as=None, language="en"):
+        self.calls.append(("add", word, heard_as, language))
+        return VocabularyWord(id="hw_2", word=word, heard_as=heard_as or "", language=language)
+
+    def update_vocabulary(self, word_id, *, word=None, heard_as=None, language=None):
+        self.calls.append(("edit", word_id, word, heard_as, language))
+        return VocabularyWord(id=word_id, word=word or "Nguyen", heard_as=heard_as or "")
+
+    def delete_vocabulary(self, word_ids):
+        self.calls.append(("delete", word_ids))
+        return len(word_ids)
+
+    def get_share_link(self, recording_id):
+        return self.link
+
+    def create_share_link(self, recording_id, *, expire_days, audio, transcript, summary):
+        self.calls.append(("share_create", recording_id, expire_days, audio, transcript, summary))
+        return self.link
+
+    def update_share_link(self, recording_id, **changes):
+        self.calls.append(("share_update", recording_id, changes))
+        return self.link
+
+    def revoke_share_link(self, recording_id):
+        self.calls.append(("share_revoke", recording_id))
+
+
+def _mcp(client, tool, **args):
+    result = build_handlers(lambda: client)[tool](**args)
+    return result, json.loads(result["content"][0]["text"])
+
+
+def test_mcp_vocabulary_list_add_and_edit():
+    client = VocabShareStub()
+    _, listed = _mcp(client, "mutate_vocabulary", action="list")
+    assert listed["words"] == [
+        {"id": "hw_1", "word": "Nguyen", "heard_as": "Win", "language": "en", "correction_count": 0}
+    ]
+    _mcp(client, "mutate_vocabulary", action="add", word="Okafor", heard_as="Oh car for")
+    _mcp(client, "mutate_vocabulary", action="edit", word_id="hw_1", heard_as="")
+    assert client.calls == [("add", "Okafor", "Oh car for", "en"), ("edit", "hw_1", None, "", None)]
+
+
+def test_mcp_vocabulary_delete_requires_confirm():
+    client = VocabShareStub()
+    result, payload = _mcp(client, "mutate_vocabulary", action="delete", word_ids=["hw_1"])
+    assert result["isError"] is True
+    assert "confirm=true" in payload["error"]
+    assert client.calls == []
+    _, payload = _mcp(client, "mutate_vocabulary", action="delete", word_ids=["hw_1"], confirm=True)
+    assert payload["deleted"] == 1
+
+
+def test_mcp_share_create_requires_confirm_then_defaults_to_seven_day_transcript_only():
+    client = VocabShareStub()
+    result, _ = _mcp(client, "mutate_recording", recording_id="rec1", action="share_create")
+    assert result["isError"] is True and client.calls == []
+    _, payload = _mcp(client, "mutate_recording", recording_id="rec1", action="share_create", confirm=True)
+    assert client.calls == [("share_create", "rec1", 7, False, True, False)]
+    assert payload["share"]["url"] == "https://share.example/s/abc"
+    assert payload["share"]["includes"] == {"audio": False, "transcript": False, "summary": False}
+
+
+def test_mcp_share_get_update_and_revoke():
+    client = VocabShareStub()
+    _, got = _mcp(client, "mutate_recording", recording_id="rec1", action="share_get")
+    assert got["shared"] is True
+    _mcp(
+        client,
+        "mutate_recording",
+        recording_id="rec1",
+        action="share_update",
+        share_days=30,
+        share_audio=True,
+    )
+    assert client.calls == []  # refused without confirm
+    _mcp(
+        client,
+        "mutate_recording",
+        recording_id="rec1",
+        action="share_update",
+        share_days=30,
+        share_audio=True,
+        confirm=True,
+    )
+    assert client.calls[-1] == (
+        "share_update",
+        "rec1",
+        {"expire_days": 30, "never_expires": False, "audio": True, "transcript": None, "summary": None},
+    )
+    result, _ = _mcp(client, "mutate_recording", recording_id="rec1", action="share_revoke")
+    assert result["isError"] is True
+    _, revoked = _mcp(client, "mutate_recording", recording_id="rec1", action="share_revoke", confirm=True)
+    assert "same URL" in revoked["note"]
+    assert client.calls[-1] == ("share_revoke", "rec1")
+
+
+def test_mcp_share_rejects_batch():
+    result, _ = _mcp(VocabShareStub(), "mutate_recording", recording_ids=["a", "b"], action="share_get")
+    assert result["isError"] is True
+
+
+def test_cli_vocab_add_and_delete_gate():
+    client = VocabShareStub()
+    payload = json.loads(run_cli(["vocab", "add", "Nguyen", "--heard-as", "Win"], client))
+    assert payload["word"]["heard_as"] == "Win"
+    with pytest.raises(ValueError, match="cannot be undone"):
+        run_cli(["vocab", "delete", "hw_1"], client)
+    assert json.loads(run_cli(["vocab", "delete", "hw_1", "--yes"], client))["deleted"] == 1
+
+
+def test_cli_share_create_update_and_revoke_gate():
+    client = VocabShareStub()
+    run_cli(["share", "create", "rec1", "--summary"], client)
+    assert client.calls[-1] == ("share_create", "rec1", 7, False, True, True)
+    run_cli(["share", "update", "rec1", "--never-expires", "--no-audio"], client)
+    assert client.calls[-1][2] == {
+        "expire_days": None,
+        "never_expires": True,
+        "audio": False,
+        "transcript": None,
+        "summary": None,
+    }
+    with pytest.raises(ValueError, match="Re-run with --yes"):
+        run_cli(["share", "revoke", "rec1"], client)
+    run_cli(["share", "revoke", "rec1", "--yes"], client)
+    assert client.calls[-1] == ("share_revoke", "rec1")
 
 
 # ---------------------------------------------------------------------------
