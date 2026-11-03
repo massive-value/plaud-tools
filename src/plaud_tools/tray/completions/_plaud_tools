@@ -45,6 +45,7 @@ _plaud_tools() {
                 'trash-restore:Restore multiple recordings from trash'
                 'upload:Upload a local audio file'
                 'merge:Merge recordings'
+                'trim:Trim a recording into a new copy'
                 'dump:Dump raw API response for debugging'
                 'login:Sign in to Plaud'
                 'refresh:Re-authenticate the stored session'
@@ -156,6 +157,7 @@ _plaud_tools() {
                     _arguments \
                         '--title[Recording title (defaults to file stem)]:title' \
                         '--folder-id[Folder to assign after upload]:folder_id' \
+                        '--attach-to[Attach FILE to this recording as a document]:recording_id' \
                         '--detach[Return immediately without waiting for transcription]' \
                         '--skip-summary[Wait for transcript only, not summary]' \
                         '--start-time[Recording timestamp, ISO 8601 or epoch]:start_time' \
@@ -163,6 +165,9 @@ _plaud_tools() {
                     ;;
                 merge)
                     _arguments '--title[Title for the merged recording]:title'
+                    ;;
+                trim)
+                    _arguments '*:range (mm\:ss-mm\:ss to keep)'
                     ;;
                 login)
                     _arguments \

@@ -63,7 +63,12 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-_TOKEN_BUDGET_WORDS = 730
+#
+# 730 -> 800.  mutate_recording(action="trim") with its `keep` ranges,
+# upload_recording(attach_to=...) and get_recording's `attachments` include
+# (~68 words, 760 total).  Each is a new capability on an existing tool, kept
+# to one short line per parameter.
+_TOKEN_BUDGET_WORDS = 800
 
 
 def _serialize_tools() -> str:

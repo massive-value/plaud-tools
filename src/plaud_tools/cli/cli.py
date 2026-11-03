@@ -27,6 +27,7 @@ from ..core.query import (
     detail_summary_dict,
     folder_dict,
     parse_isoish,
+    parse_keep_ranges,
     structured_segments,
     summarize_match,
     summarize_recording,
@@ -243,6 +244,14 @@ def build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("--title")
     upload_cmd.add_argument("--folder-id")
     upload_cmd.add_argument(
+        "--attach-to",
+        metavar="RECORDING_ID",
+        help=(
+            "Attach FILE to this existing recording as a document (PDF, Word, Excel, PowerPoint, "
+            "TXT/MD/CSV, PNG/JPG) instead of uploading new audio; --title names the attachment."
+        ),
+    )
+    upload_cmd.add_argument(
         "--detach", action="store_true", help="Return immediately without waiting for transcription"
     )
     upload_cmd.add_argument(
@@ -266,6 +275,17 @@ def build_parser() -> argparse.ArgumentParser:
     merge_cmd = sub.add_parser("merge")
     merge_cmd.add_argument("recording_ids", nargs="+")
     merge_cmd.add_argument("--title", required=True)
+
+    trim_cmd = sub.add_parser(
+        "trim", help="Cut a recording down to the ranges you keep, as a new copy (the original stays)."
+    )
+    trim_cmd.add_argument("recording_id")
+    trim_cmd.add_argument(
+        "ranges",
+        nargs="+",
+        metavar="START-END",
+        help="Ranges to keep as mm:ss-mm:ss, e.g. 0:00-1:00 5:00-6:30",
+    )
 
     dump_cmd = sub.add_parser("dump", help="Dump raw /file/detail API response for debugging")
     dump_cmd.add_argument("recording_id")
@@ -607,6 +627,10 @@ def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
     detail = client.get_recording(args.recording_id, include_transcript=True)
     output = detail_summary_dict(detail)
     output["speakers"] = detail.speakers
+    output["attachments"] = [
+        {"id": a.id, "name": a.filename, "type": a.file_type}
+        for a in client.list_attachments(args.recording_id)
+    ]
     return json.dumps(output, indent=2)
 
 
@@ -793,6 +817,18 @@ def _handle_upload(args: argparse.Namespace, client: PlaudClient) -> str:
     from ..core.transcode import upload_with_transcode
 
     path = Path(args.file)
+    if args.attach_to:
+        if not path.is_file():
+            raise ValueError(f"file not found: {path}")
+        attachment = client.attach_document(args.attach_to, path, args.title)
+        return json.dumps(
+            {
+                "ok": True,
+                "recording_id": args.attach_to,
+                "attachment": {"id": attachment.id, "name": attachment.filename},
+            },
+            indent=2,
+        )
     title = args.title or path.stem
     start_ms: int | None = None
     if args.start_time is not None:
@@ -856,6 +892,27 @@ def _handle_merge(args: argparse.Namespace, client: PlaudClient) -> str:
             "recording_id": detail.id,
             "filename": detail.filename,
             "source_ids": args.recording_ids,
+        },
+        indent=2,
+    )
+
+
+def _handle_trim(args: argparse.Namespace, client: PlaudClient) -> str:
+    ranges = parse_keep_ranges(args.ranges)
+    # Same hazard as merge: the copy's id is only known once Plaud accepts the
+    # job, so say what was submitted before the wait.
+    print(
+        f"trimming {args.recording_id!r} to {args.ranges!r} (re-running on failure may make a second copy)",
+        file=sys.stderr,
+    )
+    detail = client.trim_recording(args.recording_id, ranges)
+    return json.dumps(
+        {
+            "ok": True,
+            "recording_id": args.recording_id,
+            "new_recording_id": detail.id,
+            "filename": detail.filename,
+            "duration_seconds": round(detail.duration / 1000),
         },
         indent=2,
     )
@@ -1043,6 +1100,7 @@ _CLIENT_HANDLERS: dict[str, Callable[[argparse.Namespace, PlaudClient], str]] = 
     "set-summary": _handle_set_summary,
     "upload": _handle_upload,
     "merge": _handle_merge,
+    "trim": _handle_trim,
     "transcribe": _handle_transcribe,
     "status": _handle_status,
     "dump": _handle_dump,
@@ -1205,8 +1263,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # merge_recordings() only learns the new recording's id on
                 # success, so it isn't available here — but the combine
                 # task_id is, and it's enough to check on the job instead of
-                # re-running merge (which would duplicate it).
-                print(f"merge task_id={exc.task_id!r} is still running on Plaud", file=sys.stderr)
+                # re-running merge (which would duplicate it).  For trim the
+                # id is the new copy's recording id: `show` it instead of
+                # trimming again.
+                print(f"task_id={exc.task_id!r} is still running on Plaud", file=sys.stderr)
             return EXIT_TIMEOUT
         return _EXIT_CODE_BY_ERROR_CODE.get(error_code, EXIT_ERROR)
     except (ValueError, RuntimeError) as exc:

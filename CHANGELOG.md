@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Trim a recording into a new copy (#258). `mutate_recording(action="trim",
+  keep=["0:00-1:00", "5:00-6:30"])` in MCP, or `plaud-tools trim <id> 0:00-1:00
+  5:00-6:30` in the CLI, keeps only those ranges as a new "<name> copy"
+  recording with the matching transcript. The original stays. Like merge, a slow
+  trim returns a `still_processing` result with the copy's id instead of an
+  error, so nothing gets trimmed twice. Run `process_recording` on the copy
+  for a summary.
+- Attach documents to a recording (#259). `upload_recording(attach_to=<id>)`
+  in MCP, or `plaud-tools upload <file> --attach-to <id>` in the CLI, files a
+  PDF, Word, Excel, PowerPoint, text, CSV or image next to the recording. It
+  shows in the Plaud web app. `get_recording(include=["attachments"])` and
+  `show` list them.
+
 ## [0.13.1] - 2026-11-03
 
 ### Fixed

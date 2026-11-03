@@ -154,6 +154,21 @@ class Folder:
 
 
 @dataclass(slots=True)
+class Attachment:
+    """A document, image or text file attached to a recording.
+
+    It sits in the recording's container folder next to the audio.
+    ``file_type`` is Plaud's own label for it (the REC and MD kinds are the
+    recording and its notes, so never an attachment).
+    """
+
+    id: str
+    filename: str
+    file_type: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class AudioLink:
     """A presigned, short-lived download link for a recording's audio."""
 

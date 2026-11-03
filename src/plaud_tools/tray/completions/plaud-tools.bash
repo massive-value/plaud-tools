@@ -12,7 +12,7 @@ _plaud_tools_complete() {
         cword=$COMP_CWORD
     }
 
-    local subcommands="list search detail show transcript summary audio export rename folders folder move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe status trash restore delete trash-move trash-restore upload merge dump login refresh session update doctor ping"
+    local subcommands="list search detail show transcript summary audio export rename folders folder move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe status trash restore delete trash-move trash-restore upload merge trim dump login refresh session update doctor ping"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands --version --help" -- "$cur"))
@@ -52,7 +52,7 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "--content --content-file --help" -- "$cur"))
             ;;
         upload)
-            COMPREPLY=($(compgen -W "--title --folder-id --detach --skip-summary --start-time --timezone-offset --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title --folder-id --attach-to --detach --skip-summary --start-time --timezone-offset --help" -- "$cur"))
             ;;
         merge)
             COMPREPLY=($(compgen -W "--title --help" -- "$cur"))

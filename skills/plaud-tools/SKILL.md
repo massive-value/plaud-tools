@@ -1,6 +1,6 @@
 ---
 name: plaud-tools
-description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording, edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
+description: Read this before using the PlaudTools MCP (browse_recordings, search_recordings, get_recording, export_transcript, mutate_recording (rename, trash, restore, move, trim), edit_transcript, edit_summary, upload_recording, process_recording, merge_recordings, list_folders, mutate_folder, delete_recording). Covers transcript pagination, dry-run edits, confirm gates, error handling, and date filters. Use when the user mentions Plaud, their recordings, meetings, or transcripts for the first time in a session.
 ---
 
 # plaud-tools
@@ -57,13 +57,13 @@ narrower `since`/`until` window.
 |---|---|
 | `browse_recordings` | Filters: `query` (title substring), `since`/`until` (ISO 8601), `folder`, `trash`. Paginate with `after` ← `next_after`. |
 | `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
-| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
+| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url","attachments"]` — ask only for what you need; each is a large field or an extra request. `attachments` lists documents filed with the recording. |
 | `export_transcript` | Whole transcript to a file. `format=` json / txt / srt / docx / pdf. Returns the path, not the text. |
-| `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
+| `mutate_recording` | `action=` rename / trash / restore / move / trim. Accepts `recording_ids` for batch (not for rename or trim). `trim` takes `keep=["0:00-1:00","5:00-6:30"]`, the ranges to keep, and makes a new "copy" recording; the original stays. |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |
 | `edit_summary` | `action=` correct / replace. Recording must already have a summary. |
-| `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. |
+| `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. With `attach_to=<recording_id>` it attaches a document (PDF, Word, Excel, PowerPoint, TXT/MD/CSV, PNG/JPG) to that recording instead. |
 | `process_recording` | Trigger transcription/summarization. `wait=` none / transcript / summary. |
 | `merge_recordings` | Two or more → one new recording. Sources survive. |
 | `list_folders` | Get folder IDs before any folder-scoped call. |
@@ -128,7 +128,7 @@ message:
 | `internal` | A bug in the server. Tell the user; details are in the plaud-mcp log. |
 
 A response with `status: "still_processing"` is not an error: a transcribe,
-summary, or merge job outlived the ~90s wait and is still running on Plaud. Its
+summary, merge, or trim job outlived the ~90s wait and is still running on Plaud. Its
 `job` says what is running and which tool reports on it (`poll_with`): poll that
 tool rather than re-issuing the call, because re-issuing starts a *second* job.
 `upload_recording` never returns this; it returns the new `recording_id` or an

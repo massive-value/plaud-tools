@@ -9,7 +9,7 @@ import pytest
 
 from plaud_tools.cli.cli import main, run_cli
 from plaud_tools.core.client import PlaudClient
-from plaud_tools.core.models import AudioLink, ContentMatch, Folder, Recording, RecordingDetail
+from plaud_tools.core.models import Attachment, AudioLink, ContentMatch, Folder, Recording, RecordingDetail
 from plaud_tools.core.session import PlaudSession, SessionStore
 from plaud_tools.mcp_pt.mcp import build_handlers
 
@@ -81,6 +81,9 @@ class StubClient:
             duration=0,
             raw={},
         )
+
+    def list_attachments(self, recording_id):
+        return [Attachment(id="f_doc", filename="statement.pdf", file_type="PDF")]
 
     def get_recording(
         self,
@@ -256,6 +259,7 @@ def test_cli_show_returns_metadata_and_speakers():
     assert payload["id"] == "rec1"
     assert payload["title"] == "meeting"
     assert payload["speakers"] == ["Speaker 1", "Alex"]
+    assert payload["attachments"] == [{"id": "f_doc", "name": "statement.pdf", "type": "PDF"}]
     assert "transcript" not in payload
 
 
