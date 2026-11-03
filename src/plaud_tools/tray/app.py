@@ -43,7 +43,7 @@ from .setup import (
 )
 from .toasts import _show_install_toast, _show_session_expired_toast
 from .uninstaller import UninstallDialog
-from .updater import UpdateDialog, _check_for_update
+from .updater import UpdateDialog, _check_for_update, read_update_failure, read_update_success
 from .windows.home import HomeWindow
 from .windows.login import LoginWindow
 from .windows.wizard import WizardWindow
@@ -394,17 +394,7 @@ class TrayApp(_BackgroundMixin):
         fail_sentinel = Path(tempfile.gettempdir()) / "plaud_update_failed.txt"
         if fail_sentinel.exists():
             try:
-                import json as _json
-
-                # utf-8-sig (not utf-8) so a leading BOM is stripped: update.ps1
-                # writes the sentinel via PowerShell 5.1 `Set-Content -Encoding
-                # UTF8`, which emits a UTF-8 BOM. json.loads rejects a leading
-                # BOM ("Unexpected UTF-8 BOM"), which would otherwise silently
-                # swallow a real failure report.
-                payload = _json.loads(fail_sentinel.read_text(encoding="utf-8-sig"))
-                fail_sentinel.unlink(missing_ok=True)
-                reason = payload.get("reason", "Update failed for an unknown reason.")
-                log_path = payload.get("log", "")
+                reason, log_path = read_update_failure(fail_sentinel)
                 logging.warning("Previous in-app update failed: %s (log: %s)", reason, log_path)
 
                 def _show_update_failure(r: str = reason, lp: str = log_path) -> None:
@@ -433,16 +423,7 @@ class TrayApp(_BackgroundMixin):
         sentinel = Path(tempfile.gettempdir()) / "plaud_just_updated.txt"
         if sentinel.exists():
             try:
-                # utf-8-sig (not utf-8) so a leading BOM is stripped before the
-                # comparison. update.ps1 writes this sentinel via PowerShell 5.1
-                # `Set-Content -Encoding UTF8`, which emits a UTF-8 BOM (EF BB BF).
-                # str.strip() does NOT remove U+FEFF (it is not whitespace), so a
-                # plain utf-8 read left `updated_to` as "﻿0.4.0", which never
-                # equals APP_VERSION ("0.4.0") — the tray then falsely reported a
-                # successful update as "did not complete". See v0.4.1 fix.
-                updated_to = sentinel.read_text(encoding="utf-8-sig").strip()
-                sentinel.unlink(missing_ok=True)
-                version_matches = updated_to == APP_VERSION
+                updated_to, version_matches = read_update_success(sentinel, APP_VERSION)
                 if not version_matches:
                     logging.warning(
                         "Update sentinel claims v%s but running version is v%s — "
