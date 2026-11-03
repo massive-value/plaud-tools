@@ -296,6 +296,7 @@ def test_get_recording_reads_gzip_transcript_and_summary_from_content_urls(tmp_p
         {"speaker": "", "original_speaker": "Speaker 2", "content": "Hello"},
     ]
     routes = transcript_routes(segments, summary="# Summary")
+    routes[f"GET {V4}/folders/children"] = children({"on_w_1": []})
     routes["GET https://s3.fake/t.json"] = HttpResponse(
         200, gzip.compress(json.dumps(segments).encode()), {"content-encoding": "gzip"}
     )
@@ -312,6 +313,59 @@ def test_get_recording_reads_gzip_transcript_and_summary_from_content_urls(tmp_p
         "on_w_1",
         100,
     )
+
+
+NOTE_LINK = "[](plaud://source?type=summary&fileId=f_1&start_time=125370&end_time=131290)"
+
+
+def note_routes(summary="# Summary"):
+    """of_1 with one MD note and one HIGHLIGHTS note next to it in container on_w_1."""
+    routes = transcript_routes(SEGMENTS, summary=summary)
+    routes[f"GET {V4}/folders/children"] = children(
+        {
+            "on_w_1": [
+                {"file_id": "of_1", "file_type": "REC"},
+                {"file_id": "of_n1", "file_type": "MD", "name": "Meeting - Minutes"},
+                {"file_id": "of_n2", "file_type": "MD", "name": "Meeting - Highlights"},
+            ]
+        }
+    )
+    routes[f"GET {V4}/files/detail/of_n1"] = detail_payload(
+        obj("MD", "https://s3.fake/n1.md", object_id="on1", content_id="cn1", version_ms=700)
+    )
+    routes[f"GET {V4}/files/detail/of_n2"] = detail_payload(obj("HIGHLIGHTS", "https://s3.fake/n2.md"))
+    routes["GET https://s3.fake/n1.md"] = HttpResponse(200, f"Budget agreed {NOTE_LINK}".encode(), {})
+    routes["GET https://s3.fake/n2.md"] = HttpResponse(200, b"# Highlights", {})
+    routes[f"PATCH {V4}/files/update/content/of_n1"] = ok()
+    return routes
+
+
+def test_get_recording_with_summary_returns_the_containers_notes(tmp_path):
+    client, _ = routed(tmp_path, note_routes())
+    detail = client.get_recording("of_1", include_summary=True)
+    assert [(n.note_id, n.name, n.content) for n in detail.notes] == [
+        ("of_n1", "Meeting - Minutes", f"Budget agreed {NOTE_LINK}"),
+        ("of_n2", "Meeting - Highlights", "# Highlights"),
+    ]
+
+
+def test_correct_summary_on_a_note_edits_the_raw_note_and_keeps_its_links(tmp_path):
+    client, transport = routed(tmp_path, note_routes())
+    assert client.correct_summary("of_1", "Budget", "Plan", note_id="of_n1") == {"replacements": 1}
+    (body,) = transport.sent(f"PATCH {V4}/files/update/content/of_n1")
+    assert body == {
+        "object_id": "on1",
+        "content_id": "cn1",
+        "content": f"Plan agreed {NOTE_LINK}",
+        "origin_version": 700,
+    }
+
+
+def test_editing_a_note_of_another_recording_is_refused(tmp_path):
+    client, transport = routed(tmp_path, note_routes())
+    with pytest.raises(ValueError, match="is not a note of recording of_1"):
+        client.set_summary("of_1", "# x", note_id="of_other")
+    assert not transport.hit(f"PATCH {V4}/files/update/content/of_other")
 
 
 def test_get_recording_sends_a_bare_hex_id_as_a_4_0_file_id(tmp_path):

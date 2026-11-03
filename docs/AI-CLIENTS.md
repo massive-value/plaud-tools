@@ -160,7 +160,7 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 |---|---|
 | `browse_recordings` | List and filter recordings by date, title, folder, or trash status |
 | `search_recordings` | Find recordings whose transcript or summary mentions a phrase, with a snippet per hit. Plaud returns at most 20 matches per search |
-| `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary / audio download URL |
+| `get_recording` | Full detail for one recording; opt in to transcript (paginated by utterance, raw or AI-polished) / speakers / summary (with the recording's extra notes; citations read as `[2:05]`, `raw_markdown=true` keeps Plaud's links) / audio download URL / attached documents |
 | `export_transcript` | Save a whole transcript to a file (JSON for archiving, or Plaud's TXT/SRT/Word/PDF) and return its path, size and SHA-256 instead of the text |
 | `mutate_recording` | Rename, trash, restore, or move one recording or a batch (`recording_ids`); `trim` cuts one recording down to the ranges you keep, as a new copy; also manage one recording's public share link (`share_create`, `share_get`, `share_update`, `share_revoke`; all but get need `confirm=true`) |
 | `delete_recording` | Permanently delete a recording (requires explicit confirmation) |
@@ -169,7 +169,7 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | `process_recording` | Trigger transcription + summarization; `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
 | `list_folders` | List Plaud folders (id, name, color, icon) |
 | `merge_recordings` | Merge two or more recordings into a single new recording |
-| `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary |
+| `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary, or of one of its extra notes (`note_id`) |
 | `mutate_folder` | Create, edit, or delete a folder |
 | `mutate_vocabulary` | List, add, edit, or delete words in Plaud's account-wide custom vocabulary (delete needs `confirm=true`) |
 

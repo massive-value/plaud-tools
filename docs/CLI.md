@@ -258,7 +258,7 @@ plaud-tools list --all --folder-id <folder-id> | jq -r '.[].id' |
 plaud-tools summary <recording-id>
 ```
 
-Prints the AI-generated summary if one exists. Returns `null` for recordings that haven't been processed yet.
+Prints the AI-generated summary if one exists (`null` for recordings that haven't been processed yet) and `extra_notes`, the recording's other summaries as `{note_id, name, content}`. Plaud's citation links read as `[2:05]` timestamps and the image and highlight card markup is dropped; `--raw` prints Plaud's markdown unchanged. `detail` takes the same `--raw` flag.
 
 ### `audio`
 
@@ -402,7 +402,7 @@ text.
 plaud-tools correct-summary <recording-id> "<find>" "<replace>"
 ```
 
-Literal (case-sensitive) find-and-replace on a recording's AI summary text. Requires a summary to already exist. Pass an empty `<replace>` to delete the matched text.
+Literal (case-sensitive) find-and-replace on a recording's AI summary text. Requires a summary to already exist. Pass an empty `<replace>` to delete the matched text. It works on Plaud's raw markdown, so citation links survive, and `[2:05]` as printed by `summary` is not searchable text. Add `--note-id <id>` to edit an extra note.
 
 ### `set-summary`
 
@@ -411,7 +411,7 @@ plaud-tools set-summary <recording-id> --content "New summary markdown"
 plaud-tools set-summary <recording-id> --content-file summary.md
 ```
 
-Overwrites a recording's AI summary entirely with new markdown. `--content` and `--content-file` are mutually exclusive; exactly one is required.
+Overwrites a recording's AI summary entirely with new markdown. `--content` and `--content-file` are mutually exclusive; exactly one is required. Add `--note-id <id>` (from `summary`) to overwrite an extra note instead. Include any `plaud://` links you want to keep; the new text replaces everything.
 
 ### `trash` / `restore` / `delete`
 

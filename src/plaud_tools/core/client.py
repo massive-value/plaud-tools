@@ -43,6 +43,7 @@ from .models import (
     Folder,
     Recording,
     RecordingDetail,
+    RecordingNote,
     ShareLink,
     TaskStatus,
     VocabularyWord,
@@ -69,6 +70,8 @@ _MAX_LIST_PAGES = 200
 # Parallel requests per tree level in list_folders(); kept small so a large
 # library doesn't hit Plaud's rate limit.
 _FOLDER_WALK_WORKERS = 8
+# Parallel fetches of a recording's notes (each is a detail call plus a download).
+_NOTE_WORKERS = 4
 
 # ---------------------------------------------------------------------------
 # Injectable sleep/jitter for tests.  Tests monkeypatch these module-level
@@ -392,8 +395,10 @@ class PlaudClient:
                 )
             )
             detail.transcript = format_transcript(segments)
-        if include_summary and detail.is_summary:
-            detail.ai_content = self._fetch_text(self._object(raw, "SUMMARY"))
+        if include_summary:
+            if detail.is_summary:
+                detail.ai_content = self._fetch_text(self._object(raw, "SUMMARY"))
+            detail.notes = self._read_notes(detail.wrapper_id)
         return detail
 
     def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
@@ -1123,33 +1128,46 @@ class PlaudClient:
         replacements, _ = count_segment_matches(segments, find)
         return replacements
 
-    def set_summary(self, recording_id: str, content: str) -> None:
-        """Overwrite a recording's AI summary with ``content`` (full replace).
+    def set_summary(self, recording_id: str, content: str, note_id: str | None = None) -> None:
+        """Overwrite a recording's AI summary (or one of its notes) with ``content``.
 
         The recording must already have a summary — this edits it, it does
         not create one (``transcribe_and_summarize`` generates one).
+        ``note_id`` (from ``get_recording``'s notes) edits that note instead.
         """
         if not content.strip():
             raise ValueError("summary content cannot be empty")
-        obj, _current = self._summary(recording_id)
-        self._update_content(recording_id, obj, content)
+        file_id, obj, _current = self._summary(recording_id, note_id)
+        self._update_content(file_id, obj, content)
 
-    def correct_summary(self, recording_id: str, find: str, replace: str) -> dict[str, int]:
-        """Find-and-replace literal text in a recording's AI summary.
+    def correct_summary(
+        self, recording_id: str, find: str, replace: str, note_id: str | None = None
+    ) -> dict[str, int]:
+        """Find-and-replace literal text in a recording's AI summary or one note.
 
-        Literal, case-sensitive.  Returns the occurrences replaced; raises
+        Literal, case-sensitive, on the raw markdown, so citation links and
+        to-do checkboxes survive.  Returns the occurrences replaced; raises
         ``ValueError`` if the text is not found.
         """
         if not find:
             raise ValueError("find text cannot be empty")
-        obj, content = self._summary(recording_id)
+        file_id, obj, content = self._summary(recording_id, note_id)
         if not content:
             raise ValueError(f"recording {recording_id} has no summary text to edit")
         count = content.count(find)
         if count == 0:
             raise ValueError(f'no occurrences of "{find}" found in summary')
-        self._update_content(recording_id, obj, content.replace(find, replace))
+        self._update_content(file_id, obj, content.replace(find, replace))
         return {"replacements": count}
+
+    def count_summary_matches(self, recording_id: str, find: str, note_id: str | None = None) -> int:
+        """Count what ``correct_summary`` would replace, without editing."""
+        if not find:
+            raise ValueError("find text cannot be empty")
+        _file_id, _obj, content = self._summary(recording_id, note_id)
+        if not content:
+            raise ValueError(f"recording {recording_id} has no summary text to edit")
+        return content.count(find)
 
     def _editable_transcript(self, recording_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """The editable transcript's content object and segments; ValueError if none."""
@@ -1159,16 +1177,27 @@ class PlaudClient:
             raise ValueError(f"recording {recording_id} has no transcript yet")
         return obj, segments
 
-    def _summary(self, recording_id: str) -> tuple[dict[str, Any], str]:
-        """The summary's content object and current text; ValueError if none."""
-        obj = self._object(self._get_detail_raw(recording_id), "SUMMARY")
+    def _summary(self, recording_id: str, note_id: str | None = None) -> tuple[str, dict[str, Any], str]:
+        """``(file id, content object, current text)`` of the summary, or of one note.
+
+        ValueError when there is none, or when ``note_id`` is not one of this
+        recording's notes.
+        """
+        raw = self._get_detail_raw(recording_id)
+        if note_id is None:
+            file_id, obj = to_file_id(recording_id), self._object(raw, "SUMMARY")
+        else:
+            wrapper_id = self._normalize_recording_detail(raw).wrapper_id
+            if note_id not in {note["file_id"] for note in self._note_files(wrapper_id)}:
+                raise ValueError(f"{note_id} is not a note of recording {recording_id}")
+            file_id, obj = note_id, self._note_object(self._get_detail_raw(note_id))
         if not _object_done(obj):
             raise ValueError(f"recording {recording_id} has no summary yet")
         assert obj is not None
-        return obj, self._fetch_text(obj) or ""
+        return file_id, obj, self._fetch_text(obj) or ""
 
     def _update_content(
-        self, recording_id: str, obj: dict[str, Any], content: str, *, speakers: bool = False
+        self, file_id: str, obj: dict[str, Any], content: str, *, speakers: bool = False
     ) -> None:
         """Replace one content object's whole body (``files/update/content``).
 
@@ -1184,7 +1213,7 @@ class PlaudClient:
         if speakers:
             body["has_replaced_speaker"] = True
         self._request_json(
-            "PATCH", f"{_V4}/files/update/content/{to_file_id(recording_id)}", strict=True, body=body
+            "PATCH", f"{_V4}/files/update/content/{to_file_id(file_id)}", strict=True, body=body
         )
 
     # ------------------------------------------------------------------
@@ -1543,6 +1572,30 @@ class PlaudClient:
         recordings = [f for f in files if f.get("file_type") == "REC"]
         not_notes = [f for f in files if f.get("file_type") != "MD"]
         return str((recordings or not_notes or [{}])[0].get("file_id") or "")
+
+    def _note_files(self, container_id: str) -> list[dict[str, Any]]:
+        """The ``MD`` file nodes in a recording's container ([] when it has none)."""
+        if not container_id:
+            return []
+        items = self._walk(f"{_V4}/folders/children", {"node_id": container_id})
+        return [item for item in items if item.get("file_type") == "MD" and item.get("file_id")]
+
+    def _read_notes(self, container_id: str) -> list[RecordingNote]:
+        """Every note in a recording's container with its markdown, fetched in parallel."""
+        files = self._note_files(container_id)
+        with ThreadPoolExecutor(max_workers=_NOTE_WORKERS) as pool:
+            texts = pool.map(
+                lambda item: self._fetch_text(self._note_object(self._get_detail_raw(item["file_id"]))), files
+            )
+            return [
+                RecordingNote(note_id=str(item["file_id"]), name=str(item.get("name") or ""), content=text)
+                for item, text in zip(files, texts, strict=True)
+            ]
+
+    @classmethod
+    def _note_object(cls, raw: dict[str, Any]) -> dict[str, Any] | None:
+        """A note file's one content object: ``MD``, or ``HIGHLIGHTS`` for a highlights note."""
+        return cls._object(raw, "MD") or cls._object(raw, "HIGHLIGHTS")
 
     def _container_node(self, detail: RecordingDetail) -> dict[str, Any]:
         """The container folder's node (for its version), via ``nodes/ancestor-items``.

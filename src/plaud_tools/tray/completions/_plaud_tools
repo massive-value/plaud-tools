@@ -81,12 +81,17 @@ _plaud_tools() {
                         '--unfiled[Only unfiled recordings]'
                     ;;
                 detail)
-                    _arguments '--include-transcript[Include full transcript text]'
+                    _arguments \
+                        '--include-transcript[Include full transcript text]' \
+                        '--raw[Keep the summary raw markdown with plaud:// links]'
                     ;;
                 transcript)
                     _arguments \
                         '--polish[Return the AI-polished transcript]' \
                         '--segments[Print structured per-utterance JSON]'
+                    ;;
+                summary)
+                    _arguments '--raw[Keep the summary raw markdown with plaud:// links]'
                     ;;
                 audio)
                     _arguments '-o+[Download to this path instead of printing the URL]:output:_files' \
@@ -204,9 +209,11 @@ _plaud_tools() {
                 correct-transcript)
                     ;;
                 correct-summary)
+                    _arguments '--note-id[Edit this note instead of the main summary]:note_id'
                     ;;
                 set-summary)
                     _arguments \
+                        '--note-id[Edit this note instead of the main summary]:note_id' \
                         '--content[New summary markdown]:content' \
                         '--content-file[Path to a file containing the new summary markdown]:content_file:_files'
                     ;;

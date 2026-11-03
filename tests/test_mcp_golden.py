@@ -64,14 +64,17 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
 #
-# v0.14.0: 730 -> 880.  Two feature sets share this bump:
+# v0.14.0: 730 -> 920.  Three feature sets share this bump:
 #   - mutate_vocabulary (new tool) and the share_* actions of mutate_recording
 #     (vocabulary management and public share links)
 #   - mutate_recording(action="trim") with its `keep` ranges,
 #     upload_recording(attach_to=...) and get_recording's `attachments` include
+#   - #253/#256: get_recording's extra_notes and raw_markdown, and
+#     edit_summary's note_id plus a warning that edits act on raw markdown;
+#     without it an agent searches rendered [2:05] text
 # Each is a new capability kept to one short line per parameter.  Merged total
-# 864 words; budget set just above it.
-_TOKEN_BUDGET_WORDS = 880
+# 906 words; budget set just above it.
+_TOKEN_BUDGET_WORDS = 920
 
 
 def _serialize_tools() -> str:

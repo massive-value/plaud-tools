@@ -16,6 +16,7 @@ from plaud_tools.core.models import (
     Folder,
     Recording,
     RecordingDetail,
+    RecordingNote,
     ShareLink,
     VocabularyWord,
 )
@@ -1440,6 +1441,57 @@ def test_mcp_get_recording_include_summary():
     assert "transcript" not in payload
 
 
+class NotesStub(StubClient):
+    """A recording whose summary and one note carry Plaud citation and card markup."""
+
+    def get_recording(self, recording_id, **kwargs):
+        detail = super().get_recording(recording_id, **kwargs)
+        detail.ai_content = (
+            "Agreed [](plaud://source?type=summary&start_time=125370)\n[](plaud://image?id=1)\n- [ ] Send"
+        )
+        detail.notes = [
+            RecordingNote(note_id="of_n1", name="Minutes", content="Hi [](plaud://source?start_time=5000)")
+        ]
+        return detail
+
+
+def test_mcp_get_recording_renders_citations_and_lists_notes():
+    handlers = build_handlers(lambda: NotesStub())
+    payload = json.loads(handlers["get_recording"]("rec1", include=["summary"])["content"][0]["text"])
+    assert payload["summary"] == "Agreed [2:05]\n- [ ] Send"
+    assert payload["extra_notes"] == [{"note_id": "of_n1", "name": "Minutes", "content": "Hi [0:05]"}]
+
+
+def test_mcp_get_recording_raw_markdown_keeps_plaud_links():
+    handlers = build_handlers(lambda: NotesStub())
+    payload = json.loads(
+        handlers["get_recording"]("rec1", include=["summary"], raw_markdown=True)["content"][0]["text"]
+    )
+    assert "plaud://source" in payload["summary"] and "plaud://image" in payload["summary"]
+    assert payload["extra_notes"][0]["content"] == "Hi [](plaud://source?start_time=5000)"
+
+
+def test_mcp_edit_summary_passes_note_id():
+    client = SummaryStub()
+    handlers = build_handlers(lambda: client)
+    handlers["edit_summary"](recording_id="rec1", action="correct", find="a", replace="b", note_id="of_n1")
+    assert client.correct_call == ("rec1", "a", "b", "of_n1")
+
+
+def test_cli_summary_prints_rendered_text_and_notes_and_raw_on_request():
+    rendered = json.loads(run_cli(["summary", "rec1"], NotesStub()))
+    assert rendered["summary"] == "Agreed [2:05]\n- [ ] Send"
+    assert rendered["extra_notes"][0]["content"] == "Hi [0:05]"
+    raw = json.loads(run_cli(["summary", "rec1", "--raw"], NotesStub()))
+    assert "plaud://source" in raw["summary"]
+
+
+def test_cli_correct_summary_passes_note_id():
+    client = SummaryStub()
+    run_cli(["correct-summary", "rec1", "a", "b", "--note-id", "of_n1"], client)
+    assert client.correct_call == ("rec1", "a", "b", "of_n1")
+
+
 def test_mcp_list_folders_returns_tags():
     handlers = build_handlers(lambda: StubClient())
     result = handlers["list_folders"]()
@@ -1990,12 +2042,12 @@ class SummaryStub(StubClient):
         self.correct_call = None
         self.set_call = None
 
-    def correct_summary(self, recording_id, find, replace):
-        self.correct_call = (recording_id, find, replace)
+    def correct_summary(self, recording_id, find, replace, note_id=None):
+        self.correct_call = (recording_id, find, replace, note_id)
         return {"replacements": 3}
 
-    def set_summary(self, recording_id, content):
-        self.set_call = (recording_id, content)
+    def set_summary(self, recording_id, content, note_id=None):
+        self.set_call = (recording_id, content, note_id)
 
 
 def test_mcp_edit_summary_correct_calls_correct_summary():
@@ -2005,7 +2057,7 @@ def test_mcp_edit_summary_correct_calls_correct_summary():
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
     assert payload["replacements"] == 3
-    assert client.correct_call == ("rec1", "Suzan", "Susan")
+    assert client.correct_call == ("rec1", "Suzan", "Susan", None)
 
 
 def test_mcp_edit_summary_correct_requires_find_and_replace():
@@ -2022,7 +2074,7 @@ def test_mcp_edit_summary_replace_calls_set_summary():
     result = handlers["edit_summary"](recording_id="rec1", action="replace", content="# New")
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
-    assert client.set_call == ("rec1", "# New")
+    assert client.set_call == ("rec1", "# New", None)
 
 
 def test_mcp_edit_summary_replace_requires_content():
@@ -2044,7 +2096,7 @@ def test_cli_correct_summary_calls_client():
     output = run_cli(["correct-summary", "rec1", "Suzan", "Susan"], client)
     payload = json.loads(output)
     assert payload["replacements"] == 3
-    assert client.correct_call == ("rec1", "Suzan", "Susan")
+    assert client.correct_call == ("rec1", "Suzan", "Susan", None)
 
 
 def test_cli_set_summary_from_content_flag():
@@ -2052,7 +2104,7 @@ def test_cli_set_summary_from_content_flag():
     output = run_cli(["set-summary", "rec1", "--content", "# Fresh summary"], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.set_call == ("rec1", "# Fresh summary")
+    assert client.set_call == ("rec1", "# Fresh summary", None)
 
 
 def test_cli_set_summary_from_content_file(tmp_path):
@@ -2062,7 +2114,7 @@ def test_cli_set_summary_from_content_file(tmp_path):
     output = run_cli(["set-summary", "rec1", "--content-file", str(md)], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.set_call == ("rec1", "# From file\n\nbody")
+    assert client.set_call == ("rec1", "# From file\n\nbody", None)
 
 
 # ---------------------------------------------------------------------------

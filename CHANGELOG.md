@@ -31,11 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PDF, Word, Excel, PowerPoint, text, CSV or image next to the recording. It
   shows in the Plaud web app. `get_recording(include=["attachments"])` and
   `show` list them.
+- Recordings with extra notes (the migrated "Meeting Minutes", "To-do List" and similar
+  summaries Plaud 4.0 files next to a recording) now show them. `get_recording` with
+  `include=["summary"]` and the CLI `summary` / `detail` commands return
+  `extra_notes: [{note_id, name, content}]`. Before, they never appeared in MCP, CLI or export.
+- `edit_summary` (MCP) and `correct-summary` / `set-summary` (CLI `--note-id`) can edit an
+  extra note, so a typo inside a note can be fixed.
 
 ### Changed
 
 - The MCP tool count is now 14, and `mutate_recording` is flagged destructive
   to clients because it can now publish and revoke share links.
+- Summaries and notes read as prose. Plaud's invisible citation links become `[2:05]`-style
+  timestamps, and the image and highlight card markup is dropped. Pass `raw_markdown=true`
+  (MCP) or `--raw` (CLI) to get Plaud's markdown unchanged. Edits always run on the raw
+  markdown, so every `plaud://` link and `- [ ]` to-do survives; find text taken from the
+  readable form will not match a citation.
+- `export_transcript` is unchanged: its JSON stays the SWIRL v1 transcript contract and
+  does not carry notes.
 
 ## [0.13.1] - 2026-11-03
 

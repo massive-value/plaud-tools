@@ -87,6 +87,19 @@ class Recording:
 
 
 @dataclass(slots=True)
+class RecordingNote:
+    """An extra summary stored next to a recording (Plaud 4.0 "note").
+
+    ``content`` is the raw markdown, or None when Plaud has not finished it.
+    ``note_id`` is the note's file id, what ``edit_summary`` takes to edit it.
+    """
+
+    note_id: str
+    name: str
+    content: str | None = None
+
+
+@dataclass(slots=True)
 class RecordingDetail:
     id: str
     filename: str
@@ -112,6 +125,8 @@ class RecordingDetail:
     # *could* have asked for instead of an unexplained empty transcript.
     transcript_blocks_available: list[str] = field(default_factory=list)
     ai_content: str | None = None
+    # Extra summaries filed beside the recording; filled with the summary.
+    notes: list[RecordingNote] = field(default_factory=list)
     # Node bookkeeping for writes: the file node, its per-recording container
     # (empty when the file sits directly in a folder), and the node version
     # Plaud requires on every change.

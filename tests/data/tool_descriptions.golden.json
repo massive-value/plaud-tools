@@ -87,7 +87,7 @@
       "additionalProperties": false,
       "properties": {
         "include": {
-          "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url, attachments",
+          "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary (+ extra_notes: other summaries as {note_id, name, content}), audio_url, attachments",
           "items": {
             "enum": [
               "transcript",
@@ -100,6 +100,11 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "raw_markdown": {
+          "default": false,
+          "description": "Keep Plaud's raw summary markdown (plaud:// links) instead of [2:05] citations",
+          "type": "boolean"
         },
         "recording_id": {
           "type": "string"
@@ -457,7 +462,7 @@
     "name": "merge_recordings"
   },
   {
-    "description": "Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",
+    "description": "Edit a recording's AI summary, or an extra note via note_id. action='correct' does a literal find-and-replace on the raw markdown (shown [2:05] citations are plaud:// links; they are kept); action='replace' overwrites everything, so include any plaud:// links to keep.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -478,6 +483,10 @@
         },
         "find": {
           "description": "Exact text to find (case-sensitive, literal); required for action=correct",
+          "type": "string"
+        },
+        "note_id": {
+          "description": "Edit this extra note (from get_recording) instead of the summary",
           "type": "string"
         },
         "recording_id": {
