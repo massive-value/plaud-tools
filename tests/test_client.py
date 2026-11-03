@@ -13,7 +13,8 @@ import pytest
 import plaud_tools.core.client as client_mod
 from plaud_tools.core.client import PlaudClient, PlaudRecordingQuery, to_file_id
 from plaud_tools.core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
-from plaud_tools.core.models import AudioLink, region_for_api_domain
+from plaud_tools.core.folders import plan_colon_nesting
+from plaud_tools.core.models import AudioLink, Folder, region_for_api_domain
 from plaud_tools.core.session import FileSessionStore, PlaudSession, SessionManager, SessionStore
 from plaud_tools.core.transport import HttpResponse
 
@@ -760,6 +761,70 @@ def test_update_folder_unknown_id_raises(tmp_path):
     client, _ = routed(tmp_path, {f"GET {V4}/folders/children": children({})})
     with pytest.raises(ValueError, match="no folder with id"):
         client.update_folder("on_fd_x", name="X")
+
+
+def test_move_folder_sends_its_version_and_returns_the_new_one(tmp_path):
+    client, transport = routed(
+        tmp_path,
+        {
+            f"GET {V4}/folders/children": children(
+                {"root": [folder_node("on_fd_1", "Prospects", version_ms=100)]}
+            ),
+            # The move reply carries only the id and new version.
+            f"POST {V4}/nodes/move": ok({"items": [{"node_id": "on_fd_1", "version_ms": 120}]}),
+        },
+    )
+    moved = client.move_folder("on_fd_1", "on_fd_2")
+    assert (moved.name, moved.parent_id, moved.version_ms) == ("Prospects", "on_fd_2", 120)
+    assert transport.sent(f"POST {V4}/nodes/move") == [
+        {"target_node_id": "on_fd_2", "items": [{"node_id": "on_fd_1", "origin_version": 100}]}
+    ]
+    with pytest.raises(ValueError, match='pass "root"'):
+        client.move_folder("on_fd_1", "")
+
+
+def test_nest_colon_folders_creates_the_parent_then_moves_and_renames(tmp_path):
+    folders = [
+        Folder(
+            id="on_fd_1",
+            name="Clients:Prospects",
+            color="#111111",
+            icon="e627",
+            parent_id="root",
+            version_ms=100,
+        ),
+        Folder(
+            id="on_fd_2",
+            name="Clients:Active",
+            color="#222222",
+            icon="e627",
+            parent_id="root",
+            version_ms=200,
+        ),
+    ]
+    client, transport = routed(
+        tmp_path,
+        {
+            f"POST {V4}/nodes/folder": ok({"items": [folder_node("on_fd_9", "Clients")]}),
+            f"POST {V4}/nodes/move": [
+                ok({"items": [{"node_id": "on_fd_1", "version_ms": 300}]}),
+                ok({"items": [{"node_id": "on_fd_2", "version_ms": 400}]}),
+            ],
+            f"PATCH {V4}/nodes/rename/on_fd_1": ok({"items": [folder_node("on_fd_1", "Prospects")]}),
+            f"PATCH {V4}/nodes/rename/on_fd_2": ok({"items": [folder_node("on_fd_2", "Active")]}),
+        },
+    )
+    client.nest_colon_folders(plan_colon_nesting(folders))
+    assert [b["name"] for b in transport.sent(f"POST {V4}/nodes/folder")] == ["Clients"]
+    assert transport.sent(f"POST {V4}/nodes/move") == [
+        {"target_node_id": "on_fd_9", "items": [{"node_id": "on_fd_1", "origin_version": 100}]},
+        {"target_node_id": "on_fd_9", "items": [{"node_id": "on_fd_2", "origin_version": 200}]},
+    ]
+    # Renamed after the move, with the version the move returned; color and icon kept.
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_fd_1") == [
+        {"name": "Prospects", "color": "#111111", "icon": "e627", "origin_version": 300}
+    ]
+    assert transport.sent(f"PATCH {V4}/nodes/rename/on_fd_2")[0]["name"] == "Active"
 
 
 def test_delete_folder_moves_children_to_recordings_then_trashes_and_deletes(tmp_path):

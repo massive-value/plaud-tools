@@ -28,13 +28,14 @@ import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlencode
 
 from .errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
+from .folders import ColonNestingPlan, parent_id_of
 from .models import (
     BROWSER_USER_AGENT,
     AudioLink,
@@ -960,8 +961,27 @@ class PlaudClient:
         cost is one round trip per level (about 1 s for a flat library of 16
         folders instead of 4 s one at a time).
         """
+        return self._folder_tree("root")
+
+    def subfolders(self, folder_id: str) -> list[Folder]:
+        """Every folder inside *folder_id*, at any depth (not the folder itself).
+
+        Backs the folder filter of ``query_recordings``, which counts
+        recordings in subfolders as part of the folder.  Costs one request
+        per level below the folder; a folder with no subfolders is one.
+        """
+        if not folder_id:
+            raise ValueError("folder_id cannot be empty")
+        return self._folder_tree(folder_id)
+
+    def _folder_tree(self, start: str) -> list[Folder]:
+        """User folders below *start*, breadth first, one parallel round trip per level.
+
+        From the root this also descends into the system folders (Recordings,
+        Import), where user folders can sit too.
+        """
         folders: list[Folder] = []
-        level = ["root"]
+        level = [start]
         with ThreadPoolExecutor(max_workers=_FOLDER_WALK_WORKERS) as pool:
             while level:
                 children = pool.map(
@@ -1021,11 +1041,67 @@ class PlaudClient:
             raise ValueError("folder name cannot be empty")
         if name is None and color is None and icon is None:
             raise ValueError("update_folder requires at least one of name, color, icon")
-        current = self._find_folder(folder_id)
+        return self._rename_folder(self._find_folder(folder_id), name=name, color=color, icon=icon)
+
+    def move_folder(self, folder_id: str, parent_id: str) -> Folder:
+        """Move a folder, with everything inside it, into *parent_id* ("root" = top level).
+
+        Folders move with the same ``nodes/move`` call as recordings.  Plaud
+        refuses a move into the folder itself or one of its own subfolders
+        (-1800308) and a name already taken in the target (-1800306).
+        """
+        if not folder_id:
+            raise ValueError("folder_id cannot be empty")
+        if not parent_id:
+            raise ValueError('parent_id cannot be empty; pass "root" for the top level')
+        return self._move_folder_node(self._find_folder(folder_id), parent_id)
+
+    def nest_colon_folders(self, plan: ColonNestingPlan) -> None:
+        """Carry out a ``plan_colon_nesting`` plan: real subfolders for colon names.
+
+        Missing parents are created first, shallowest first.  Then each
+        colon-named folder moves under its parent and takes its last name
+        part, keeping its id, color, icon and recordings.  Moving before
+        renaming means the short name is only ever used inside the new
+        parent, where the plan already checked it is free.  The versions come
+        from the plan's folder listing, so run this right after planning.  A
+        run that stops partway can be planned and run again: converted folders
+        have no colon left and created parents are reused.
+        """
+        ids = dict(plan.owners)
+        for path in plan.creates:
+            ids[path] = self.create_folder(path[-1], parent_id=parent_id_of(path, ids)).id
+        for nesting in plan.moves:
+            moved = self._move_folder_node(nesting.folder, parent_id_of(nesting.path, ids))
+            self._rename_folder(moved, name=nesting.path[-1])
+
+    def _move_folder_node(self, folder: Folder, parent_id: str) -> Folder:
+        """``nodes/move`` one folder; returns it with its new parent and version.
+
+        The move reply's item carries the new ``version_ms`` that a follow-up
+        rename must send, so no re-listing (which can lag a write) is needed.
+        """
+        moved = self._node_batch(
+            "POST",
+            "move",
+            {
+                "target_node_id": parent_id,
+                "items": [{"node_id": folder.id, "origin_version": folder.version_ms}],
+            },
+        )
+        version = int(moved[0].get("version_ms") or 0) if moved else 0
+        if not version:
+            return self._find_folder(folder.id)
+        return replace(folder, parent_id=parent_id, version_ms=version, raw=moved[0])
+
+    def _rename_folder(
+        self, current: Folder, *, name: str | None = None, color: str | None = None, icon: str | None = None
+    ) -> Folder:
+        """PATCH ``nodes/rename`` with *current*'s version; unchanged fields keep their value."""
         data = (
             self._request_json(
                 "PATCH",
-                f"{_V4}/nodes/rename/{folder_id}",
+                f"{_V4}/nodes/rename/{current.id}",
                 strict=True,
                 body={
                     "name": name if name is not None else current.name,
@@ -1037,7 +1113,7 @@ class PlaudClient:
             or {}
         )
         items = data.get("items") or []
-        return self._normalize_folder(items[0]) if items else self._find_folder(folder_id)
+        return self._normalize_folder(items[0]) if items else self._find_folder(current.id)
 
     def delete_folder(self, folder_id: str) -> None:
         """Delete a folder, keeping what was inside it.  Cannot be undone.

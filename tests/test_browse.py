@@ -2,7 +2,8 @@
 
 Covers:
 - query_recordings: one list request per call, after/limit slicing, has_more,
-  limit=None, trash listing, folder filters refused on the trash
+  limit=None, folder filter includes subfolders (#260), trash listing, folder
+  filters refused on the trash
 - browse_recordings MCP handler: response shape, next_after cursor, the
   folder="" unfiled sentinel, argument validation
 - CLI list and trash --list: same query, trash filters
@@ -15,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from plaud_tools.core.models import Recording
+from plaud_tools.core.models import Folder, Recording
 from plaud_tools.core.query import query_recordings
 
 
@@ -29,11 +30,17 @@ def make_rec(
 
 
 class LibraryClient:
-    """Serves a fixed library and trash; counts list requests."""
+    """Serves a fixed library, trash and folder tree; counts list requests."""
 
-    def __init__(self, library: list[Recording], trash: list[Recording] | None = None):
+    def __init__(
+        self,
+        library: list[Recording],
+        trash: list[Recording] | None = None,
+        subfolders: dict[str, list[str]] | None = None,
+    ):
         self.library = library
         self.trash = trash or []
+        self.tree = subfolders or {}
         self.requests: list[str] = []
 
     def list_recordings(self, query: Any = None) -> list[Recording]:
@@ -44,6 +51,9 @@ class LibraryClient:
     def list_trash(self) -> list[Recording]:
         self.requests.append("trash")
         return list(self.trash)
+
+    def subfolders(self, folder_id: str) -> list[Folder]:
+        return [Folder(id=child) for child in self.tree.get(folder_id, [])]
 
 
 def numbered(count: int, filename: str = "Meeting") -> list[Recording]:
@@ -77,6 +87,16 @@ class TestQueryRecordings:
         page, has_more = query_recordings(LibraryClient(library), folder_id="tag1")
         assert len(page) == 217
         assert has_more is False
+
+    def test_folder_filter_includes_subfolders(self):
+        library = [
+            make_rec("direct", folder_id="clients", start_time=3),
+            make_rec("nested", folder_id="prospects", start_time=2),
+            make_rec("elsewhere", folder_id="internal", start_time=1),
+        ]
+        client = LibraryClient(library, subfolders={"clients": ["prospects"]})
+        page, _ = query_recordings(client, folder_id="clients")
+        assert [r.id for r in page] == ["direct", "nested"]
 
     def test_trash_lists_the_trash_with_filters(self):
         trash = [make_rec("old", filename="Old call", start_time=1), make_rec("new", start_time=5)]

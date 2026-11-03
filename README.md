@@ -101,7 +101,7 @@ PlaudTools drives Plaud's web API instead, which is how it can write. Most of ou
 | Search inside transcripts and summaries | ✅ | ❌ |
 | Rename recordings | ✅ | ❌ |
 | Trash / restore / permanently delete | ✅ | ❌ |
-| Folders — list, create, edit, delete, move into | ✅ | ❌ |
+| Folders — list, create, edit, nest, delete, move into | ✅ | ❌ |
 | Name speakers in a transcript | ✅ | ❌ |
 | Fix transcript text (find-and-replace) | ✅ | ❌ |
 | Edit AI summaries | ✅ | ❌ |

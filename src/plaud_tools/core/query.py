@@ -173,18 +173,27 @@ def query_recordings(
     ``[after : after + limit]``.  ``limit=None`` returns every match from
     ``after`` on, with ``has_more`` False.
 
+    ``folder_id`` matches recordings in that folder *and its subfolders*, the
+    way a person means "what's in Client Meetings" once its old colon-named
+    folders are real subfolders.  Each recording's own ``folder_id`` still
+    says exactly where it sits.  Finding the subfolders costs one request
+    per level below the folder (one for a folder with none).
+
     Trashed recordings carry no folder in Plaud 4.0, so a folder or unfiled
     filter on the trash is refused rather than answered with nothing.
     """
     if trash and (folder_id is not None or unfiled):
         raise ValueError("trashed recordings have no folder, so the trash cannot be filtered by folder")
     items = client.list_trash() if trash else client.list_recordings()
+    folder_ids = None
+    if folder_id is not None and not unfiled:
+        folder_ids = {folder_id, *(folder.id for folder in client.subfolders(folder_id))}
     matched = filter_recordings(
         items,
         since_ms=since_ms,
         until_ms=until_ms,
         query=query,
-        folder_ids=None if folder_id is None else {folder_id},
+        folder_ids=folder_ids,
         unfiled=unfiled,
     )
     if limit is None:

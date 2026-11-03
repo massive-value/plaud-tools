@@ -167,10 +167,10 @@ Open the same config file you edited above and remove the `plaud` entry from `mc
 | `edit_transcript` | Rename a speaker label (`action="rename_speaker"`, matches the displayed name or the original `Speaker N`) or literal find-and-replace on transcript text (`action="correct"`, supports `dry_run`) |
 | `upload_recording` | Upload a local audio file (transcodes via ffmpeg if needed) |
 | `process_recording` | Trigger transcription + summarization; `wait` controls how long to block, returning `still_processing` if a soft deadline is hit |
-| `list_folders` | List Plaud folders (id, name, color, icon) |
+| `list_folders` | List Plaud folders (id, name, color, icon, parent_id) |
 | `merge_recordings` | Merge two or more recordings into a single new recording |
 | `edit_summary` | Literal find-and-replace (`action="correct"`, supports `dry_run`) or full overwrite (`action="replace"`) of a recording's AI summary |
-| `mutate_folder` | Create, edit, or delete a folder |
+| `mutate_folder` | Create (optionally inside another folder), edit, move, or delete a folder |
 
 ## Optional: install the agent skill
 

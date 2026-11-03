@@ -60,7 +60,7 @@ def test_server_edit_summary_requires_recording_id_and_action():
 def test_server_mutate_folder_requires_only_action():
     tool = next(t for t in _TOOLS if t.name == "mutate_folder")
     assert tool.input_schema["required"] == ["action"]
-    assert set(tool.input_schema["properties"]["action"]["enum"]) == {"create", "edit", "delete"}
+    assert set(tool.input_schema["properties"]["action"]["enum"]) == {"create", "edit", "move", "delete"}
 
 
 def test_server_mutate_folder_is_flagged_destructive():

@@ -65,9 +65,13 @@ _plaud_tools_complete() {
             ;;
         folder)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "create edit delete --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "create edit move nest-colon-names delete --help" -- "$cur"))
             elif [[ "${words[2]}" == "create" ]]; then
-                COMPREPLY=($(compgen -W "--color --icon --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "--color --icon --parent-id --help" -- "$cur"))
+            elif [[ "${words[2]}" == "move" ]]; then
+                COMPREPLY=($(compgen -W "--help" -- "$cur"))
+            elif [[ "${words[2]}" == "nest-colon-names" ]]; then
+                COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             elif [[ "${words[2]}" == "edit" ]]; then
                 COMPREPLY=($(compgen -W "--name --color --icon --help" -- "$cur"))
             elif [[ "${words[2]}" == "delete" ]]; then

@@ -63,7 +63,11 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-_TOKEN_BUDGET_WORDS = 730
+#
+# #260: 723 -> 748 words, budget 730 -> 785.  mutate_folder gained the move
+# action and a parent_id parameter, and list_folders says what parent_id
+# holds, so an agent can build and read nested folders.
+_TOKEN_BUDGET_WORDS = 785
 
 
 def _serialize_tools() -> str:

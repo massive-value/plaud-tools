@@ -950,6 +950,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         name: str | None = None,
         color: str | None = None,
         icon: str | None = None,
+        parent_id: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
@@ -960,7 +961,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                folder = client.create_folder(name, color=color, icon=icon)
+                folder = client.create_folder(name, color=color, icon=icon, parent_id=parent_id)
                 return _json_result(
                     {
                         "ok": True,
@@ -998,14 +999,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                # Deleting a folder is irreversible (the folder is gone; the
-                # recordings inside survive but become unfiled).  Gate it behind
-                # an explicit confirm, mirroring delete_recording — the stdio
+                # Deleting a folder is irreversible (the folder is gone; what
+                # was inside survives one level up).  Gate it behind an
+                # explicit confirm, mirroring delete_recording — the stdio
                 # surface can show no interactive prompt.
                 if not confirm:
                     return _error_result(
-                        "Deleting a folder cannot be undone (recordings inside are kept but "
-                        "become unfiled). Re-invoke with confirm=true only after the human has "
+                        "Deleting a folder cannot be undone (what is inside is kept and moves up "
+                        "one level). Re-invoke with confirm=true only after the human has "
                         "confirmed they want to delete this folder.",
                         error_code="validation",
                         retryable=False,
@@ -1013,8 +1014,21 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 client.delete_folder(folder_id)
                 return _json_result({"ok": True, "action": "delete", "folder_id": folder_id})
 
+            if action == "move":
+                # parent_id is required, never defaulted: an omitted target
+                # must not silently move a folder to the top level (#140).
+                if not folder_id or not parent_id:
+                    return _error_result(
+                        'folder_id and parent_id are required for action=move (parent_id="root" '
+                        "for the top level)",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                folder = client.move_folder(folder_id, parent_id)
+                return _json_result({"ok": True, "action": "move", "folder": folder_dict(folder)})
+
             return _error_result(
-                f"unknown action: {action!r} (expected 'create', 'edit', or 'delete')",
+                f"unknown action: {action!r} (expected 'create', 'edit', 'move', or 'delete')",
                 error_code="validation",
                 retryable=False,
             )

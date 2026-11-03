@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `trash --list` takes the same filters as `list`: `--since`, `--until`,
   `--query`, `--limit` and `--all`.
+- Nested folders. `mutate_folder` takes `parent_id` to create a folder inside
+  another, and a new `move` action puts a folder with its contents under
+  another folder (`"root"` for the top level). The CLI has
+  `folder create --parent-id` and `folder move <folder-id> <parent-id>`.
+- `folder nest-colon-names` turns colon-named folders such as
+  `Client Meetings:Prospects` into real subfolders. It prints the plan and
+  changes nothing until you re-run it with `--yes`.
 
 ### Changed
 
@@ -21,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filtering the trash by folder (`browse_recordings` with `trash` and
   `folder`) is now an error. Trashed recordings have no folder in Plaud 4.0,
   so it always came back empty.
+- A folder filter (`browse_recordings` `folder`, `list --folder-id`) now
+  includes recordings in that folder's subfolders.
+
+### Fixed
+
+- The folder delete warning said recordings inside "become unfiled". They
+  move up one level, as they have since 0.13.1, and the warning now says so.
 
 ## [0.13.1] - 2026-11-03
 

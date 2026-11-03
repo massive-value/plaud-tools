@@ -95,6 +95,9 @@ class StubClient:
     def list_folders(self):
         return [Folder(id="tag1", name="Work", color="folder-color-green", icon="e627", parent_id="root")]
 
+    def subfolders(self, folder_id):
+        return []
+
     def set_recording_folder(self, recording_ids, folder_id):
         self.move_call = (recording_ids, folder_id)
 
@@ -2041,10 +2044,22 @@ class FolderStub(StubClient):
         self.create_call = None
         self.update_call = None
         self.delete_call = None
+        self.move_call = None
+        self.nest_plan = None
 
-    def create_folder(self, name, *, color=None, icon=None):
-        self.create_call = (name, color, icon)
-        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id="root")
+    def create_folder(self, name, *, color=None, icon=None, parent_id=None):
+        self.create_call = (name, color, icon, parent_id)
+        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id=parent_id or "root")
+
+    def move_folder(self, folder_id, parent_id):
+        self.move_call = (folder_id, parent_id)
+        return Folder(id=folder_id, name="Moved", parent_id=parent_id)
+
+    def list_folders(self):
+        return [Folder(id="f1", name="Clients:Prospects", parent_id="root")]
+
+    def nest_colon_folders(self, plan):
+        self.nest_plan = plan
 
     def update_folder(self, folder_id, *, name=None, color=None, icon=None):
         self.update_call = (folder_id, name, color, icon)
@@ -2057,11 +2072,13 @@ class FolderStub(StubClient):
 def test_mcp_mutate_folder_create():
     client = FolderStub()
     handlers = build_handlers(lambda: client)
-    result = handlers["mutate_folder"](action="create", name="Clients", color="#111", icon="e627")
+    result = handlers["mutate_folder"](
+        action="create", name="Clients", color="#111", icon="e627", parent_id="on_fd_1"
+    )
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
-    assert payload["folder"]["id"] == "new1"
-    assert client.create_call == ("Clients", "#111", "e627")
+    assert payload["folder"]["parent_id"] == "on_fd_1"
+    assert client.create_call == ("Clients", "#111", "e627", "on_fd_1")
 
 
 def test_mcp_mutate_folder_create_requires_name():
@@ -2105,6 +2122,21 @@ def test_mcp_mutate_folder_delete_with_confirm():
     assert client.delete_call == "f1"
 
 
+def test_mcp_mutate_folder_move():
+    client = FolderStub()
+    result = build_handlers(lambda: client)["mutate_folder"](action="move", folder_id="f1", parent_id="f2")
+    assert json.loads(result["content"][0]["text"])["folder"]["parent_id"] == "f2"
+    assert client.move_call == ("f1", "f2")
+
+
+def test_mcp_mutate_folder_move_requires_parent_id():
+    client = FolderStub()
+    result = build_handlers(lambda: client)["mutate_folder"](action="move", folder_id="f1")
+    assert result["isError"] is True
+    assert "parent_id" in json.loads(result["content"][0]["text"])["error"]
+    assert client.move_call is None
+
+
 def test_mcp_mutate_folder_rejects_unknown_action():
     handlers = build_handlers(lambda: FolderStub())
     result = handlers["mutate_folder"](action="obliterate")
@@ -2117,7 +2149,31 @@ def test_cli_folder_create():
     output = run_cli(["folder", "create", "Clients", "--color", "#111", "--icon", "e627"], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.create_call == ("Clients", "#111", "e627")
+    assert client.create_call == ("Clients", "#111", "e627", None)
+
+
+def test_cli_folder_move():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "move", "f1", "root"], client))
+    assert payload["action"] == "move"
+    assert client.move_call == ("f1", "root")
+
+
+def test_cli_nest_colon_names_dry_run_changes_nothing():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "nest-colon-names"], client))
+    assert payload["dry_run"] is True
+    assert payload["convert"] == [
+        {"folder_id": "f1", "from": "Clients:Prospects", "to": "Clients > Prospects"}
+    ]
+    assert client.nest_plan is None
+
+
+def test_cli_nest_colon_names_with_yes_runs_the_plan():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "nest-colon-names", "--yes"], client))
+    assert payload["ok"] is True
+    assert [move.folder.id for move in client.nest_plan.moves] == ["f1"]
 
 
 def test_cli_folder_edit():

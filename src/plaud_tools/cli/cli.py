@@ -20,6 +20,7 @@ from ..core.client import (
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.export import EXPORT_FORMATS, TranscriptExportError, export_transcript
+from ..core.folders import plan_colon_nesting
 from ..core.query import (
     detail_summary_dict,
     folder_dict,
@@ -143,13 +144,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     folders_cmd = sub.add_parser("folders")  # noqa: F841  # side-effect: registers subparser
 
-    folder_cmd = sub.add_parser("folder", help="Create, edit, or delete folders.")
+    folder_cmd = sub.add_parser("folder", help="Create, edit, move, or delete folders.")
     folder_sub = folder_cmd.add_subparsers(dest="folder_command", required=True)
 
     folder_create = folder_sub.add_parser("create")
     folder_create.add_argument("name")
     folder_create.add_argument("--color", help="Plaud color name, e.g. 'folder-color-green'")
     folder_create.add_argument("--icon", help="Icon glyph codepoint, e.g. 'e627'")
+    folder_create.add_argument("--parent-id", help="Create it inside this folder (default: top level)")
+
+    folder_move = folder_sub.add_parser("move", help="Move a folder, with its contents, into another folder.")
+    folder_move.add_argument("folder_id")
+    folder_move.add_argument("parent_id", help='Folder to move it into; "root" for the top level')
+
+    folder_nest = folder_sub.add_parser(
+        "nest-colon-names",
+        help='Turn colon-named folders ("A:B") into real subfolders. Shows the plan unless --yes.',
+    )
+    folder_nest.add_argument("--yes", action="store_true", help="Carry the plan out")
 
     folder_edit = folder_sub.add_parser("edit")
     folder_edit.add_argument("folder_id")
@@ -610,8 +622,13 @@ def _handle_folders(args: argparse.Namespace, client: PlaudClient) -> str:  # no
 
 def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.folder_command == "create":
-        folder = client.create_folder(args.name, color=args.color, icon=args.icon)
+        folder = client.create_folder(args.name, color=args.color, icon=args.icon, parent_id=args.parent_id)
         return json.dumps({"ok": True, "action": "create", "folder": folder_dict(folder)}, indent=2)
+    if args.folder_command == "move":
+        folder = client.move_folder(args.folder_id, args.parent_id)
+        return json.dumps({"ok": True, "action": "move", "folder": folder_dict(folder)}, indent=2)
+    if args.folder_command == "nest-colon-names":
+        return _nest_colon_names(args, client)
     if args.folder_command == "edit":
         if args.name is None and args.color is None and args.icon is None:
             raise ValueError("folder edit requires at least one of --name, --color, --icon")
@@ -620,12 +637,32 @@ def _handle_folder(args: argparse.Namespace, client: PlaudClient) -> str:
     if args.folder_command == "delete":
         if not args.yes:
             raise ValueError(
-                f"Deleting folder {args.folder_id!r} cannot be undone (recordings inside are kept "
-                f"but become unfiled). Re-run with --yes to confirm."
+                f"Deleting folder {args.folder_id!r} cannot be undone (what is inside is kept "
+                f"and moves up one level). Re-run with --yes to confirm."
             )
         client.delete_folder(args.folder_id)
         return json.dumps({"ok": True, "action": "delete", "folder_id": args.folder_id}, indent=2)
     raise AssertionError(f"unhandled folder command: {args.folder_command}")
+
+
+def _nest_colon_names(args: argparse.Namespace, client: PlaudClient) -> str:
+    """`folder nest-colon-names`: show the plan, and carry it out only with --yes.
+
+    The plan is always worked out from a fresh folder listing, so a --yes run
+    does exactly what a dry run printed a moment before.
+    """
+    plan = plan_colon_nesting(client.list_folders())
+    if not args.yes:
+        return json.dumps(
+            {
+                "dry_run": True,
+                **plan.as_dict(),
+                "next_step": "Nothing changed. Re-run with --yes to make these changes.",
+            },
+            indent=2,
+        )
+    client.nest_colon_folders(plan)
+    return json.dumps({"ok": True, "action": "nest-colon-names", **plan.as_dict()}, indent=2)
 
 
 def _handle_move(args: argparse.Namespace, client: PlaudClient) -> str:

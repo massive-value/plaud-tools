@@ -253,7 +253,7 @@ _TOOLS: list[types.Tool] = [
                 },
                 "folder": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); pass empty string for recordings in no folder",  # noqa: E501
+                    "description": "Folder ID (from `list_folders`); includes its subfolders. Pass empty string for recordings in no folder",  # noqa: E501
                 },
                 "after": {
                     "type": "integer",
@@ -566,7 +566,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="list_folders",
-        description="List Plaud folders, returning id, name, color, icon, and parent_id for each.",
+        description='List Plaud folders, returning id, name, color, icon, and parent_id ("root" at the top level, else the folder it sits in) for each.',  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {},
@@ -695,17 +695,21 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_folder",
-        description="Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",  # noqa: E501
+        description="Manage Plaud folders: create (optionally inside parent_id), edit name/color/icon, move under another folder, or delete. To move a recording into a folder, use mutate_recording(action='move') instead.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "edit", "delete"],
+                    "enum": ["create", "edit", "move", "delete"],
                 },
                 "folder_id": {
                     "type": "string",
-                    "description": "Folder ID (from `list_folders`); required for edit and delete",
+                    "description": "Folder ID (from `list_folders`); required for edit, move and delete",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": 'Target folder for create (optional) and move (required); "root" = top level',  # noqa: E501
                 },
                 "name": {
                     "type": "string",
@@ -721,17 +725,17 @@ _TOOLS: list[types.Tool] = [
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. Its recordings are kept and move to Plaud's main Recordings list.",  # noqa: E501
+                    "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. What is inside is kept and moves up one level.",  # noqa: E501
                 },
             },
             "required": ["action"],
         },
-        # create/edit are reversible; delete is irreversible for the folder
-        # itself (recordings survive), so it is gated by a required confirm=true
+        # create/edit/move are reversible; delete is irreversible for the folder
+        # itself (its contents survive), so it is gated by a required confirm=true
         # in the handler.  destructive_hint=True flags the delete path to clients;
         # idempotent_hint=False because deleting a missing folder errors, not no-ops.
         annotations=types.ToolAnnotations(
-            title="Create, edit, or delete folder",
+            title="Create, edit, move, or delete folder",
             destructive_hint=True,
             idempotent_hint=False,
             open_world_hint=True,

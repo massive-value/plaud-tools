@@ -23,7 +23,7 @@ $_plaud_tools_flags = @{
     'export'              = @('-f', '--format', '-o', '--output', '--overwrite', '--polish', '--no-speakers', '--no-timestamps', '--expect-fingerprint', '--help')
     'rename'              = @('--help')
     'folders'             = @('--help')
-    'folder'              = @('create', 'edit', 'delete', '--help')
+    'folder'              = @('create', 'edit', 'move', 'nest-colon-names', 'delete', '--help')
     'move'                = @('--help')
     'move-to-folder'      = @('--help')
     'rename-speaker'      = @('--help')
@@ -48,12 +48,14 @@ $_plaud_tools_flags = @{
     'ping'                = @('--help')
 }
 
-$_plaud_tools_folder_subcommands = @('create', 'edit', 'delete')
+$_plaud_tools_folder_subcommands = @('create', 'edit', 'move', 'nest-colon-names', 'delete')
 
 $_plaud_tools_folder_flags = @{
-    'create' = @('--color', '--icon', '--help')
-    'edit'   = @('--name', '--color', '--icon', '--help')
-    'delete' = @('--yes', '--help')
+    'create'           = @('--color', '--icon', '--parent-id', '--help')
+    'edit'             = @('--name', '--color', '--icon', '--help')
+    'move'             = @('--help')
+    'nest-colon-names' = @('--yes', '--help')
+    'delete'           = @('--yes', '--help')
 }
 
 $_plaud_tools_session_subcommands = @('show', 'set', 'clear')

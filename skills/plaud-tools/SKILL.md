@@ -66,11 +66,12 @@ narrower `since`/`until` window.
 | `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. |
 | `process_recording` | Trigger transcription/summarization. `wait=` none / transcript / summary. |
 | `merge_recordings` | Two or more → one new recording. Sources survive. |
-| `list_folders` | Get folder IDs before any folder-scoped call. |
-| `mutate_folder` | `action=` create / edit / delete. Delete requires `confirm=true`. |
+| `list_folders` | Get folder IDs before any folder-scoped call. `parent_id` is `"root"` or the folder it sits in. |
+| `mutate_folder` | `action=` create / edit / move / delete. `parent_id` puts a new folder inside another, and is required for move (`"root"` = top level). Delete requires `confirm=true`. |
 
 To move a recording into a folder, use `mutate_recording(action="move")` — not
-`mutate_folder`.
+`mutate_folder`. `browse_recordings(folder=...)` includes the folder's
+subfolders; each item's `folder_id` says exactly where it is.
 
 ## Saving a transcript as a file
 
