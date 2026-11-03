@@ -13,7 +13,9 @@ from ..core.client import (
     AUDIO_URL_TTL_S,
     DEFAULT_TRANSCRIPT_BLOCK,
     SEARCH_RESULT_CAP,
+    SHARE_DEFAULT_DAYS,
     TRANSCRIPT_BLOCKS,
+    VOCAB_LANGUAGE,
     PlaudClient,
     PlaudRecordingQuery,
     describe_unstarted_process,
@@ -23,15 +25,18 @@ from ..core.export import TranscriptExportError
 from ..core.export import export_transcript as _export_transcript
 from ..core.query import (
     BROWSE_PAGE_SIZE,
+    SHARE_REVOKE_NOTE,
     collect_filtered_paged,
     detail_summary_dict,
     folder_dict,
     format_transcript,
     parse_isoish,
+    share_dict,
     structured_segments,
     summarize_match,
     summarize_recording,
     transcript_fingerprint,
+    vocabulary_dict,
 )
 from ..core.session import SessionManager, SessionStore
 
@@ -322,6 +327,93 @@ def _still_processing(kind: str, job_id: str, poll_with: str, message: str, **fi
     )
 
 
+# mutate_recording actions that manage a recording's public share link.
+_SHARE_ACTIONS = ("share_create", "share_get", "share_update", "share_revoke")
+
+
+def _validation_error(message: str) -> dict[str, Any]:
+    return _error_result(message, error_code="validation", retryable=False)
+
+
+def _share_action(
+    client: PlaudClient,
+    action: str,
+    recording_id: str,
+    *,
+    days: int | None,
+    never_expires: bool,
+    audio: bool | None,
+    transcript: bool | None,
+    summary: bool | None,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Run one share_* action of mutate_recording and shape its result.
+
+    Creating a link publishes client information to anyone holding the URL,
+    and revoking one cuts off people relying on it, so both need confirm=true
+    (the stdio surface can show no prompt).  Creation defaults to a 7-day,
+    transcript-only link.
+    """
+    if action == "share_get":
+        link = client.get_share_link(recording_id)
+        if link is None:
+            return _json_result({"ok": True, "recording_id": recording_id, "shared": False})
+        return _json_result(
+            {"ok": True, "recording_id": recording_id, "shared": True, "share": share_dict(link)}
+        )
+
+    if action == "share_create":
+        if not confirm:
+            return _validation_error(
+                "share_create makes a public link that anyone holding the URL can open. "
+                "Re-invoke with confirm=true only after the human has confirmed "
+                "they want to share this recording."
+            )
+        if never_expires:
+            return _validation_error(
+                "share_create expires after share_days (default 7); use share_update for never_expires"
+            )
+        link = client.create_share_link(
+            recording_id,
+            expire_days=SHARE_DEFAULT_DAYS if days is None else days,
+            audio=bool(audio),
+            transcript=True if transcript is None else transcript,
+            summary=bool(summary),
+        )
+        return _json_result(
+            {"ok": True, "recording_id": recording_id, "action": action, "share": share_dict(link)}
+        )
+
+    if action == "share_update":
+        link = client.update_share_link(
+            recording_id,
+            expire_days=days,
+            never_expires=never_expires,
+            audio=audio,
+            transcript=transcript,
+            summary=summary,
+        )
+        return _json_result(
+            {"ok": True, "recording_id": recording_id, "action": action, "share": share_dict(link)}
+        )
+
+    # share_revoke
+    if not confirm:
+        return _validation_error(
+            "share_revoke stops the public link from working. "
+            "Re-invoke with confirm=true only after the human has confirmed they want to revoke it."
+        )
+    client.revoke_share_link(recording_id)
+    return _json_result(
+        {
+            "ok": True,
+            "recording_id": recording_id,
+            "action": action,
+            "note": SHARE_REVOKE_NOTE,
+        }
+    )
+
+
 def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Callable[..., dict[str, Any]]]:
     def browse_recordings(
         limit: int = 20,
@@ -550,6 +642,12 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         new_name: str | None = None,
         folder_id: str | None = None,
         clear_folder: bool = False,
+        share_days: int | None = None,
+        share_never_expires: bool = False,
+        share_audio: bool | None = None,
+        share_transcript: bool | None = None,
+        share_summary: bool | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if not action:
@@ -572,6 +670,25 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     retryable=False,
                 )
             is_batch = recording_ids is not None
+
+            if action in _SHARE_ACTIONS:
+                if is_batch:
+                    return _error_result(
+                        f"action={action} does not support recording_ids (batch); pass a single recording_id",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                return _share_action(
+                    client,
+                    action,
+                    ids[0],
+                    days=share_days,
+                    never_expires=share_never_expires,
+                    audio=share_audio,
+                    transcript=share_transcript,
+                    summary=share_summary,
+                    confirm=confirm,
+                )
 
             if action == "rename":
                 if is_batch:
@@ -1042,7 +1159,62 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
 
         return _call(get_client, inner)
 
+    def mutate_vocabulary(
+        action: str,
+        word: str | None = None,
+        heard_as: str | None = None,
+        language: str | None = None,
+        word_id: str | None = None,
+        word_ids: list[str] | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        def inner(client: PlaudClient) -> dict[str, Any]:
+            if action == "list":
+                entries = client.list_vocabulary()
+                return _json_result(
+                    {
+                        "ok": True,
+                        "action": "list",
+                        "count": len(entries),
+                        "words": [vocabulary_dict(e) for e in entries],
+                    }
+                )
+
+            if action == "add":
+                if not word:
+                    return _validation_error("word is required for action=add")
+                entry = client.add_vocabulary(word, heard_as=heard_as, language=language or VOCAB_LANGUAGE)
+                return _json_result({"ok": True, "action": "add", "word": vocabulary_dict(entry)})
+
+            if action == "edit":
+                if not word_id:
+                    return _validation_error("word_id is required for action=edit")
+                if word is None and heard_as is None and language is None:
+                    return _validation_error("action=edit requires at least one of word, heard_as, language")
+                entry = client.update_vocabulary(word_id, word=word, heard_as=heard_as, language=language)
+                return _json_result({"ok": True, "action": "edit", "word": vocabulary_dict(entry)})
+
+            if action == "delete":
+                ids = word_ids or ([word_id] if word_id else [])
+                if not ids:
+                    return _validation_error("word_ids (or word_id) is required for action=delete")
+                if not confirm:
+                    return _validation_error(
+                        "Deleting vocabulary words cannot be undone. Re-invoke with confirm=true only after "
+                        "the human has confirmed they want to delete them."
+                    )
+                return _json_result(
+                    {"ok": True, "action": "delete", "deleted": client.delete_vocabulary(ids)}
+                )
+
+            return _validation_error(
+                f"unknown action: {action!r} (expected 'list', 'add', 'edit', or 'delete')"
+            )
+
+        return _call(get_client, inner)
+
     return {
+        "mutate_vocabulary": mutate_vocabulary,
         "browse_recordings": browse_recordings,
         "search_recordings": search_recordings,
         "get_recording": get_recording,

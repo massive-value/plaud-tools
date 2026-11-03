@@ -12,7 +12,7 @@ _plaud_tools_complete() {
         cword=$COMP_CWORD
     }
 
-    local subcommands="list search detail show transcript summary audio export rename folders folder move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe status trash restore delete trash-move trash-restore upload merge dump login refresh session update doctor ping"
+    local subcommands="list search detail show transcript summary audio export rename folders folder vocab share move move-to-folder rename-speaker correct-transcript correct-summary set-summary transcribe status trash restore delete trash-move trash-restore upload merge dump login refresh session update doctor ping"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands --version --help" -- "$cur"))
@@ -71,6 +71,26 @@ _plaud_tools_complete() {
             elif [[ "${words[2]}" == "edit" ]]; then
                 COMPREPLY=($(compgen -W "--name --color --icon --help" -- "$cur"))
             elif [[ "${words[2]}" == "delete" ]]; then
+                COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
+            fi
+            ;;
+        vocab)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "list add edit delete --help" -- "$cur"))
+            elif [[ "${words[2]}" == "add" ]]; then
+                COMPREPLY=($(compgen -W "--heard-as --language --help" -- "$cur"))
+            elif [[ "${words[2]}" == "edit" ]]; then
+                COMPREPLY=($(compgen -W "--word --heard-as --language --help" -- "$cur"))
+            elif [[ "${words[2]}" == "delete" ]]; then
+                COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
+            fi
+            ;;
+        share)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "create get update revoke --help" -- "$cur"))
+            elif [[ "${words[2]}" == "create" || "${words[2]}" == "update" ]]; then
+                COMPREPLY=($(compgen -W "--days --never-expires --audio --no-audio --transcript --no-transcript --summary --no-summary --help" -- "$cur"))
+            elif [[ "${words[2]}" == "revoke" ]]; then
                 COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             fi
             ;;

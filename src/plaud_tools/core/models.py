@@ -154,6 +154,34 @@ class Folder:
 
 
 @dataclass(slots=True)
+class VocabularyWord:
+    """One entry in the account-wide custom vocabulary that steers transcription."""
+
+    id: str
+    word: str
+    # The misheard form Plaud should correct to ``word``; empty when none.
+    heard_as: str = ""
+    language: str = ""
+    # How many transcript corrections Plaud has made with this entry.
+    correction_count: int = 0
+    created_at_ms: int = 0
+
+
+@dataclass(slots=True)
+class ShareLink:
+    """A recording's public share link and what it exposes."""
+
+    url: str
+    key: str
+    # ISO UTC time the link stops working; None for a link that never expires.
+    expires_at: str | None = None
+    audio: bool = False
+    transcript: bool = False
+    summary: bool = False
+    created_at: str = ""
+
+
+@dataclass(slots=True)
 class AudioLink:
     """A presigned, short-lived download link for a recording's audio."""
 

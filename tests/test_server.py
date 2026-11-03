@@ -27,6 +27,7 @@ _EXPECTED_TOOL_NAMES = {
     "merge_recordings",
     "edit_summary",
     "mutate_folder",
+    "mutate_vocabulary",
 }
 
 
@@ -99,7 +100,16 @@ def test_server_mutate_recording_enum_excludes_delete_and_rename_speaker():
     enum_values = tool.input_schema["properties"]["action"]["enum"]
     assert "delete" not in enum_values
     assert "rename_speaker" not in enum_values
-    assert set(enum_values) == {"rename", "trash", "restore", "move"}
+    assert set(enum_values) == {
+        "rename",
+        "trash",
+        "restore",
+        "move",
+        "share_create",
+        "share_get",
+        "share_update",
+        "share_revoke",
+    }
 
 
 def test_server_mutate_recording_has_clear_folder_param():

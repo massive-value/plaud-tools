@@ -418,7 +418,7 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mutate_recording",
-        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move.",  # noqa: E501
+        description="Apply a reversible state change to one or more recordings: rename, trash, restore, or move. Also manages one recording's public share link: share_create (confirm=true; default 7 days, transcript only), share_get, share_update, share_revoke (confirm=true). Revoking keeps the URL: sharing again revives it.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -430,7 +430,41 @@ _TOOLS: list[types.Tool] = [
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["rename", "trash", "restore", "move"],
+                    "enum": [
+                        "rename",
+                        "trash",
+                        "restore",
+                        "move",
+                        "share_create",
+                        "share_get",
+                        "share_update",
+                        "share_revoke",
+                    ],
+                },
+                "share_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Link lifetime in days from now (default 7)",  # noqa: E501
+                },
+                "share_never_expires": {
+                    "type": "boolean",
+                    "description": "share_update: remove the expiry",
+                },
+                "share_audio": {
+                    "type": "boolean",
+                    "description": "Link includes audio (default false)",  # noqa: E501
+                },
+                "share_transcript": {
+                    "type": "boolean",
+                    "description": "Link includes transcript (default true)",
+                },
+                "share_summary": {
+                    "type": "boolean",
+                    "description": "Link includes summary (default false)",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Required for share_create and share_revoke, after the human agrees",  # noqa: E501
                 },
                 "new_name": {
                     "type": "string",
@@ -447,13 +481,15 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["action"],
         },
-        # Reversible write (trash/restore are inverses; rename/move are
-        # undoable).  destructive_hint=False signals the client that no
-        # data is permanently lost.  idempotent_hint omitted: repeated
-        # renames with a different new_name have different outcomes.
+        # Reversible writes (trash/restore are inverses; rename/move are
+        # undoable); no recording data is permanently lost.  The share_*
+        # actions publish or cut off access, so they are confirm-gated in the
+        # handler and the tool is flagged destructive for clients.
+        # idempotent_hint omitted: repeated renames with a different
+        # new_name have different outcomes.
         annotations=types.ToolAnnotations(
-            title="Rename, move, or trash recordings",
-            destructive_hint=False,
+            title="Rename, move, trash, or share recordings",
+            destructive_hint=True,
             open_world_hint=True,
         ),
     ),
@@ -732,6 +768,53 @@ _TOOLS: list[types.Tool] = [
         # idempotent_hint=False because deleting a missing folder errors, not no-ops.
         annotations=types.ToolAnnotations(
             title="Create, edit, or delete folder",
+            destructive_hint=True,
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+    ),
+    types.Tool(
+        name="mutate_vocabulary",
+        description="Manage Plaud's account-wide custom vocabulary (names, jargon that steer transcription): list, add, edit, or delete (confirm=true) words.",  # noqa: E501
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "add", "edit", "delete"],
+                },
+                "word": {
+                    "type": "string",
+                    "description": "Correct spelling; required for add",
+                },
+                "heard_as": {
+                    "type": "string",
+                    "description": "Misheard form to auto-correct to `word`; empty clears it on edit",  # noqa: E501
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Language code (default en)",
+                },
+                "word_id": {
+                    "type": "string",
+                    "description": "Entry ID from list; for edit or single delete",
+                },
+                "word_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entry IDs to delete",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Required for delete, after the human agrees",  # noqa: E501
+                },
+            },
+            "required": ["action"],
+        },
+        # Account-wide, so even edits touch every future transcription; delete is
+        # irreversible and gated by confirm=true in the handler.
+        annotations=types.ToolAnnotations(
+            title="List, add, edit, or delete vocabulary",
             destructive_hint=True,
             idempotent_hint=False,
             open_world_hint=True,

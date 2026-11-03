@@ -30,6 +30,8 @@ _plaud_tools() {
                 'rename:Rename a recording'
                 'folders:List folders'
                 'folder:Create, edit, or delete a folder'
+                'vocab:List, add, edit, or delete custom-vocabulary words'
+                'share:Create, read, update, or revoke a recording share link'
                 'move-to-folder:Move recording to a folder'
                 'move:Move recording to a folder'
                 'rename-speaker:Rename a speaker in the transcript'
@@ -121,6 +123,76 @@ _plaud_tools() {
                                     ;;
                                 delete)
                                     _arguments '--yes[Confirm deletion without prompt]'
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                vocab)
+                    local -a vocab_cmds
+                    vocab_cmds=(
+                        'list:List vocabulary words'
+                        'add:Add a word'
+                        'edit:Edit a word'
+                        'delete:Delete words'
+                    )
+                    _arguments \
+                        '1: :->vocab_subcmd' \
+                        '*:: :->vocab_args'
+                    case $state in
+                        vocab_subcmd)
+                            _describe 'vocab subcommand' vocab_cmds
+                            ;;
+                        vocab_args)
+                            case $line[1] in
+                                add)
+                                    _arguments \
+                                        '--heard-as[Misheard form to correct]:heard_as' \
+                                        '--language[Language code]:language'
+                                    ;;
+                                edit)
+                                    _arguments \
+                                        '--word[New spelling]:word' \
+                                        '--heard-as[Misheard form to correct]:heard_as' \
+                                        '--language[Language code]:language'
+                                    ;;
+                                delete)
+                                    _arguments '--yes[Confirm deletion without prompt]'
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                share)
+                    local -a share_cmds
+                    share_cmds=(
+                        'create:Create a public link'
+                        'get:Show the current link'
+                        'update:Change expiry or contents'
+                        'revoke:Revoke the link'
+                    )
+                    _arguments \
+                        '1: :->share_subcmd' \
+                        '*:: :->share_args'
+                    case $state in
+                        share_subcmd)
+                            _describe 'share subcommand' share_cmds
+                            ;;
+                        share_args)
+                            case $line[1] in
+                                create|update)
+                                    _arguments \
+                                        '--days[Link lifetime in days]:days' \
+                                        '--never-expires[No expiry]' \
+                                        '--audio[Include audio]' \
+                                        '--no-audio[Leave out audio]' \
+                                        '--transcript[Include the transcript]' \
+                                        '--no-transcript[Leave out the transcript]' \
+                                        '--summary[Include the summary]' \
+                                        '--no-summary[Leave out the summary]'
+                                    ;;
+                                revoke)
+                                    _arguments '--yes[Confirm revoking without prompt]'
                                     ;;
                             esac
                             ;;
