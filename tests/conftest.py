@@ -22,6 +22,14 @@ for _name in (
 
 
 @pytest.fixture(autouse=True)
+def _forget_node_versions():
+    """Clear the client's process-wide version memory so tests never see each other's versions."""
+    from plaud_tools.core.client import _VERSIONS
+
+    _VERSIONS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _zero_keyring_retry_delay(monkeypatch):
     """Make the SessionStore retry budget instant in tests.
 

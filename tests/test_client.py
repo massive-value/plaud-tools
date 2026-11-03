@@ -899,6 +899,34 @@ def test_delete_folder_moves_subfolders_up_not_into_recordings(tmp_path):
     assert [m["target_node_id"] for m in transport.sent(f"POST {V4}/nodes/move")] == ["on_fd_1"]
 
 
+def test_delete_parent_right_after_its_child_sends_the_version_the_child_delete_reported(tmp_path):
+    # Live: trashing a child bumps its parent's version (reply parent_items),
+    # but the root listing still shows the old one for about a second.
+    parent_bump = {"node_id": "on_fd_p", "version_ms": 200}
+    routes = {
+        f"GET {V4}/folders/children": children(
+            {
+                "root": [folder_node("on_fd_p", "Parent", version_ms=100)],
+                "on_fd_p": [folder_node("on_fd_c", "Child", version_ms=110, parent_id="on_fd_p")],
+            }
+        ),
+        f"POST {V4}/nodes/move": ok({"items": []}),
+        f"DELETE {V4}/nodes/trash": [
+            ok({"items": [{"node_id": "on_fd_c", "version_ms": 200}], "parent_items": [parent_bump]}),
+            ok({"items": [{"node_id": "on_fd_p", "version_ms": 300}]}),
+        ],
+        f"DELETE {V4}/nodes/delete": ok({"items": []}),
+    }
+    client, _ = routed(tmp_path, routes)
+    client.delete_folder("on_fd_c")
+    # A new client, as each MCP call gets, over the same stale listing.
+    client, transport = routed(tmp_path, routes)
+    client.delete_folder("on_fd_p")
+    assert transport.sent(f"DELETE {V4}/nodes/trash") == [
+        {"items": [{"node_id": "on_fd_p", "origin_version": 200}]}
+    ]
+
+
 def test_delete_empty_folder_skips_the_move(tmp_path):
     routes = {
         f"GET {V4}/folders/children": children({"root": [folder_node("on_fd_1", "Empty", version_ms=100)]}),

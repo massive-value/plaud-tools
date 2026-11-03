@@ -11,7 +11,9 @@ works everywhere here: ``to_file_id`` adds the ``of_`` prefix.
 Every write carries ``origin_version`` (the node's or content object's
 current ``version_ms``); Plaud rejects a missing or stale one with status
 -1800313.  So each write reads the current version immediately before
-writing.  See docs/adr/008-plaud-4-protocol.md.
+writing.  Folder listings lag a write by about a second, so folder versions
+are also raised to the newest one a write reply reported (``_VersionMemory``).
+See docs/adr/008-plaud-4-protocol.md.
 
 Three pre-4.0 endpoints still answer for migrated accounts and are kept:
 ``/user/me``, ``/gsearch/v1/search`` (full-text search), and
@@ -24,6 +26,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -67,6 +70,44 @@ _MAX_LIST_PAGES = 200
 # Parallel requests per tree level in list_folders(); kept small so a large
 # library doesn't hit Plaud's rate limit.
 _FOLDER_WALK_WORKERS = 8
+
+
+class _VersionMemory:
+    """The newest ``version_ms`` this process has seen Plaud report for each node.
+
+    A write bumps the version of the node *and of the folder it sits in*, and
+    Plaud says so in the reply (``items`` and ``parent_items``).  Its folder
+    listings lag behind for about a second, so a folder delete right after
+    deleting the child inside it would send the parent's old version and get
+    "node version conflict".  Folder versions read from a listing are
+    therefore raised to the newest one a write reply reported.  The memory is
+    process-wide because the MCP server builds a new client for every call.
+    """
+
+    def __init__(self) -> None:
+        self._versions: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def remember(self, data: dict[str, Any]) -> None:
+        """Record the versions in a v4 write reply's ``items`` and ``parent_items``."""
+        nodes = [*(data.get("items") or []), *(data.get("parent_items") or [])]
+        with self._lock:
+            for node in nodes:
+                if isinstance(node, dict) and node.get("node_id") and node.get("version_ms"):
+                    node_id, version = str(node["node_id"]), int(node["version_ms"])
+                    self._versions[node_id] = max(version, self._versions.get(node_id, 0))
+
+    def latest(self, node_id: str, listed: int) -> int:
+        """*listed*, or a newer version a write reply reported for *node_id*."""
+        with self._lock:
+            return max(listed, self._versions.get(node_id, 0))
+
+    def clear(self) -> None:
+        with self._lock:
+            self._versions.clear()
+
+
+_VERSIONS = _VersionMemory()
 
 # ---------------------------------------------------------------------------
 # Injectable sleep/jitter for tests.  Tests monkeypatch these module-level
@@ -1023,6 +1064,7 @@ class PlaudClient:
             ).get("data")
             or {}
         )
+        _VERSIONS.remember(data)
         items = data.get("items") or [data]
         return self._normalize_folder(items[0])
 
@@ -1112,6 +1154,7 @@ class PlaudClient:
             ).get("data")
             or {}
         )
+        _VERSIONS.remember(data)
         items = data.get("items") or []
         return self._normalize_folder(items[0]) if items else self._find_folder(current.id)
 
@@ -1127,7 +1170,6 @@ class PlaudClient:
         if not folder_id:
             raise ValueError("folder_id cannot be empty")
         folder = self._find_folder(folder_id)
-        version = folder.version_ms
         children = self._walk(f"{_V4}/folders/children", {"node_id": folder_id})
         if folder.parent_id not in ("", "root"):
             moves = [(folder.parent_id, children)]
@@ -1140,27 +1182,27 @@ class PlaudClient:
         for target, nodes in moves:
             if not nodes:
                 continue
-            moved = self._node_batch(
+            self._node_batch(
                 "POST",
                 "move",
                 {
                     "target_node_id": target,
                     "items": [
-                        {"node_id": c["node_id"], "origin_version": c.get("version_ms")} for c in nodes
+                        {
+                            "node_id": c["node_id"],
+                            "origin_version": _VERSIONS.latest(
+                                str(c["node_id"]), int(c.get("version_ms") or 0)
+                            ),
+                        }
+                        for c in nodes
                     ],
                 },
             )
-            # Moving children out bumps the folder's own version to the move's
-            # timestamp, which a listing read straight after may not show yet.
-            version = max([version, *(int(item.get("version_ms") or 0) for item in moved)])
-        trashed = self._node_batch(
-            "DELETE", "trash", {"items": [{"node_id": folder_id, "origin_version": version}]}
-        )
-        version = next(
-            (int(item.get("version_ms") or 0) for item in trashed if item.get("node_id") == folder_id),
-            version,
-        )
-        self._node_batch("DELETE", "delete", {"items": [{"node_id": folder_id, "origin_version": version}]})
+        # Each step bumps the folder's version.  _node_batch remembers the new
+        # one from the reply, which a fresh listing may not show yet.
+        for method, action in (("DELETE", "trash"), ("DELETE", "delete")):
+            version = _VERSIONS.latest(folder_id, folder.version_ms)
+            self._node_batch(method, action, {"items": [{"node_id": folder_id, "origin_version": version}]})
 
     def _find_folder(self, folder_id: str) -> Folder:
         # Most folders are top level, and the root is one request where the
@@ -1273,6 +1315,7 @@ class PlaudClient:
                 plaud_code=int(code) if code.lstrip("-").isdigit() else code or None,
                 plaud_msg=str(failed[0].get("error_message") or ""),
             )
+        _VERSIONS.remember(data)
         return [item for item in data.get("items") or [] if isinstance(item, dict)]
 
     def _trash_items(self, recording_ids: list[str]) -> list[dict[str, Any]]:
@@ -1415,7 +1458,7 @@ class PlaudClient:
             color=str(item.get("color") or ""),
             icon=str(item.get("icon") or ""),
             parent_id=str(item.get("parent_id") or ""),
-            version_ms=int(item.get("version_ms") or 0),
+            version_ms=_VERSIONS.latest(str(item.get("node_id") or ""), int(item.get("version_ms") or 0)),
             raw=item,
         )
 

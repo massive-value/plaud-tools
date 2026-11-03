@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The folder delete warning said recordings inside "become unfiled". They
   move up one level, as they have since 0.13.1, and the warning now says so.
+- Deleting a folder right after deleting a folder inside it failed with
+  "node version conflict". Deleting the inner folder changes the outer
+  folder's version, and Plaud's folder listing shows the new version about
+  a second late. The client now uses the version from Plaud's reply to the
+  earlier delete.
 
 ## [0.13.1] - 2026-11-03
 
