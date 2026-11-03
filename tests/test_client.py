@@ -350,6 +350,22 @@ def test_get_recording_with_summary_returns_the_containers_notes(tmp_path):
     ]
 
 
+def test_notes_are_found_through_the_parent_folder_when_the_detail_names_no_container(tmp_path):
+    routes = note_routes()
+    # Same file node, but the detail carries only parent_id (no separate container folder).
+    routes[f"GET {V4}/files/detail/of_1"] = ok(
+        {
+            "node": {"node_id": "on_f_1", "parent_id": "on_w_1", "name": "Meeting", "version_ms": 100},
+            "meta": {"file_id": "of_1"},
+            "objects": [],
+            "task": {"in_progress_tasks": []},
+        }
+    )
+    client, _ = routed(tmp_path, routes)
+    detail = client.get_recording("of_1", include_summary=True)
+    assert [n.note_id for n in detail.notes] == ["of_n1", "of_n2"]
+
+
 def test_correct_summary_on_a_note_edits_the_raw_note_and_keeps_its_links(tmp_path):
     client, transport = routed(tmp_path, note_routes())
     assert client.correct_summary("of_1", "Budget", "Plan", note_id="of_n1") == {"replacements": 1}

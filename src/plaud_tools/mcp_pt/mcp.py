@@ -1085,8 +1085,8 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             # One budget for the whole call: the summary wait gets whatever the
             # transcription wait left, so wait="summary" is bounded by
             # _WAIT_TIMEOUT_S in total, not per stage.
-            started = time.monotonic()
-            deadline = started + _WAIT_TIMEOUT_S
+            wait_began = time.monotonic()
+            deadline = wait_began + _WAIT_TIMEOUT_S
             stages = [("transcription", client.wait_for_transcription)]
             if wait == "summary":
                 stages.append(("summary", client.wait_for_summary))
@@ -1095,7 +1095,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                     wait_fn(
                         recording_id,
                         timeout_s=max(0.0, deadline - time.monotonic()),
-                        on_progress=shifted(current_progress(), time.monotonic() - started),
+                        on_progress=shifted(current_progress(), time.monotonic() - wait_began),
                     )
                 except PlaudApiError as exc:
                     if not exc.is_soft_deadline_timeout():

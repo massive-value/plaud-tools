@@ -510,7 +510,7 @@ class PlaudClient:
         if include_summary:
             if detail.is_summary:
                 detail.ai_content = self._fetch_text(self._object(raw, "SUMMARY"))
-            detail.notes = self._read_notes(detail.wrapper_id)
+            detail.notes = self._read_notes(self._container_id_of(detail))
         return detail
 
     def dump_raw_detail(self, recording_id: str) -> dict[str, Any]:
@@ -1541,8 +1541,8 @@ class PlaudClient:
         if note_id is None:
             file_id, obj = to_file_id(recording_id), self._object(raw, "SUMMARY")
         else:
-            wrapper_id = self._normalize_recording_detail(raw).wrapper_id
-            if note_id not in {note["file_id"] for note in self._note_files(wrapper_id)}:
+            container = self._container_id_of(self._normalize_recording_detail(raw))
+            if note_id not in {note["file_id"] for note in self._note_files(container)}:
                 raise ValueError(f"{note_id} is not a note of recording {recording_id}")
             file_id, obj = note_id, self._note_object(self._get_detail_raw(note_id))
         if not _object_done(obj):
