@@ -139,9 +139,9 @@ plaud-tools list --folder-id <folder-id>
 plaud-tools list --unfiled
 ```
 
-Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles.
+Defaults to 20 most recent recordings. `--since` and `--until` accept ISO 8601 dates (`2025-01-01`) or datetimes (`2025-01-01T09:30`) — no relative offsets like `7d`. `--query` is case-insensitive substring matching against titles. `--folder-id` includes recordings in that folder's subfolders; each result's `folder_id` shows the exact folder it is in.
 
-`--all` returns every matching recording instead of one page. It reads Plaud's list to the end, so the result is complete. A large `--limit` is not the same thing; it only caps the count. `--all` and `--limit` can't be combined. `search` takes `--all` too.
+`--all` returns every matching recording instead of one page. `--all` and `--limit` can't be combined. `search` and `trash --list` take `--all` too. Every listing reads your whole library from Plaud in one request and filters it locally, so a filter never misses an older recording.
 
 ```
 plaud-tools list --all --folder-id <folder-id> > recordings.json
@@ -315,19 +315,33 @@ rendered by Plaud.
 plaud-tools folders
 ```
 
-Lists all folders with `id`, `name`, `color`, `icon`.
+Lists all folders with `id`, `name`, `color`, `icon` and `parent_id`. Folders can sit inside other folders. `parent_id` is `root` for a top-level folder, otherwise the id of the folder it is in.
 
-### `folder create` / `folder edit` / `folder delete`
+### `folder create` / `folder edit` / `folder move` / `folder delete`
 
 ```
-plaud-tools folder create "Client Calls"
+plaud-tools folder create "Client Meetings"
+plaud-tools folder create "Prospects" --parent-id <client-meetings-id>
 plaud-tools folder create "Client Calls" --color folder-color-green --icon e627
 plaud-tools folder edit <folder-id> --name "Renamed folder"
 plaud-tools folder edit <folder-id> --color folder-color-blue
+plaud-tools folder move <folder-id> <parent-id>
+plaud-tools folder move <folder-id> root
 plaud-tools folder delete <folder-id> --yes
 ```
 
-`create` requires a name; `--color` (a Plaud color name, e.g. `folder-color-green`) and `--icon` (glyph codepoint, e.g. `e627`) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `delete` is irreversible for the folder itself — recordings inside are kept and move to Plaud's main Recordings list — and requires `--yes`.
+`create` requires a name. `--color` (a Plaud color name, e.g. `folder-color-green`), `--icon` (glyph codepoint, e.g. `e627`) and `--parent-id` (create it inside that folder) are optional. `edit` requires at least one of `--name`, `--color`, `--icon`. `move` puts a folder, with everything in it, inside another folder; `root` moves it to the top level. Plaud refuses a move into the folder itself or one of its subfolders, and a move next to a folder with the same name. `delete` can't be undone and requires `--yes`. What was inside moves up one level: a top-level folder's recordings go to Plaud's main Recordings list and its subfolders go to the top level.
+
+### `folder nest-colon-names`
+
+```
+plaud-tools folder nest-colon-names
+plaud-tools folder nest-colon-names --yes
+```
+
+Before Plaud had subfolders, a folder name like `Client Meetings:Prospects` stood in for one. This command turns each of those into a real subfolder: `Prospects` inside `Client Meetings`. The folder keeps its id, color, icon and recordings. A missing parent folder is created, and an existing one with that name is reused.
+
+Without `--yes` it changes nothing and prints the plan: `folders_to_convert`, the parent folders it would `create`, each `convert` from the old name to the new place, and any folders `skipped` with the reason. A folder is skipped when another folder already has its new place. Run it again with `--yes` to make the changes. It is safe to run again if it stops partway.
 
 ### `vocab list` / `vocab add` / `vocab edit` / `vocab delete`
 
@@ -418,11 +432,12 @@ Overwrites a recording's AI summary entirely with new markdown. `--content` and 
 ```
 plaud-tools trash <recording-id>
 plaud-tools trash --list
+plaud-tools trash --list --since 2026-09-01 --limit 5
 plaud-tools restore <recording-id>
 plaud-tools delete <recording-id> --yes
 ```
 
-`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash; a bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
+`trash` (with a recording ID) is reversible — it moves the recording to the trash folder. `trash --list` lists recordings currently in trash, 20 at a time like `list`; it takes `--limit`/`--all`, `--since`/`--until` and `--query` too. Trashed recordings have no folder, so there is no folder filter. A bare `trash` with neither a recording ID nor `--list` is rejected (a dropped argument used to silently turn the mutation into a listing). `delete` is permanent and requires `--yes`.
 
 ### `trash-move` / `trash-restore`
 

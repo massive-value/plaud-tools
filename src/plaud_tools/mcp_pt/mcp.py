@@ -17,21 +17,19 @@ from ..core.client import (
     TRANSCRIPT_BLOCKS,
     VOCAB_LANGUAGE,
     PlaudClient,
-    PlaudRecordingQuery,
     describe_unstarted_process,
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.export import TranscriptExportError
 from ..core.export import export_transcript as _export_transcript
 from ..core.query import (
-    BROWSE_PAGE_SIZE,
     SHARE_REVOKE_NOTE,
-    collect_filtered_paged,
     detail_summary_dict,
     folder_dict,
     format_transcript,
     parse_isoish,
     parse_keep_ranges,
+    query_recordings,
     share_dict,
     structured_segments,
     summarize_match,
@@ -285,8 +283,8 @@ def _transcript_unavailable_note(detail: Any, requested_block: str) -> str | Non
 
 PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 
-# Largest browse page.  Matches the upstream page size, so one browse call is
-# at most one Plaud request plus a look-ahead item.
+# Largest browse page.  Every browse is one Plaud list request whatever the
+# limit; the cap keeps a single response small enough for an agent's context.
 MAX_BROWSE_LIMIT = 200
 
 # How long one tool call may block waiting on a Plaud job (#151).  Most MCP
@@ -439,41 +437,22 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
             )
 
         def inner(client: PlaudClient) -> dict[str, Any]:
-            since_ms = parse_isoish(since, "since") if since else None
-            until_ms = parse_isoish(until, "until", end_of_day=True) if until else None
-            has_filters = any(value is not None for value in (since, until, query, folder))
+            # The MCP `folder` parameter documents "" as the unfiled sentinel
+            # (see server.py's tool schema); query.py's convention is unfiled=True.
+            is_unfiled = folder == ""
             # trash=True lists the trash instead of active recordings, so an
             # agent can discover trashed IDs to restore.
-            is_trash_flag = 1 if trash else 0
-            # The MCP `folder` parameter documents "" as the unfiled sentinel
-            # (see server.py's tool schema); translate it into query.py's
-            # single internal `unfiled` convention here rather than relying
-            # on filter_recordings' own folder_id=="" special case (§7.8).
-            is_unfiled = folder == ""
-            if has_filters:
-                page, has_more = collect_filtered_paged(
-                    lambda skip, page_size: client.list_recordings(
-                        PlaudRecordingQuery(skip=skip, limit=page_size, is_trash=is_trash_flag)
-                    ),
-                    BROWSE_PAGE_SIZE,
-                    since_ms=since_ms,
-                    until_ms=until_ms,
-                    query=query,
-                    folder_id=None if is_unfiled else folder,
-                    unfiled=is_unfiled,
-                    after=after,
-                    limit=limit,
-                )
-            else:
-                # Ask for one extra item: a full page alone can't tell "more
-                # exist" from "the library is an exact multiple of limit".
-                fetched = client.list_recordings(
-                    PlaudRecordingQuery(
-                        skip=after if after else None, limit=limit + 1, is_trash=is_trash_flag
-                    )
-                )
-                page = fetched[:limit]
-                has_more = len(fetched) > limit
+            page, has_more = query_recordings(
+                client,
+                trash=trash,
+                since_ms=parse_isoish(since, "since") if since else None,
+                until_ms=parse_isoish(until, "until", end_of_day=True) if until else None,
+                query=query,
+                folder_id=None if is_unfiled else folder,
+                unfiled=is_unfiled,
+                after=after,
+                limit=limit,
+            )
             next_after = after + len(page) if has_more else None
             return _json_result(
                 {
@@ -1149,6 +1128,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         name: str | None = None,
         color: str | None = None,
         icon: str | None = None,
+        parent_id: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
@@ -1159,7 +1139,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                folder = client.create_folder(name, color=color, icon=icon)
+                folder = client.create_folder(name, color=color, icon=icon, parent_id=parent_id)
                 return _json_result(
                     {
                         "ok": True,
@@ -1197,14 +1177,14 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                # Deleting a folder is irreversible (the folder is gone; the
-                # recordings inside survive but become unfiled).  Gate it behind
-                # an explicit confirm, mirroring delete_recording — the stdio
+                # Deleting a folder is irreversible (the folder is gone; what
+                # was inside survives one level up).  Gate it behind an
+                # explicit confirm, mirroring delete_recording — the stdio
                 # surface can show no interactive prompt.
                 if not confirm:
                     return _error_result(
-                        "Deleting a folder cannot be undone (recordings inside are kept but "
-                        "become unfiled). Re-invoke with confirm=true only after the human has "
+                        "Deleting a folder cannot be undone (what is inside is kept and moves up "
+                        "one level). Re-invoke with confirm=true only after the human has "
                         "confirmed they want to delete this folder.",
                         error_code="validation",
                         retryable=False,
@@ -1212,8 +1192,21 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                 client.delete_folder(folder_id)
                 return _json_result({"ok": True, "action": "delete", "folder_id": folder_id})
 
+            if action == "move":
+                # parent_id is required, never defaulted: an omitted target
+                # must not silently move a folder to the top level (#140).
+                if not folder_id or not parent_id:
+                    return _error_result(
+                        'folder_id and parent_id are required for action=move (parent_id="root" '
+                        "for the top level)",
+                        error_code="validation",
+                        retryable=False,
+                    )
+                folder = client.move_folder(folder_id, parent_id)
+                return _json_result({"ok": True, "action": "move", "folder": folder_dict(folder)})
+
             return _error_result(
-                f"unknown action: {action!r} (expected 'create', 'edit', or 'delete')",
+                f"unknown action: {action!r} (expected 'create', 'edit', 'move', or 'delete')",
                 error_code="validation",
                 retryable=False,
             )

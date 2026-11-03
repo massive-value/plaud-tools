@@ -11,7 +11,7 @@
           "type": "integer"
         },
         "folder": {
-          "description": "Folder ID (from `list_folders`); pass empty string for recordings in no folder",
+          "description": "Folder ID (from `list_folders`); includes its subfolders. Pass empty string for recordings in no folder",
           "type": "string"
         },
         "limit": {
@@ -31,7 +31,7 @@
         },
         "trash": {
           "default": false,
-          "description": "List trashed recordings instead of active ones",
+          "description": "List trashed recordings instead of active ones (trashed recordings have no folder, so not with `folder`)",
           "type": "boolean"
         },
         "until": {
@@ -386,7 +386,7 @@
     "name": "upload_recording"
   },
   {
-    "description": "List Plaud folders, returning id, name, color, icon, and parent_id for each.",
+    "description": "List Plaud folders, returning id, name, color, icon, and parent_id (\"root\" at the top level, else the folder it sits in) for each.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -506,7 +506,7 @@
     "name": "edit_summary"
   },
   {
-    "description": "Manage Plaud folders: create a new folder, edit an existing one's name/color/icon, or delete one. To move a recording into a folder, use mutate_recording(action='move') instead.",
+    "description": "Manage Plaud folders: create (optionally inside parent_id), edit name/color/icon, move under another folder, or delete. To move a recording into a folder, use mutate_recording(action='move') instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -514,6 +514,7 @@
           "enum": [
             "create",
             "edit",
+            "move",
             "delete"
           ],
           "type": "string"
@@ -523,11 +524,11 @@
           "type": "string"
         },
         "confirm": {
-          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. Its recordings are kept and move to Plaud's main Recordings list.",
+          "description": "Required for action=delete; confirm only after the human agrees the folder should be deleted. What is inside is kept and moves up one level.",
           "type": "boolean"
         },
         "folder_id": {
-          "description": "Folder ID (from `list_folders`); required for edit and delete",
+          "description": "Folder ID (from `list_folders`); required for edit, move and delete",
           "type": "string"
         },
         "icon": {
@@ -536,6 +537,10 @@
         },
         "name": {
           "description": "Folder name; required for create, optional for edit",
+          "type": "string"
+        },
+        "parent_id": {
+          "description": "Target folder for create (optional) and move (required); \"root\" = top level",
           "type": "string"
         }
       },

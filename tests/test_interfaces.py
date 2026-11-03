@@ -25,12 +25,7 @@ from plaud_tools.mcp_pt.mcp import build_handlers
 
 
 class StubClient:
-    # Full fixture set — returned for both the unfiltered path (no query) and
-    # the incremental filtered path (query with limit=BROWSE_PAGE_SIZE).  The
-    # old assertion `query.limit == 2` is removed: the direct unfiltered path
-    # passes `limit=args.limit`, while the incremental path passes
-    # `limit=BROWSE_PAGE_SIZE`.  Client-side filtering via collect_filtered_paged
-    # is responsible for narrowing results.
+    # The whole library: query_recordings fetches it once and filters it.
     _ALL_RECORDINGS = [
         Recording(
             id="r1",
@@ -48,20 +43,6 @@ class StubClient:
     ]
 
     def list_recordings(self, query=None):
-        if query is not None and query.limit is not None and query.limit <= 5:
-            # Direct unfiltered path (no filter flags): passes the exact CLI limit.
-            # Return only the first record to satisfy the shape test.
-            return [
-                Recording(
-                    id="r1",
-                    filename="meeting",
-                    start_time=1_746_000_000_000,
-                    duration=600_000,
-                    folder_id="tag1",
-                )
-            ]
-        # Incremental filtered path (limit=BROWSE_PAGE_SIZE) or no-query path:
-        # return all records so client-side filtering can narrow them.
         return list(self._ALL_RECORDINGS)
 
     def merge_recordings(self, ids: list[str], filename: str, **kwargs):
@@ -126,6 +107,9 @@ class StubClient:
 
     def list_folders(self):
         return [Folder(id="tag1", name="Work", color="folder-color-green", icon="e627", parent_id="root")]
+
+    def subfolders(self, folder_id):
+        return []
 
     def set_recording_folder(self, recording_ids, folder_id):
         self.move_call = (recording_ids, folder_id)
@@ -195,12 +179,12 @@ def test_cli_list_shapes_output():
     from datetime import datetime
 
     expected_date = datetime.fromtimestamp(1_746_000_000_000 / 1000).isoformat()[:16]
-    output = run_cli(["list", "--limit", "2"], StubClient())
+    output = run_cli(["list", "--limit", "1"], StubClient())
     payload = json.loads(output)
     assert payload == [
         {
             "id": "r1",
-            "title": "meeting",
+            "title": "Q4 Review",
             "date": expected_date,
             "duration_minutes": 10,
             "folder_id": "tag1",
@@ -514,7 +498,7 @@ def test_cli_segments_and_fingerprint_match_mcp_pages():
 
 
 class LibraryStub(StubClient):
-    """A library of ``size`` recordings served in upstream pages; every third is in tag1."""
+    """A library of ``size`` recordings; every third is in tag1."""
 
     def __init__(self, size: int):
         self.library = [
@@ -526,21 +510,19 @@ class LibraryStub(StubClient):
             )
             for i in range(size)
         ]
-        self.requests: list[tuple[int, int]] = []
+        self.requests = 0
 
     def list_recordings(self, query=None):
-        skip = query.skip or 0
-        self.requests.append((skip, query.limit))
-        return self.library[skip : skip + query.limit]
+        self.requests += 1
+        return list(self.library)
 
 
-def test_cli_list_all_pages_a_filtered_library_to_exhaustion():
+def test_cli_list_all_returns_a_whole_filtered_library_in_one_request():
     stub = LibraryStub(650)
     payload = json.loads(run_cli(["list", "--all", "--folder-id", "tag1"], stub))
     assert len(payload) == 217  # ceil(650 / 3): far more than the 20 default
     assert {item["folder_id"] for item in payload} == {"tag1"}
-    # Bounded requests, stopping at the first short page.
-    assert stub.requests == [(0, 200), (200, 200), (400, 200), (600, 200)]
+    assert stub.requests == 1
 
 
 def test_cli_list_all_without_filters_returns_everything():
@@ -1287,14 +1269,14 @@ def test_cli_main_oserror_exits_cleanly_with_message(capsys, monkeypatch):
 
 def test_mcp_browse_recordings_returns_curated_list():
     handlers = build_handlers(lambda: StubClient())
-    result = handlers["browse_recordings"](limit=2)
+    result = handlers["browse_recordings"](limit=1)
     payload = json.loads(result["content"][0]["text"])
     assert "items" in payload
-    assert "next_after" in payload
+    assert payload["next_after"] == 1
     assert len(payload["items"]) == 1
     item = payload["items"][0]
     assert item["id"] == "r1"
-    assert item["title"] == "meeting"
+    assert item["title"] == "Q4 Review"
     assert item["duration_minutes"] == 10
     assert item["folder_id"] == "tag1"
     # date is local time — just check shape, not exact value
@@ -2127,10 +2109,22 @@ class FolderStub(StubClient):
         self.create_call = None
         self.update_call = None
         self.delete_call = None
+        self.move_call = None
+        self.nest_plan = None
 
-    def create_folder(self, name, *, color=None, icon=None):
-        self.create_call = (name, color, icon)
-        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id="root")
+    def create_folder(self, name, *, color=None, icon=None, parent_id=None):
+        self.create_call = (name, color, icon, parent_id)
+        return Folder(id="new1", name=name, color=color or "", icon=icon or "", parent_id=parent_id or "root")
+
+    def move_folder(self, folder_id, parent_id):
+        self.move_call = (folder_id, parent_id)
+        return Folder(id=folder_id, name="Moved", parent_id=parent_id)
+
+    def list_folders(self):
+        return [Folder(id="f1", name="Clients:Prospects", parent_id="root")]
+
+    def nest_colon_folders(self, plan):
+        self.nest_plan = plan
 
     def update_folder(self, folder_id, *, name=None, color=None, icon=None):
         self.update_call = (folder_id, name, color, icon)
@@ -2143,11 +2137,13 @@ class FolderStub(StubClient):
 def test_mcp_mutate_folder_create():
     client = FolderStub()
     handlers = build_handlers(lambda: client)
-    result = handlers["mutate_folder"](action="create", name="Clients", color="#111", icon="e627")
+    result = handlers["mutate_folder"](
+        action="create", name="Clients", color="#111", icon="e627", parent_id="on_fd_1"
+    )
     payload = json.loads(result["content"][0]["text"])
     assert payload["ok"] is True
-    assert payload["folder"]["id"] == "new1"
-    assert client.create_call == ("Clients", "#111", "e627")
+    assert payload["folder"]["parent_id"] == "on_fd_1"
+    assert client.create_call == ("Clients", "#111", "e627", "on_fd_1")
 
 
 def test_mcp_mutate_folder_create_requires_name():
@@ -2191,6 +2187,21 @@ def test_mcp_mutate_folder_delete_with_confirm():
     assert client.delete_call == "f1"
 
 
+def test_mcp_mutate_folder_move():
+    client = FolderStub()
+    result = build_handlers(lambda: client)["mutate_folder"](action="move", folder_id="f1", parent_id="f2")
+    assert json.loads(result["content"][0]["text"])["folder"]["parent_id"] == "f2"
+    assert client.move_call == ("f1", "f2")
+
+
+def test_mcp_mutate_folder_move_requires_parent_id():
+    client = FolderStub()
+    result = build_handlers(lambda: client)["mutate_folder"](action="move", folder_id="f1")
+    assert result["isError"] is True
+    assert "parent_id" in json.loads(result["content"][0]["text"])["error"]
+    assert client.move_call is None
+
+
 def test_mcp_mutate_folder_rejects_unknown_action():
     handlers = build_handlers(lambda: FolderStub())
     result = handlers["mutate_folder"](action="obliterate")
@@ -2203,7 +2214,31 @@ def test_cli_folder_create():
     output = run_cli(["folder", "create", "Clients", "--color", "#111", "--icon", "e627"], client)
     payload = json.loads(output)
     assert payload["ok"] is True
-    assert client.create_call == ("Clients", "#111", "e627")
+    assert client.create_call == ("Clients", "#111", "e627", None)
+
+
+def test_cli_folder_move():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "move", "f1", "root"], client))
+    assert payload["action"] == "move"
+    assert client.move_call == ("f1", "root")
+
+
+def test_cli_nest_colon_names_dry_run_changes_nothing():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "nest-colon-names"], client))
+    assert payload["dry_run"] is True
+    assert payload["convert"] == [
+        {"folder_id": "f1", "from": "Clients:Prospects", "to": "Clients > Prospects"}
+    ]
+    assert client.nest_plan is None
+
+
+def test_cli_nest_colon_names_with_yes_runs_the_plan():
+    client = FolderStub()
+    payload = json.loads(run_cli(["folder", "nest-colon-names", "--yes"], client))
+    assert payload["ok"] is True
+    assert [move.folder.id for move in client.nest_plan.moves] == ["f1"]
 
 
 def test_cli_folder_edit():

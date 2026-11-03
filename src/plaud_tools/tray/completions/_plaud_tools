@@ -29,7 +29,7 @@ _plaud_tools() {
                 'export:Save a whole transcript as JSON, TXT, SRT, Word or PDF'
                 'rename:Rename a recording'
                 'folders:List folders'
-                'folder:Create, edit, or delete a folder'
+                'folder:Create, edit, move, or delete a folder'
                 'vocab:List, add, edit, or delete custom-vocabulary words'
                 'share:Create, read, update, or revoke a recording share link'
                 'move-to-folder:Move recording to a folder'
@@ -105,6 +105,8 @@ _plaud_tools() {
                     folder_cmds=(
                         'create:Create a folder'
                         'edit:Edit a folder'
+                        'move:Move a folder into another folder'
+                        'nest-colon-names:Turn colon-named folders into subfolders'
                         'delete:Delete a folder'
                     )
                     _arguments \
@@ -119,7 +121,13 @@ _plaud_tools() {
                                 create)
                                     _arguments \
                                         '--color[Hex color, e.g. "#4c8eff"]:color' \
-                                        '--icon[Icon glyph codepoint]:icon'
+                                        '--icon[Icon glyph codepoint]:icon'                                         '--parent-id[Create inside this folder]:parent_id'
+                                    ;;
+                                move)
+                                    _arguments '1:folder_id' '2:parent_id'
+                                    ;;
+                                nest-colon-names)
+                                    _arguments '--yes[Make the changes instead of showing the plan]'
                                     ;;
                                 edit)
                                     _arguments \
@@ -227,7 +235,13 @@ _plaud_tools() {
                         '--wait[Block until the given stage completes]:wait:(none transcript summary)'
                     ;;
                 trash)
-                    _arguments '--list[List recordings currently in trash]'
+                    _arguments \
+                        '--list[List recordings currently in trash]' \
+                        '--limit[Max results to return]:limit' \
+                        '--all[List the whole trash]' \
+                        '--since[ISO 8601 start-date filter]:date' \
+                        '--until[ISO 8601 end-date filter]:date' \
+                        '--query[Title substring filter]:query'
                     ;;
                 delete)
                     _arguments '--yes[Confirm permanent deletion without prompt]'

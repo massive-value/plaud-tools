@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extra_notes: [{note_id, name, content}]`. Before, they never appeared in MCP, CLI or export.
 - `edit_summary` (MCP) and `correct-summary` / `set-summary` (CLI `--note-id`) can edit an
   extra note, so a typo inside a note can be fixed.
+- `trash --list` takes the same filters as `list`: `--since`, `--until`,
+  `--query`, `--limit` and `--all`.
+- Nested folders. `mutate_folder` takes `parent_id` to create a folder inside
+  another, and a new `move` action puts a folder with its contents under
+  another folder (`"root"` for the top level). The CLI has
+  `folder create --parent-id` and `folder move <folder-id> <parent-id>`.
+- `folder nest-colon-names` turns colon-named folders such as
+  `Client Meetings:Prospects` into real subfolders. It prints the plan and
+  changes nothing until you re-run it with `--yes`.
 
 ### Changed
 
@@ -49,6 +58,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   readable form will not match a citation.
 - `export_transcript` is unchanged: its JSON stays the SWIRL v1 transcript contract and
   does not carry notes.
+- `trash --list` now shows 20 recordings at a time like `list`. Add `--all`
+  for the whole trash.
+- Listing and browsing make one request to Plaud instead of several. The CLI
+  and MCP now share one list query, so a fix to one reaches both.
+- Filtering the trash by folder (`browse_recordings` with `trash` and
+  `folder`) is now an error. Trashed recordings have no folder in Plaud 4.0,
+  so it always came back empty.
+- A folder filter (`browse_recordings` `folder`, `list --folder-id`) now
+  includes recordings in that folder's subfolders.
+
+### Fixed
+
+- The folder delete warning said recordings inside "become unfiled". They
+  move up one level, as they have since 0.13.1, and the warning now says so.
+- Deleting a folder right after deleting a folder inside it failed with
+  "node version conflict". Deleting the inner folder changes the outer
+  folder's version, and Plaud's folder listing shows the new version about
+  a second late. The client now uses the version from Plaud's reply to the
+  earlier delete.
 
 ## [0.13.1] - 2026-11-03
 
