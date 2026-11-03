@@ -63,7 +63,11 @@ _GOLDEN_PATH = Path(__file__).parent / "data" / "tool_descriptions.golden.json"
 # description has to say the file must be copied as-is rather than retyped,
 # and how to pin the reviewed revision, or an agent re-serializes the
 # transcript itself — the exact failure the tool exists to prevent.
-_TOKEN_BUDGET_WORDS = 730
+#
+# #253/#256: 730 -> 830.  get_recording gains extra_notes and raw_markdown, and
+# edit_summary gains note_id plus a warning that edits act on raw markdown (~66
+# words, 756 total); without it an agent searches rendered [2:05] text.
+_TOKEN_BUDGET_WORDS = 830
 
 
 def _serialize_tools() -> str:

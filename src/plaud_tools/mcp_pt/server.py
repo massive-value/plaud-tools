@@ -163,6 +163,17 @@ _GET_RECORDING_OUTPUT_SCHEMA: dict[str, Any] = {
         "transcript_next_after": _NULLABLE_INT,
         "transcript_fingerprint": _NULLABLE_STRING,
         "summary": _NULLABLE_STRING,
+        "extra_notes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "content": _NULLABLE_STRING,
+                },
+            },
+        },
         "notes": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["id"],
@@ -333,7 +344,12 @@ _TOOLS: list[types.Tool] = [
                         "type": "string",
                         "enum": ["transcript", "segments", "speakers", "summary", "audio_url"],
                     },
-                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary, audio_url",  # noqa: E501
+                    "description": "Extra fields: transcript (text page), segments (structured page: index, speaker, text, start_ms/end_ms from recording start), speakers, summary (+ extra_notes: other summaries as {note_id, name, content}), audio_url",  # noqa: E501
+                },
+                "raw_markdown": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Keep Plaud's raw summary markdown (plaud:// links) instead of [2:05] citations",  # noqa: E501
                 },
                 "transcript_after": {
                     "type": "integer",
@@ -654,11 +670,15 @@ _TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="edit_summary",
-        description="Edit a recording's AI summary (must already have a generated summary). action='correct' does a literal find-and-replace; action='replace' overwrites the whole summary with new markdown.",  # noqa: E501
+        description="Edit a recording's AI summary, or an extra note via note_id. action='correct' does a literal find-and-replace on the raw markdown (shown [2:05] citations are plaud:// links; they are kept); action='replace' overwrites everything, so include any plaud:// links to keep.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
                 "recording_id": {"type": "string"},
+                "note_id": {
+                    "type": "string",
+                    "description": "Edit this extra note (from get_recording) instead of the summary",  # noqa: E501
+                },
                 "action": {
                     "type": "string",
                     "enum": ["correct", "replace"],

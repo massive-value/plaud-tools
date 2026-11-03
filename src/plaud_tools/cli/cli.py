@@ -21,6 +21,7 @@ from ..core.client import (
 )
 from ..core.errors import PlaudApiError, PlaudSessionExpiredError, PlaudWaitTimeoutError
 from ..core.export import EXPORT_FORMATS, TranscriptExportError, export_transcript
+from ..core.models import RecordingDetail
 from ..core.query import (
     BROWSE_PAGE_SIZE,
     collect_filtered_paged,
@@ -33,6 +34,13 @@ from ..core.query import (
     transcript_fingerprint,
 )
 from ..core.session import PlaudSession, SessionManager, SessionStore
+from ..core.summary import notes_payload, render_summary
+
+_RAW_HELP = (
+    "Print Plaud's raw markdown, plaud:// links included, instead of [2:05] citations "
+    "with the image and highlight card markup removed."
+)
+_NOTE_ID_HELP = "Edit this note (a note_id from 'summary' or 'detail') instead of the main summary."
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     detail_cmd = sub.add_parser("detail")
     detail_cmd.add_argument("recording_id")
     detail_cmd.add_argument("--include-transcript", action="store_true")
+    detail_cmd.add_argument("--raw", action="store_true", help=_RAW_HELP)
 
     show_cmd = sub.add_parser("show")
     show_cmd.add_argument("recording_id")
@@ -95,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary_cmd = sub.add_parser("summary")
     summary_cmd.add_argument("recording_id")
+    summary_cmd.add_argument("--raw", action="store_true", help=_RAW_HELP)
 
     audio_cmd = sub.add_parser(
         "audio", help="Get a temporary download URL for a recording's audio, or save the file."
@@ -181,9 +191,11 @@ def build_parser() -> argparse.ArgumentParser:
     correct_summary_cmd.add_argument("recording_id")
     correct_summary_cmd.add_argument("find")
     correct_summary_cmd.add_argument("replace")
+    correct_summary_cmd.add_argument("--note-id", help=_NOTE_ID_HELP)
 
     set_summary_cmd = sub.add_parser("set-summary")
     set_summary_cmd.add_argument("recording_id")
+    set_summary_cmd.add_argument("--note-id", help=_NOTE_ID_HELP)
     set_summary_group = set_summary_cmd.add_mutually_exclusive_group(required=True)
     set_summary_group.add_argument("--content", help="New summary markdown")
     set_summary_group.add_argument(
@@ -577,6 +589,14 @@ def _content_search(args: argparse.Namespace, client: PlaudClient) -> str:
     return json.dumps([summarize_match(match) for match in matches], indent=2, ensure_ascii=False)
 
 
+def _summary_fields(detail: RecordingDetail, raw: bool) -> dict[str, Any]:
+    """``summary`` and ``extra_notes`` for output: readable by default, Plaud's raw markdown with --raw."""
+    return {
+        "summary": detail.ai_content if raw else render_summary(detail.ai_content),
+        "extra_notes": notes_payload(detail.notes, raw=raw),
+    }
+
+
 def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
     # Always fetch the summary (like `summary <id>` does) so "summary" reflects
     # whether Plaud actually has one, instead of the null it would get here
@@ -593,7 +613,7 @@ def _handle_detail(args: argparse.Namespace, client: PlaudClient) -> str:
         "filename": detail.filename,
         "is_trans": detail.is_trans,
         "is_summary": detail.is_summary,
-        "summary": detail.ai_content,
+        **_summary_fields(detail, args.raw),
     }
     if args.include_transcript:
         # null, not "", when there is no transcript to return — an empty
@@ -612,12 +632,10 @@ def _handle_show(args: argparse.Namespace, client: PlaudClient) -> str:
 
 def _handle_summary(args: argparse.Namespace, client: PlaudClient) -> str:
     detail = client.get_recording(args.recording_id, include_summary=True)
+    payload: dict[str, Any] = {"recording_id": args.recording_id, **_summary_fields(detail, args.raw)}
     if not detail.ai_content:
-        return json.dumps(
-            {"recording_id": args.recording_id, "summary": None, "note": "No summary available."},
-            indent=2,
-        )
-    return json.dumps({"recording_id": args.recording_id, "summary": detail.ai_content}, indent=2)
+        payload["note"] = "No summary available."
+    return json.dumps(payload, indent=2)
 
 
 def _handle_rename(args: argparse.Namespace, client: PlaudClient) -> str:
@@ -737,7 +755,7 @@ def _handle_correct_transcript(args: argparse.Namespace, client: PlaudClient) ->
 
 
 def _handle_correct_summary(args: argparse.Namespace, client: PlaudClient) -> str:
-    result = client.correct_summary(args.recording_id, args.find, args.replace)
+    result = client.correct_summary(args.recording_id, args.find, args.replace, args.note_id)
     return json.dumps(
         {
             "ok": True,
@@ -758,7 +776,7 @@ def _handle_set_summary(args: argparse.Namespace, client: PlaudClient) -> str:
         content = path.read_text(encoding="utf-8")
     else:
         content = args.content
-    client.set_summary(args.recording_id, content)
+    client.set_summary(args.recording_id, content, args.note_id)
     return json.dumps(
         {"ok": True, "recording_id": args.recording_id, "mutation": "set-summary"},
         indent=2,

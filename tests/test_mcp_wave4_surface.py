@@ -115,9 +115,7 @@ class TestEditTranscript:
 class TestEditSummaryDryRun:
     def test_correct_dry_run_returns_match_count_without_mutating(self):
         mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(
-            id="r1", filename="Meeting", ai_content="Suzan said hi. Suzan left."
-        )
+        mock_client.count_summary_matches.return_value = 2
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["edit_summary"](
@@ -133,11 +131,11 @@ class TestEditSummaryDryRun:
             "matches": 2,
         }
         mock_client.correct_summary.assert_not_called()
-        mock_client.get_recording.assert_called_once_with("r1", include_summary=True)
+        mock_client.count_summary_matches.assert_called_once_with("r1", "Suzan", None)
 
     def test_correct_dry_run_no_summary_returns_validation(self):
         mock_client = MagicMock()
-        mock_client.get_recording.return_value = RecordingDetail(id="r1", filename="Meeting", ai_content=None)
+        mock_client.count_summary_matches.side_effect = ValueError("recording r1 has no summary text to edit")
         handlers = build_handlers(lambda: mock_client)
 
         result = handlers["edit_summary"](

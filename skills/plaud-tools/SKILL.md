@@ -57,12 +57,12 @@ narrower `since`/`until` window.
 |---|---|
 | `browse_recordings` | Filters: `query` (title substring), `since`/`until` (ISO 8601), `folder`, `trash`. Paginate with `after` ← `next_after`. |
 | `search_recordings` | Searches transcripts and summaries. Returns a snippet per hit, best match first. `source` says where the hit is, and `start_ms` gives its position in the audio. Max 20 results per search. |
-| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. |
+| `get_recording` | `include=["transcript","segments","speakers","summary","audio_url"]` — ask only for what you need; each is a large field or an extra request. `summary` also returns `extra_notes` (other summaries, each with a `note_id`); `raw_markdown=true` keeps Plaud's links. |
 | `export_transcript` | Whole transcript to a file. `format=` json / txt / srt / docx / pdf. Returns the path, not the text. |
 | `mutate_recording` | `action=` rename / trash / restore / move. Accepts `recording_ids` for batch (not for rename). |
 | `delete_recording` | Permanent. Requires `confirm=true` — see below. |
 | `edit_transcript` | `action=` rename_speaker / correct. |
-| `edit_summary` | `action=` correct / replace. Recording must already have a summary. |
+| `edit_summary` | `action=` correct / replace. Recording must already have a summary. `note_id` edits an extra note instead. Works on raw markdown: the `[2:05]` citations you see are `plaud://` links that stay put, so don't search for them. |
 | `upload_recording` | Local audio file → new recording. Transcodes via ffmpeg when needed. |
 | `process_recording` | Trigger transcription/summarization. `wait=` none / transcript / summary. |
 | `merge_recordings` | Two or more → one new recording. Sources survive. |

@@ -34,6 +34,7 @@ from ..core.query import (
     transcript_fingerprint,
 )
 from ..core.session import SessionManager, SessionStore
+from ..core.summary import notes_payload, render_summary
 
 log = logging.getLogger(__name__)
 
@@ -276,18 +277,6 @@ def _transcript_unavailable_note(detail: Any, requested_block: str) -> str | Non
     return None
 
 
-def _count_summary_matches(client: PlaudClient, recording_id: str, find: str) -> int:
-    """Count literal occurrences of ``find`` in a recording's AI summary, read-only.
-
-    Backs ``edit_summary(action="correct", dry_run=True)``.  The transcript
-    equivalent is ``PlaudClient.count_transcript_matches``.
-    """
-    detail = client.get_recording(recording_id, include_summary=True)
-    if not detail.ai_content:
-        raise ValueError(f"recording {recording_id} has no summary text to edit")
-    return detail.ai_content.count(find)
-
-
 PROCESS_WAIT_MODES = {"none", "transcript", "summary"}
 
 # Largest browse page.  Matches the upstream page size, so one browse call is
@@ -449,6 +438,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         transcript_after: int = 0,
         transcript_limit: int = DEFAULT_TRANSCRIPT_UTTERANCES,
         transcript_block: str = DEFAULT_TRANSCRIPT_BLOCK,
+        raw_markdown: bool = False,
     ) -> dict[str, Any]:
         if transcript_block not in TRANSCRIPT_BLOCKS:
             return _error_result(
@@ -536,7 +526,11 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         "few moments."
                     )
                 else:
-                    output["summary"] = detail.ai_content
+                    output["summary"] = (
+                        detail.ai_content if raw_markdown else render_summary(detail.ai_content)
+                    )
+                # Not "notes": that key already carries this response's advisory messages.
+                output["extra_notes"] = notes_payload(detail.notes, raw=raw_markdown)
             if notes:
                 output["notes"] = notes
             return _json_result(output)
@@ -917,6 +911,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
         replace: str | None = None,
         content: str | None = None,
         dry_run: bool = False,
+        note_id: str | None = None,
     ) -> dict[str, Any]:
         def inner(client: PlaudClient) -> dict[str, Any]:
             if action == "correct":
@@ -927,7 +922,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         retryable=False,
                     )
                 if dry_run:
-                    matches = _count_summary_matches(client, recording_id, find)
+                    matches = client.count_summary_matches(recording_id, find, note_id)
                     return _json_result(
                         {
                             "ok": True,
@@ -937,7 +932,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                             "matches": matches,
                         }
                     )
-                result = client.correct_summary(recording_id, find, replace)
+                result = client.correct_summary(recording_id, find, replace, note_id)
                 return _json_result(
                     {
                         "ok": True,
@@ -954,7 +949,7 @@ def build_handlers(get_client: Callable[[], PlaudClient | None]) -> dict[str, Ca
                         error_code="validation",
                         retryable=False,
                     )
-                client.set_summary(recording_id, content)
+                client.set_summary(recording_id, content, note_id)
                 return _json_result({"ok": True, "recording_id": recording_id, "action": "replace"})
 
             return _error_result(

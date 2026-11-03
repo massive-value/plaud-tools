@@ -28,7 +28,7 @@ _plaud_tools_complete() {
             COMPREPLY=($(compgen -W "--content --limit --all --since --until --folder-id --unfiled --help" -- "$cur"))
             ;;
         detail)
-            COMPREPLY=($(compgen -W "--include-transcript --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--include-transcript --raw --help" -- "$cur"))
             ;;
         transcript)
             COMPREPLY=($(compgen -W "--polish --segments --help" -- "$cur"))
@@ -48,8 +48,14 @@ _plaud_tools_complete() {
         delete)
             COMPREPLY=($(compgen -W "--yes --help" -- "$cur"))
             ;;
+        summary)
+            COMPREPLY=($(compgen -W "--raw --help" -- "$cur"))
+            ;;
+        correct-summary)
+            COMPREPLY=($(compgen -W "--note-id --help" -- "$cur"))
+            ;;
         set-summary)
-            COMPREPLY=($(compgen -W "--content --content-file --help" -- "$cur"))
+            COMPREPLY=($(compgen -W "--content --content-file --note-id --help" -- "$cur"))
             ;;
         upload)
             COMPREPLY=($(compgen -W "--title --folder-id --detach --skip-summary --start-time --timezone-offset --help" -- "$cur"))
