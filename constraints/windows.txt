@@ -144,7 +144,7 @@ setuptools==84.0.0
     # via pyinstaller
 six==1.17.0
     # via pystray
-sse-starlette==3.4.11
+sse-starlette==3.6.0
     # via mcp
 starlette==1.7.0
     # via
