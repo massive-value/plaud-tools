@@ -116,7 +116,7 @@ pyproject-hooks==1.3.3
     # via build
 pystray==0.19.5
     # via plaud-tools (pyproject.toml)
-pytest==9.1.1
+pytest==9.2.0
     # via
     #   plaud-tools (pyproject.toml)
     #   pytest-cov
