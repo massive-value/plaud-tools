@@ -126,7 +126,7 @@ ruff==0.17.3
     # via plaud-tools (pyproject.toml)
 setuptools==84.0.0
     # via pyinstaller
-sse-starlette==3.4.11
+sse-starlette==3.6.0
     # via mcp
 starlette==1.7.0
     # via

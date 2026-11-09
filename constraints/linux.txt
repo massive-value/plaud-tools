@@ -130,7 +130,7 @@ secretstorage==3.5.0
     # via keyring
 setuptools==84.0.0
     # via pyinstaller
-sse-starlette==3.4.11
+sse-starlette==3.6.0
     # via mcp
 starlette==1.7.0
     # via
