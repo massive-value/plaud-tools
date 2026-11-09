@@ -64,7 +64,7 @@ librt==0.15.0
     # via mypy
 mcp==2.2.0
     # via plaud-tools (pyproject.toml)
-mcp-types==2.2.0
+mcp-types==2.3.0
     # via mcp
 more-itertools==11.1.0
     # via
