@@ -202,3 +202,24 @@ def test_cwd_is_forwarded(monkeypatch):
     launch_hidden_powershell(["powershell.exe"], cwd="C:/Temp")
 
     assert seen["cwd"] == "C:/Temp"
+
+
+def test_inherited_powershell7_module_path_is_dropped(monkeypatch):
+    """A tray started from PowerShell 7 must not hand PS7's PSModulePath to a
+    5.1 child, or 5.1 autoloads PS7 modules (PS7's Expand-Archive fails)."""
+    seen: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        seen.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(process_launch.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("PLAUD_KEEP_ME", "1")
+
+    launch_hidden_powershell(["powershell.exe"])
+
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert not any(k.upper() == "PSMODULEPATH" for k in env)
+    assert env["PLAUD_KEEP_ME"] == "1"

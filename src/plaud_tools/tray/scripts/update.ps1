@@ -402,8 +402,14 @@ try {
 
     Write-Host "Extracting to $stagingDir"
     $ProgressPreference = 'SilentlyContinue'
+    # .NET ZipFile, not Expand-Archive: when the tray was started from a
+    # PowerShell 7 session, this 5.1 process inherits PS7's PSModulePath and
+    # Expand-Archive resolves to PS7's Archive module, which calls a 3-argument
+    # ExtractToDirectory overload that .NET Framework lacks. The 2-argument
+    # overload exists everywhere, and the staging dir was just cleared above.
     try {
-        Expand-Archive -Path $ZipPath -DestinationPath $stagingDir -Force -ErrorAction Stop
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $stagingDir)
     } catch {
         $msg = "Could not extract update zip: $($_.Exception.Message)"
         Write-Host "FAIL: $msg"
