@@ -96,9 +96,11 @@ def test_update_ps1_graceful_shutdown_first():
     assert "CloseMainWindow" in content
 
 
-def test_update_ps1_expands_archive():
+def test_update_ps1_extracts_with_dotnet_not_expand_archive():
+    """Expand-Archive breaks under 5.1 when PS7's PSModulePath is inherited."""
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
-    assert "Expand-Archive" in content
+    assert "[System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $stagingDir)" in content
+    assert "Expand-Archive -" not in content
 
 
 def test_update_ps1_starts_tray_after_update():
@@ -207,7 +209,7 @@ def test_update_ps1_swaps_via_staging_dir_not_overlay():
     it never overlays the live install (no rollback, stale files kept)."""
     content = (scripts_dir() / "update.ps1").read_text(encoding="utf-8")
     assert '$stagingDir = "$liveDir.staging"' in content
-    assert "Expand-Archive -Path $ZipPath -DestinationPath $stagingDir" in content
+    assert "ExtractToDirectory($ZipPath, $stagingDir)" in content
     assert "-DestinationPath $destination" not in content
 
 

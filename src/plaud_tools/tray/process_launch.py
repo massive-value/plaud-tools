@@ -18,6 +18,12 @@ independent, previously-shipped bugs bite this exact launch pattern:
    DENIED``); the caller should retry without the flag rather than fail the
    whole operation.
 
+3. A tray started from a PowerShell 7 session (e.g. ``install.ps1`` run in
+   Windows Terminal) inherits PS7's ``PSModulePath``. Windows PowerShell 5.1
+   children then autoload PS7 modules (PS7's ``Expand-Archive`` fails under
+   5.1), so the child gets an environment without ``PSModulePath`` and
+   rebuilds its own default.
+
 Every PowerShell-launch site in the tray MUST go through
 :func:`launch_hidden_powershell` so a fix to either bug class lands once,
 not once per call site.
@@ -79,10 +85,13 @@ def launch_hidden_powershell(
         args = [args[0], *_REQUIRED_FLAGS, *args[1:]]
 
     base_flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    # Drop an inherited PowerShell 7 module path; 5.1 rebuilds its own (bug 3 above).
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
     kwargs: dict[str, object] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
+        "env": env,
     }
     if cwd is not None:
         kwargs["cwd"] = cwd

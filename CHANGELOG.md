@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-11-18
+
+### Fixed
+
+- In-app updates failed with "Could not extract update zip: Cannot find an
+  overload for ExtractToDirectory" when the tray had been started from a
+  PowerShell 7 window, for example by running `install.ps1` in Windows
+  Terminal. The updater runs in Windows PowerShell 5.1 and picked up
+  PowerShell 7's `Expand-Archive`, which 5.1 can't run. The updater now
+  unzips with .NET directly, and the tray no longer passes PowerShell 7's
+  module path to any PowerShell script it starts.
+
 ## [0.14.1] - 2026-11-17
 
 ### Fixed
@@ -2020,7 +2032,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/massive-value/plaud-tools/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/massive-value/plaud-tools/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/massive-value/plaud-tools/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/massive-value/plaud-tools/compare/v0.13.0...v0.13.1
