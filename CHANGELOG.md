@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-17
+
+### Fixed
+
+- The tray's Configure AI Agents window showed Claude Desktop as "Not
+  installed" after Claude Desktop 5.x moved its settings from
+  `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\` to
+  `%LOCALAPPDATA%\Claude-Data\<install>\`. plaud-tools now checks the new
+  folder first, then the two older locations. Existing connections kept
+  working because Claude Desktop copied the Plaud entry into the new folder.
+
 ## [0.14.0] - 2026-11-03
 
 ### Changed
@@ -2009,7 +2020,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/massive-value/plaud-tools/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/massive-value/plaud-tools/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/massive-value/plaud-tools/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/massive-value/plaud-tools/compare/v0.12.1...v0.13.0

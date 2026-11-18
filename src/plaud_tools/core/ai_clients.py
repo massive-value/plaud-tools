@@ -33,7 +33,25 @@ def _client_paths() -> dict[str, Path]:
 
 
 def _resolve_claude_desktop(localappdata: Path, appdata: Path) -> Path:
-    # Microsoft Store version uses a sandboxed Packages path.
+    """Return where Claude Desktop reads its MCP config, checking the newest layout first.
+
+    1. ``%LOCALAPPDATA%\\Claude-Data\\<install>\\`` -- Claude Desktop 5.x moved its
+       data here (e.g. ``Claude-Data\\claude_pzs8sxrjxfjjc`` for the Store build)
+       and left only a ``.user-data-left.*`` marker in the old folder.
+    2. ``%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\`` --
+       older Microsoft Store builds (sandboxed MSIX path).
+    3. ``%APPDATA%\\Claude\\`` -- the classic standalone install.
+    """
+    data_root = localappdata / "Claude-Data"
+    if data_root.is_dir():
+        installs = [d for d in data_root.iterdir() if d.is_dir()]
+        if installs:
+            # Normally one install folder. If several exist, prefer one that
+            # already has an MCP config, then the most recently used.
+            with_config = [d for d in installs if (d / "claude_desktop_config.json").exists()]
+            newest = max(with_config or installs, key=lambda d: d.stat().st_mtime)
+            return newest / "claude_desktop_config.json"
+
     packages = localappdata / "Packages"
     if packages.exists():
         for d in packages.iterdir():

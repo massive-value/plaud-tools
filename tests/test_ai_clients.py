@@ -270,3 +270,36 @@ def test_same_path_resolves_bare_command_via_which(tmp_path: Path, monkeypatch):
     )
 
     assert ai_clients._same_path("plaud-mcp", str(real_exe)) is True
+
+
+# ---------------------------------------------------------------------------
+# Claude Desktop config location (_resolve_claude_desktop)
+# ---------------------------------------------------------------------------
+
+
+def test_claude_desktop_prefers_claude_data_over_old_store_path(tmp_path: Path):
+    # Claude Desktop 5.x layout: data moved to Claude-Data, old Store folder left behind.
+    local, roaming = tmp_path / "Local", tmp_path / "Roaming"
+    (local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude").mkdir(parents=True)
+    install = local / "Claude-Data" / "claude_pzs8sxrjxfjjc"
+    install.mkdir(parents=True)
+
+    assert ai_clients._resolve_claude_desktop(local, roaming) == install / "claude_desktop_config.json"
+
+
+def test_claude_desktop_falls_back_to_old_store_path(tmp_path: Path):
+    local, roaming = tmp_path / "Local", tmp_path / "Roaming"
+    old = local / "Packages" / "Claude_pzs8sxrjxfjjc"
+    old.mkdir(parents=True)
+
+    assert ai_clients._resolve_claude_desktop(local, roaming) == (
+        old / "LocalCache" / "Roaming" / "Claude" / "claude_desktop_config.json"
+    )
+
+
+def test_claude_desktop_falls_back_to_appdata(tmp_path: Path):
+    local, roaming = tmp_path / "Local", tmp_path / "Roaming"
+    local.mkdir()
+
+    expected = roaming / "Claude" / "claude_desktop_config.json"
+    assert ai_clients._resolve_claude_desktop(local, roaming) == expected

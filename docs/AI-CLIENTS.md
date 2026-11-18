@@ -19,8 +19,9 @@ This page exists for:
 
 | OS | Path |
 |---|---|
-| Windows (standard install) | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Windows (Microsoft Store install) | `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json` |
+| Windows (Claude Desktop 5.x and newer) | `%LOCALAPPDATA%\Claude-Data\<install>\claude_desktop_config.json` (Store build: `<install>` is `claude_pzs8sxrjxfjjc`) |
+| Windows (older Microsoft Store install) | `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json` |
+| Windows (older standard install) | `%APPDATA%\Claude\claude_desktop_config.json` |
 | macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Linux (unofficial builds) | Check the build's docs; usually `~/.config/Claude/claude_desktop_config.json` |
 
