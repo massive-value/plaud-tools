@@ -8,7 +8,8 @@
 # Produces dist/PlaudTools/ (onedir). The release workflow then:
 #   1. Copies out/plaud-mcp/plaud-mcp/ into dist/PlaudTools/mcp/
 #   2. Places ffmpeg.exe into dist/PlaudTools/mcp/
-#   3. Zips dist/PlaudTools/ -> PlaudTools.zip
+#   3. Adds LICENSE.txt and THIRD_PARTY_NOTICES.txt (scripts/third_party_notices.py)
+#   4. Zips dist/PlaudTools/ -> PlaudTools.zip
 #
 # The tray app locates plaud-mcp.exe via:
 #   Path(sys.executable).parent / "mcp" / "plaud-mcp.exe"

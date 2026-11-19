@@ -256,6 +256,11 @@ jobs:
       - name: Run ffmpeg transcode smoke
         run: python scripts/ffmpeg_smoke.py
 
+      # release.yml writes this file into the shipped zip. Generating it here
+      # catches a missing license file or a renamed ffmpeg folder before a tag.
+      - name: Generate third-party notices
+        run: python scripts/third_party_notices.py --ffmpeg-dir ffmpeg-tmp --out THIRD_PARTY_NOTICES.txt
+
       # Builds the tray spec to catch a broken pyinstaller hiddenimports list
       # or spec regression before merge. The psutil-specific --diagnose-enum
       # frozen-import proof that used to run here was removed along with the
