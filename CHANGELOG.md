@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Windows zip now includes `LICENSE.txt` and `THIRD_PARTY_NOTICES.txt`.
+  The notices file has the license text for Python, every bundled Python
+  package, and FFmpeg, plus links to FFmpeg's source code. The README has a
+  License section with the copyright line.
+
 ## [0.14.2] - 2026-11-18
 
 ### Fixed

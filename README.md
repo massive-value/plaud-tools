@@ -164,6 +164,12 @@ Source, dev environment setup, contributor workflow: [CONTRIBUTING.md](CONTRIBUT
 - [SECURITY.md](SECURITY.md) — security policy
 - [LICENSE](LICENSE) — LGPL-3.0-or-later
 
+## License
+
+Copyright (C) 2026 massive-value. PlaudTools is free software under the GNU Lesser General Public License, version 3 or (at your option) any later version. See [LICENSE](LICENSE).
+
+The Windows download also includes Python, the Python packages PlaudTools depends on, and FFmpeg (GPL-3.0). `THIRD_PARTY_NOTICES.txt` in the zip has each one's license text and links to FFmpeg's source code.
+
 ## Important
 
 **Alpha** — APIs and flags may change between minor versions. Pin versions in production wiring and check the [CHANGELOG](CHANGELOG.md) before upgrading.

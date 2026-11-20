@@ -128,6 +128,10 @@ jobs:
           New-Item -ItemType Directory -Force out\plaud-tray\PlaudTools\cli
           Copy-Item -Recurse out\plaud-cli\plaud-tools\* out\plaud-tray\PlaudTools\cli\
           Copy-Item scripts\pt.cmd out\plaud-tray\PlaudTools\cli\pt.cmd
+          # Our license, plus the license text for everything bundled with it
+          # (Python, frozen dependencies, GPL ffmpeg with its source links).
+          Copy-Item LICENSE out\plaud-tray\PlaudTools\LICENSE.txt
+          python scripts/third_party_notices.py --ffmpeg-dir ffmpeg-tmp --out out\plaud-tray\PlaudTools\THIRD_PARTY_NOTICES.txt
 
       - name: Smoke test CLI executable
         run: out\plaud-tray\PlaudTools\cli\plaud-tools.exe --version
