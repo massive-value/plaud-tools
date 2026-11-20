@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.14.3] - 2026-11-19
 
-- The Windows zip now includes `LICENSE.txt` and `THIRD_PARTY_NOTICES.txt`.
-  The notices file has the license text for Python, every bundled Python
-  package, and FFmpeg, plus links to FFmpeg's source code. The README has a
-  License section with the copyright line.
+### Fixed
+
+- The Windows zip shipped FFmpeg (GPL-3.0), Python, and the bundled Python
+  packages without their license texts. It now includes `LICENSE.txt` and
+  `THIRD_PARTY_NOTICES.txt`, which has each one's license text plus links to
+  FFmpeg's source code. The README has a License section with the copyright
+  line.
 
 ## [0.14.2] - 2026-11-18
 
@@ -2039,7 +2042,8 @@ For full detail see the v0.1.20–v0.1.22 sections below. Headline items:
   `scripts/plaud_entry.py` wrapper mirrors the existing
   `plaud_mcp_entry.py` / `plaud_tray_entry.py` pattern.
 
-[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.2...HEAD
+[Unreleased]: https://github.com/massive-value/plaud-tools/compare/v0.14.3...HEAD
+[0.14.3]: https://github.com/massive-value/plaud-tools/compare/v0.14.2...v0.14.3
 [0.14.2]: https://github.com/massive-value/plaud-tools/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/massive-value/plaud-tools/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/massive-value/plaud-tools/compare/v0.13.1...v0.14.0
