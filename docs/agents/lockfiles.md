@@ -82,7 +82,7 @@ alongside `PlaudTools.zip` and `SHA256SUMS`.
 ## Provenance
 
 All three files were most recently refreshed by `uv pip compile --upgrade`
-(uv 0.11.8) on 2026-09-24 from a Windows host.  Cross-platform resolution is
+(uv 0.13.5) on 2026-11-20 from a Windows host.  Cross-platform resolution is
 purely metadata-based (uv reads wheel tags and markers without downloading
 binaries), so the macOS and Linux files are accurate even though they were
 compiled on Windows.
